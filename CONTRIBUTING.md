@@ -12,13 +12,11 @@ Thank you for helping improve QuotaStation.
 
 ## Development workflow
 
-The implementation stack is not yet selected. Until the first implementation milestone is
-published, contributions should focus on architecture corrections, provider research, and
-project documentation.
+QuotaStation uses Tauri 2, Rust, React, TypeScript, Vite, SQLite, and the official Codex CLI.
+See [Development](docs/development.md) for environment setup, run and build commands, local
+data locations, and the pricing catalog lifecycle.
 
-When implementation begins:
-
-1. Start from the repository's development branch.
+1. Start from the repository's `dev` branch.
 2. Keep each change focused and reuse the shared normalization core.
 3. Add or update tests appropriate to the changed behavior.
 4. Run the documented minimum local verification.

@@ -2,14 +2,15 @@
 
 Local-first AI usage, quota, reset, and cost monitoring for Windows.
 
-QuotaStation is an open-source Windows application planned to bring live subscription
+QuotaStation is an open-source Windows application that brings live subscription
 limits and reset windows together with historical token usage, model activity, and
 API-equivalent costs across AI coding tools.
 
 ## Project status
 
-QuotaStation has selected its implementation architecture and is preparing the first Codex
-vertical slice. No installable build is available yet.
+The first Codex implementation slice now builds and runs locally. It includes read-only live
+quota acquisition, local session-history aggregation, SQLite persistence, a system tray, and
+a compact monitoring surface. A packaged release is not available yet.
 
 The initial product direction is:
 
@@ -33,14 +34,15 @@ The initial product direction is:
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Development](docs/development.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 - [Support](SUPPORT.md)
 
 ## Contributing
 
-The selected stack is Tauri 2 with a Rust core and React/TypeScript renderer. The first
-milestone integrates Codex live limits and local history; see
+The stack is Tauri 2 with a Rust core and React/TypeScript renderer. The first milestone
+integrates Codex live limits and local history; see
 [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 ## License

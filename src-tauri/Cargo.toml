@@ -1,0 +1,32 @@
+[package]
+name = "quotastation"
+version = "0.1.0"
+description = "Local-first AI quota and usage monitoring for Windows"
+authors = ["Steve Wang <contact@stevewang.me>"]
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[lib]
+name = "quotastation_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+serde_json = "1"
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+ccusage-adapter-codex = { path = "../vendor/ccusage/rust/adapters/codex" }
+ccusage-core = { path = "../vendor/ccusage/rust/crates/ccusage-core", features = ["fetch-litellm-pricing"] }
+jiff = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+tauri = { version = "2", features = ["tray-icon"] }
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+which = "8"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
