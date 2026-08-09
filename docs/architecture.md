@@ -72,8 +72,13 @@ SQLite is the planned store for normalized history, refresh metadata, pricing sn
 and schema versioning. Credentials, prompts, source content, and unnecessary raw logs do
 not belong in the database.
 
-The initial schema covers provider instances, current limits and samples, normalized usage
-events and daily aggregates, pricing entries, ingestion cursors, and refresh runs. Raw
+The schema covers provider instances, current limits and samples, normalized usage
+events and daily aggregates, pricing entries, ingestion cursors, refresh runs, and quota
+rollups. Five-minute quota samples are retained for 14 days, then hourly through day 60
+and daily through day 180. Rollups preserve boundary and summary values and remain
+segmented across quota resets. Successful refresh records are retained for 30 days and
+failed records for 180 days, with the newest record per acquisition path always kept. Daily
+usage aggregates are retained indefinitely. Raw
 session payloads and complete local paths are never retained.
 
 ## Runtime ownership
@@ -85,6 +90,8 @@ session payloads and complete local paths are never retained.
   applied immediately.
 - Codex session history uses debounced filesystem changes plus a fifteen-minute full
   reconciliation.
+- Normalized-data retention runs at startup when its last successful run is at least 24
+  hours old. It never runs during provider refresh and does not automatically vacuum.
 - Each acquisition path fails independently and preserves visibly stale last-known-good
   data.
 
@@ -106,8 +113,6 @@ telemetry, mutation calls, and raw-data upload behavior are excluded.
 
 ## Deferred decisions
 
-- Exact pinned `ccusage` revision and Cargo-versus-vendored integration form
 - Pricing catalog update policy and unknown-service-tier display behavior
-- Detailed-event retention period after real data volume is known
 - Provider plugin boundary if third-party adapters are eventually accepted
 - Signing, update hosting, and distribution channel before public release

@@ -38,6 +38,7 @@ const EMPTY_USAGE_RANGE: UsageRangeSnapshot = {
 const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
   watcher: { status: "starting", watchedLocationCount: 0, lastEventAt: null, error: null },
   acquisitions: [],
+  retention: { status: "pending", lastCompletedAt: null, error: null },
   parserRevision: EMPTY_SNAPSHOT.parserRevision,
   pricingCatalogRevision: EMPTY_SNAPSHOT.pricingCatalogRevision,
 };

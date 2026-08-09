@@ -14,9 +14,9 @@
       {
         "label": "main",
         "title": "QuotaStation",
-        "width": 1280,
+        "width": 1440,
         "height": 925,
-        "minWidth": 900,
+        "minWidth": 1050,
         "minHeight": 720,
         "center": true,
         "resizable": true

@@ -166,8 +166,17 @@ impl Default for WatcherDiagnostics {
 pub struct DiagnosticsSnapshot {
     pub watcher: WatcherDiagnostics,
     pub acquisitions: Vec<AcquisitionDiagnostics>,
+    pub retention: RetentionDiagnostics,
     pub parser_revision: String,
     pub pricing_catalog_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetentionDiagnostics {
+    pub status: String,
+    pub last_completed_at: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone)]

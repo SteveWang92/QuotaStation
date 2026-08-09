@@ -176,7 +176,7 @@ button { font: inherit; }
 .diagnostics-toggle svg { width: 15px; height: 15px; transition: transform 160ms ease; }
 .diagnostics-toggle svg.expanded { transform: rotate(180deg); }
 .diagnostics-panel { padding: 0 20px 13px; border-top: 1px solid var(--line-soft); }
-.diagnostics-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding-top: 12px; }
+.diagnostics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding-top: 12px; }
 .diagnostic-item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; padding: 9px 12px; border: 1px solid var(--line-soft); border-radius: 4px; background: #0d1419; }
 .diagnostic-item > span { color: var(--text); font-weight: 620; }
 .diagnostic-item > strong { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
@@ -199,6 +199,7 @@ button { font: inherit; }
   .history-grid { grid-template-columns: 1fr 1fr; }
   .breakdown-card { grid-column: 1 / -1; }
   .summary-strip strong { font-size: 18px; }
+  .diagnostics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (prefers-reduced-motion: reduce) {

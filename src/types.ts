@@ -73,6 +73,7 @@ export interface WatcherDiagnostics {
 export interface DiagnosticsSnapshot {
   watcher: WatcherDiagnostics;
   acquisitions: AcquisitionDiagnostics[];
+  retention: { status: string; lastCompletedAt: string | null; error: string | null };
   parserRevision: string;
   pricingCatalogRevision: string;
 }

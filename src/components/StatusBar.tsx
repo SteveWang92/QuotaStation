@@ -38,6 +38,12 @@ export function StatusBar({ snapshot, diagnostics }: { snapshot: ProviderSnapsho
               </div>
             ))}
             <div className="diagnostic-item">
+              <span>Data retention</span>
+              <strong className={diagnostics.retention.status}>{diagnostics.retention.status}</strong>
+              <small>Last completed {formatTimestamp(diagnostics.retention.lastCompletedAt)}</small>
+              {diagnostics.retention.error ? <small className="diagnostic-error">{diagnostics.retention.error}</small> : null}
+            </div>
+            <div className="diagnostic-item">
               <span>Session watcher</span>
               <strong className={diagnostics.watcher.status === "active" ? "succeeded" : "failed"}>
                 {diagnostics.watcher.status}

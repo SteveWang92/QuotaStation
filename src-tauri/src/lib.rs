@@ -48,9 +48,11 @@ async fn refresh_now(
 #[tauri::command]
 async fn get_diagnostics(state: State<'_, Arc<AppState>>) -> Result<DiagnosticsSnapshot, String> {
     let acquisitions = state.storage.load_acquisition_diagnostics().await.map_err(|error| error.to_string())?;
+    let retention = state.storage.load_retention_diagnostics().await.map_err(|error| error.to_string())?;
     Ok(DiagnosticsSnapshot {
         watcher: state.watcher_diagnostics.read().await.clone(),
         acquisitions,
+        retention,
         parser_revision: domain::CCUSAGE_REVISION.to_string(),
         pricing_catalog_revision: domain::PRICING_CATALOG_REVISION.to_string(),
     })
@@ -98,6 +100,9 @@ pub fn run() {
             let database_path = app.path().app_data_dir()?.join("quotastation.db");
             let storage = tauri::async_runtime::block_on(Storage::open(&database_path))
                 .map_err(|error| error.to_string())?;
+            if let Err(error) = tauri::async_runtime::block_on(storage.run_retention_if_due()) {
+                eprintln!("normalized data retention failed: {error:#}");
+            }
             let snapshot = tauri::async_runtime::block_on(storage.load_snapshot())
                 .unwrap_or_default();
             let state = Arc::new(AppState {
