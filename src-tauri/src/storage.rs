@@ -1,11 +1,12 @@
-use std::{path::Path, str::FromStr};
+use std::{collections::BTreeMap, path::Path, str::FromStr};
 
 use anyhow::{Context, Result};
 use sqlx::{Row, SqlitePool, sqlite::{SqliteConnectOptions, SqlitePoolOptions}};
 
 use crate::domain::{
-    CCUSAGE_REVISION, DailyModelUsage, Freshness, HistorySnapshot, LimitKind, LimitWindow,
-    LiveSnapshot, ModelUsage, PRICING_CATALOG_REVISION, ProviderSnapshot, TokenUsage,
+    CCUSAGE_REVISION, DailyModelUsage, DailyUsagePoint, Freshness, HistorySnapshot, LimitKind,
+    LimitWindow, LiveSnapshot, ModelUsage, PRICING_CATALOG_REVISION, ProviderSnapshot,
+    TokenUsage, UsageRangeSnapshot,
 };
 
 #[derive(Clone)]
@@ -79,10 +80,12 @@ impl Storage {
         )
         .bind(CCUSAGE_REVISION).bind(observed_at).bind(observed_at).bind(provider_id)
         .execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM daily_usage WHERE provider_instance_id = ? AND usage_date = ?")
-            .bind(provider_id).bind(&history.date).execute(&mut *tx).await?;
-        for row in &history.model_rows {
-            self.insert_daily_model(&mut tx, provider_id, &history.date, row, observed_at).await?;
+        sqlx::query("DELETE FROM daily_usage WHERE provider_instance_id = ?")
+            .bind(provider_id).execute(&mut *tx).await?;
+        for day in &history.days {
+            for row in &day.model_rows {
+                self.insert_daily_model(&mut tx, provider_id, &day.date, row, observed_at).await?;
+            }
         }
         tx.commit().await?;
         Ok(())
@@ -159,34 +162,82 @@ impl Storage {
         }).collect();
 
         let date = jiff::Zoned::now().date().to_string();
+        let today = self.load_usage_range(&date, &date).await?;
+        snapshot.today = today.usage;
+        snapshot.models = today.models;
+        snapshot.api_equivalent_cost_usd = today.api_equivalent_cost_usd;
+        snapshot.freshness = if snapshot.last_success_at.is_some() { Freshness::Stale } else { Freshness::Unavailable };
+        snapshot.pricing_catalog_revision = PRICING_CATALOG_REVISION.to_string();
+        Ok(snapshot)
+    }
+
+    pub async fn load_usage_range(&self, start_date: &str, end_date: &str) -> Result<UsageRangeSnapshot> {
+        let start = jiff::civil::Date::from_str(start_date).context("invalid start date")?;
+        let end = jiff::civil::Date::from_str(end_date).context("invalid end date")?;
+        anyhow::ensure!(start <= end, "start date must not be after end date");
+
+        let provider_id = self.provider_id().await?;
         let rows = sqlx::query(
-            "SELECT model, input_tokens, cache_read_tokens, output_tokens, reasoning_tokens, \
-             total_tokens, estimated_cost_usd FROM daily_usage \
-             WHERE provider_instance_id = ? AND usage_date = ?",
-        ).bind(provider_id).bind(&date).fetch_all(&self.pool).await?;
-        let mut models = Vec::new();
+            "SELECT usage_date, model, SUM(input_tokens) AS input_tokens, \
+             SUM(cache_read_tokens) AS cache_read_tokens, SUM(output_tokens) AS output_tokens, \
+             SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens, \
+             SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd \
+             FROM daily_usage WHERE provider_instance_id = ? AND usage_date BETWEEN ? AND ? \
+             GROUP BY usage_date, model ORDER BY usage_date ASC, total_tokens DESC",
+        )
+        .bind(provider_id).bind(start.to_string()).bind(end.to_string())
+        .fetch_all(&self.pool).await?;
+
         let mut total = TokenUsage::default();
-        let mut cost = 0.0;
+        let mut total_cost = 0.0;
+        let mut model_totals: BTreeMap<String, u64> = BTreeMap::new();
+        let mut day_totals: BTreeMap<String, (TokenUsage, f64)> = BTreeMap::new();
         for row in rows {
-            let row_total = row.get::<i64, _>("total_tokens") as u64;
-            total.input += row.get::<i64, _>("input_tokens") as u64;
-            total.cache_read += row.get::<i64, _>("cache_read_tokens") as u64;
-            total.output += row.get::<i64, _>("output_tokens") as u64;
-            total.reasoning += row.get::<i64, _>("reasoning_tokens") as u64;
-            total.total += row_total;
-            cost += row.get::<Option<f64>, _>("estimated_cost_usd").unwrap_or(0.0);
-            models.push((row.get::<String, _>("model"), row_total));
+            let date: String = row.get("usage_date");
+            let model: String = row.get("model");
+            let usage = TokenUsage {
+                input: row.get::<i64, _>("input_tokens") as u64,
+                cache_read: row.get::<i64, _>("cache_read_tokens") as u64,
+                output: row.get::<i64, _>("output_tokens") as u64,
+                reasoning: row.get::<i64, _>("reasoning_tokens") as u64,
+                total: row.get::<i64, _>("total_tokens") as u64,
+            };
+            let cost = row.get::<f64, _>("estimated_cost_usd");
+            total.input += usage.input;
+            total.cache_read += usage.cache_read;
+            total.output += usage.output;
+            total.reasoning += usage.reasoning;
+            total.total += usage.total;
+            total_cost += cost;
+            *model_totals.entry(model).or_default() += usage.total;
+            let day = day_totals.entry(date).or_insert_with(|| (TokenUsage::default(), 0.0));
+            day.0.input += usage.input;
+            day.0.cache_read += usage.cache_read;
+            day.0.output += usage.output;
+            day.0.reasoning += usage.reasoning;
+            day.0.total += usage.total;
+            day.1 += cost;
         }
-        snapshot.models = models.into_iter().map(|(model, tokens)| ModelUsage {
+
+        let mut models: Vec<_> = model_totals.into_iter().map(|(model, tokens)| ModelUsage {
             model,
             tokens,
             percent: if total.total == 0 { 0.0 } else { tokens as f64 / total.total as f64 * 100.0 },
         }).collect();
-        snapshot.models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
-        snapshot.today = total;
-        snapshot.api_equivalent_cost_usd = (snapshot.today.total > 0).then_some(cost);
-        snapshot.freshness = if snapshot.last_success_at.is_some() { Freshness::Stale } else { Freshness::Unavailable };
-        snapshot.pricing_catalog_revision = PRICING_CATALOG_REVISION.to_string();
-        Ok(snapshot)
+        models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+        let days = day_totals.into_iter().map(|(date, (usage, cost))| DailyUsagePoint {
+            date,
+            api_equivalent_cost_usd: (usage.total > 0).then_some(cost),
+            usage,
+        }).collect();
+
+        Ok(UsageRangeSnapshot {
+            start_date: start.to_string(),
+            end_date: end.to_string(),
+            api_equivalent_cost_usd: (total.total > 0).then_some(total_cost),
+            usage: total,
+            models,
+            days,
+        })
     }
 }

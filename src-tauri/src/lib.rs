@@ -5,7 +5,7 @@ mod storage;
 
 use std::{sync::Arc, time::Duration};
 
-use domain::ProviderSnapshot;
+use domain::{ProviderSnapshot, UsageRangeSnapshot};
 use storage::Storage;
 use tauri::{
     Manager, State,
@@ -23,6 +23,15 @@ pub struct AppState {
 #[tauri::command]
 async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<ProviderSnapshot, String> {
     Ok(state.snapshot.read().await.clone())
+}
+
+#[tauri::command]
+async fn get_usage_range(
+    start_date: String,
+    end_date: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<UsageRangeSnapshot, String> {
+    state.storage.load_usage_range(&start_date, &end_date).await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -96,7 +105,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_snapshot, refresh_now])
+        .invoke_handler(tauri::generate_handler![get_snapshot, get_usage_range, refresh_now])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();

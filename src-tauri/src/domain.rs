@@ -88,6 +88,11 @@ impl Default for ProviderSnapshot {
 
 #[derive(Debug, Clone)]
 pub struct HistorySnapshot {
+    pub days: Vec<HistoryDay>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryDay {
     pub date: String,
     pub usage: TokenUsage,
     pub models: Vec<ModelUsage>,
@@ -104,6 +109,25 @@ pub struct DailyModelUsage {
     pub reasoning: u64,
     pub total: u64,
     pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyUsagePoint {
+    pub date: String,
+    pub usage: TokenUsage,
+    pub api_equivalent_cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageRangeSnapshot {
+    pub start_date: String,
+    pub end_date: String,
+    pub usage: TokenUsage,
+    pub api_equivalent_cost_usd: Option<f64>,
+    pub models: Vec<ModelUsage>,
+    pub days: Vec<DailyUsagePoint>,
 }
 
 #[derive(Debug, Clone)]

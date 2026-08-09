@@ -51,11 +51,19 @@ async fn apply_history(state: &Arc<AppState>, started_at: &str, result: Result<c
     let completed_at = now();
     match result {
         Ok(history) => {
+            let today_date = jiff::Zoned::now().date().to_string();
+            let today = history.days.iter().find(|day| day.date == today_date).cloned();
             let save_error = state.storage.save_history(&history, &completed_at).await.err().map(|e| e.to_string());
             let mut snapshot = state.snapshot.write().await;
-            snapshot.today = history.usage;
-            snapshot.models = history.models;
-            snapshot.api_equivalent_cost_usd = (snapshot.today.total > 0).then_some(history.cost_usd);
+            if let Some(today) = today {
+                snapshot.today = today.usage;
+                snapshot.models = today.models;
+                snapshot.api_equivalent_cost_usd = (snapshot.today.total > 0).then_some(today.cost_usd);
+            } else {
+                snapshot.today = Default::default();
+                snapshot.models.clear();
+                snapshot.api_equivalent_cost_usd = None;
+            }
             snapshot.history_error = save_error;
             if snapshot.history_error.is_none() { snapshot.last_success_at = Some(completed_at.clone()); }
         }

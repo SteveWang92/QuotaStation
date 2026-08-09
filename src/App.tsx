@@ -1,11 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { QuotaSection } from "./components/QuotaSection";
 import { StatusBar } from "./components/StatusBar";
 import { UsageSummary } from "./components/UsageSummary";
+import { createPresetRange, type DateRangeSelection } from "./dateRanges";
 import { formatTimestamp } from "./format";
-import type { ProviderSnapshot } from "./types";
+import type { ProviderSnapshot, UsageRangeSnapshot } from "./types";
 
 const EMPTY_SNAPSHOT: ProviderSnapshot = {
   provider: "codex",
@@ -24,30 +25,74 @@ const EMPTY_SNAPSHOT: ProviderSnapshot = {
   pricingCatalogRevision: "pending-build",
 };
 
+const INITIAL_RANGE = createPresetRange("today");
+const EMPTY_USAGE_RANGE: UsageRangeSnapshot = {
+  startDate: INITIAL_RANGE.startDate,
+  endDate: INITIAL_RANGE.endDate,
+  usage: { input: 0, cacheRead: 0, output: 0, reasoning: 0, total: 0 },
+  apiEquivalentCostUsd: null,
+  models: [],
+  days: [],
+};
+
 export default function App() {
   const [snapshot, setSnapshot] = useState<ProviderSnapshot>(EMPTY_SNAPSHOT);
+  const [usageRange, setUsageRange] = useState<UsageRangeSnapshot>(EMPTY_USAGE_RANGE);
+  const [activeRange, setActiveRange] = useState<DateRangeSelection>(INITIAL_RANGE);
+  const [rangeLoading, setRangeLoading] = useState(false);
+  const [rangeError, setRangeError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const activeRangeRef = useRef(INITIAL_RANGE);
+  const rangeRequestId = useRef(0);
 
   const loadSnapshot = useCallback(async () => {
     const next = await invoke<ProviderSnapshot>("get_snapshot");
     setSnapshot(next);
   }, []);
 
+  const loadUsageRange = useCallback(async (range: DateRangeSelection) => {
+    const requestId = ++rangeRequestId.current;
+    setRangeLoading(true);
+    setRangeError(null);
+    try {
+      const next = await invoke<UsageRangeSnapshot>("get_usage_range", {
+        startDate: range.startDate,
+        endDate: range.endDate,
+      });
+      if (requestId === rangeRequestId.current) setUsageRange(next);
+    } catch (error) {
+      if (requestId === rangeRequestId.current) {
+        setRangeError(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (requestId === rangeRequestId.current) setRangeLoading(false);
+    }
+  }, []);
+
+  const selectRange = useCallback((range: DateRangeSelection) => {
+    activeRangeRef.current = range;
+    setActiveRange(range);
+    void loadUsageRange(range);
+  }, [loadUsageRange]);
+
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
       const next = await invoke<ProviderSnapshot>("refresh_now");
       setSnapshot(next);
+      await loadUsageRange(activeRangeRef.current);
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [loadUsageRange]);
 
   useEffect(() => {
-    void loadSnapshot();
-    const timer = window.setInterval(() => void loadSnapshot(), 30_000);
+    void Promise.all([loadSnapshot(), loadUsageRange(activeRangeRef.current)]);
+    const timer = window.setInterval(() => {
+      void Promise.all([loadSnapshot(), loadUsageRange(activeRangeRef.current)]);
+    }, 30_000);
     return () => window.clearInterval(timer);
-  }, [loadSnapshot]);
+  }, [loadSnapshot, loadUsageRange]);
 
   return (
     <main className="app-shell">
@@ -66,7 +111,14 @@ export default function App() {
         </div>
       </header>
       <QuotaSection limits={snapshot.limits} earnedResetCount={snapshot.earnedResetCount} />
-      <UsageSummary snapshot={snapshot} />
+      <UsageSummary
+        snapshot={snapshot}
+        range={usageRange}
+        selection={activeRange}
+        loading={rangeLoading}
+        error={rangeError}
+        onSelectRange={selectRange}
+      />
       <StatusBar snapshot={snapshot} />
     </main>
   );

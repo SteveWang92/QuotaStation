@@ -89,6 +89,8 @@ Normalized data is stored in the application data directory at:
 
 The database contains normalized usage, limits, refresh state, and pricing provenance. It
 does not store prompts, source code, raw session records, credentials, or full source paths.
+Historical range changes query the normalized daily rows in SQLite; they do not trigger a
+new parse of the Codex session logs.
 
 ## Pricing catalog lifecycle
 

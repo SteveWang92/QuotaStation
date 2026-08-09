@@ -38,3 +38,18 @@ export interface ProviderSnapshot {
   parserRevision: string;
   pricingCatalogRevision: string;
 }
+
+export interface DailyUsagePoint {
+  date: string;
+  usage: TokenUsage;
+  apiEquivalentCostUsd: number | null;
+}
+
+export interface UsageRangeSnapshot {
+  startDate: string;
+  endDate: string;
+  usage: TokenUsage;
+  apiEquivalentCostUsd: number | null;
+  models: ModelUsage[];
+  days: DailyUsagePoint[];
+}
