@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a focused improvement to QuotaStation
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What monitoring or analysis need is not currently met?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the result rather than a specific implementation when possible.
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider or area
+      options:
+        - Claude
+        - Codex
+        - Gemini
+        - Shared application behavior
+        - New provider
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy or compatibility considerations
+      description: Note any credential, local-data, provider-interface, or licensing concerns.
