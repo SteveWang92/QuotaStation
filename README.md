@@ -8,8 +8,8 @@ API-equivalent costs across AI coding tools.
 
 ## Project status
 
-QuotaStation is currently in the foundation and architecture phase. No installable build
-is available yet.
+QuotaStation has selected its implementation architecture and is preparing the first Codex
+vertical slice. No installable build is available yet.
 
 The initial product direction is:
 
@@ -18,7 +18,7 @@ The initial product direction is:
 - Historical input, output, and cache token usage
 - Per-provider and per-model API-equivalent cost estimates
 - Local-first storage with no prompt or source-code upload
-- Claude, Codex, and Gemini as the first provider targets
+- Codex as the first release target, with Claude and Gemini planned later
 
 ## Principles
 
@@ -27,8 +27,8 @@ The initial product direction is:
   accounts or subscriptions.
 - **Transparent estimates:** calculated costs identify their pricing source and timestamp.
 - **Extensible:** all user interfaces consume one normalized provider model.
-- **Respectful reuse:** external implementations are references until license compatibility
-  and attribution requirements are verified.
+- **Respectful reuse:** prefer reviewed, compatible open-source provider and log adapters;
+  pin their revisions and preserve license and attribution requirements.
 
 ## Documentation
 
@@ -39,9 +39,9 @@ The initial product direction is:
 
 ## Contributing
 
-The implementation stack and first milestone are still being finalized. Design discussion
-and focused research are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) before opening a
-pull request.
+The selected stack is Tauri 2 with a Rust core and React/TypeScript renderer. The first
+milestone integrates Codex live limits and local history; see
+[CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 ## License
 
