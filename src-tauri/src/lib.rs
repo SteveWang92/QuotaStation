@@ -1,11 +1,12 @@
 mod domain;
 mod providers;
 mod refresh;
+mod session_watcher;
 mod storage;
 
 use std::{sync::Arc, time::Duration};
 
-use domain::{ProviderSnapshot, UsageRangeSnapshot};
+use domain::{DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot, WatcherDiagnostics};
 use storage::Storage;
 use tauri::{
     Manager, State,
@@ -17,7 +18,9 @@ use tokio::sync::{Mutex, RwLock};
 pub struct AppState {
     storage: Storage,
     snapshot: RwLock<ProviderSnapshot>,
-    refresh_lock: Mutex<()>,
+    live_refresh_lock: Mutex<()>,
+    history_refresh_lock: Mutex<()>,
+    watcher_diagnostics: RwLock<WatcherDiagnostics>,
 }
 
 #[tauri::command]
@@ -40,6 +43,17 @@ async fn refresh_now(
     state: State<'_, Arc<AppState>>,
 ) -> Result<ProviderSnapshot, String> {
     Ok(refresh::refresh_all(&app, state.inner()).await)
+}
+
+#[tauri::command]
+async fn get_diagnostics(state: State<'_, Arc<AppState>>) -> Result<DiagnosticsSnapshot, String> {
+    let acquisitions = state.storage.load_acquisition_diagnostics().await.map_err(|error| error.to_string())?;
+    Ok(DiagnosticsSnapshot {
+        watcher: state.watcher_diagnostics.read().await.clone(),
+        acquisitions,
+        parser_revision: domain::CCUSAGE_REVISION.to_string(),
+        pricing_catalog_revision: domain::PRICING_CATALOG_REVISION.to_string(),
+    })
 }
 
 fn show_main(app: &tauri::AppHandle) {
@@ -89,23 +103,46 @@ pub fn run() {
             let state = Arc::new(AppState {
                 storage,
                 snapshot: RwLock::new(snapshot),
-                refresh_lock: Mutex::new(()),
+                live_refresh_lock: Mutex::new(()),
+                history_refresh_lock: Mutex::new(()),
+                watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
             });
             app.manage(state.clone());
             build_tray(app)?;
+            if session_watcher::start(app.handle().clone(), state.clone()).is_err() {
+                tauri::async_runtime::block_on(async {
+                    let mut diagnostics = state.watcher_diagnostics.write().await;
+                    diagnostics.status = "unavailable".to_string();
+                    diagnostics.error = Some("Codex session watching is unavailable; periodic reconciliation remains active.".to_string());
+                });
+            }
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 refresh::refresh_all(&app_handle, &state).await;
+            });
+            let app_handle = app.handle().clone();
+            let live_state = app.state::<Arc<AppState>>().inner().clone();
+            tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(300));
                 interval.tick().await;
                 loop {
                     interval.tick().await;
-                    refresh::refresh_all(&app_handle, &state).await;
+                    refresh::refresh_live(&app_handle, &live_state).await;
+                }
+            });
+            let app_handle = app.handle().clone();
+            let history_state = app.state::<Arc<AppState>>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(900));
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    refresh::refresh_history(&app_handle, &history_state).await;
                 }
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_snapshot, get_usage_range, refresh_now])
+        .invoke_handler(tauri::generate_handler![get_snapshot, get_usage_range, refresh_now, get_diagnostics])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();

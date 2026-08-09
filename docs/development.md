@@ -92,6 +92,22 @@ does not store prompts, source code, raw session records, credentials, or full s
 Historical range changes query the normalized daily rows in SQLite; they do not trigger a
 new parse of the Codex session logs.
 
+## Refresh lifecycle and diagnostics
+
+QuotaStation keeps live quota and local history acquisition independent:
+
+- Live quota refreshes at startup, on manual refresh, and every five minutes.
+- History refreshes at startup and on manual refresh. A recursive watcher reuses ccusage's
+  resolved Codex session locations and debounces `.jsonl` changes for two seconds.
+- A full history reconciliation runs every fifteen minutes to recover missed filesystem
+  notifications.
+- Renderer range changes continue to query SQLite. A successful history refresh emits an
+  application event so the active range updates without waiting for the UI polling fallback.
+
+The status bar's Diagnostics panel reads normalized refresh records and in-memory watcher
+health. It exposes acquisition status, timestamps, redacted errors, watched-location count,
+and embedded source revisions. It never exposes full paths or raw session records.
+
 ## Pricing catalog lifecycle
 
 QuotaStation reuses ccusage's pricing build integration instead of maintaining a manual GPT

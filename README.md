@@ -9,9 +9,10 @@ API-equivalent costs across AI coding tools.
 ## Project status
 
 The first Codex implementation slice now builds and runs locally. It includes read-only live
-quota acquisition, local session-history aggregation, SQLite persistence, a system tray, and
-a compact monitoring surface. The history dashboard supports Today, 3-day, 7-day, 30-day,
-and custom local-calendar ranges. A packaged release is not available yet.
+quota acquisition, event-driven local session-history aggregation, SQLite persistence, a
+system tray, and a compact monitoring surface. The history dashboard supports Today, 3-day,
+7-day, 30-day, and custom local-calendar ranges, with redacted acquisition diagnostics in
+the status bar. A packaged release is not available yet.
 
 The initial product direction is:
 

@@ -53,3 +53,26 @@ export interface UsageRangeSnapshot {
   models: ModelUsage[];
   days: DailyUsagePoint[];
 }
+
+export interface AcquisitionDiagnostics {
+  acquisitionPath: "codex_live" | "codex_history";
+  label: string;
+  status: "pending" | "succeeded" | "failed";
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  error: string | null;
+}
+
+export interface WatcherDiagnostics {
+  status: "starting" | "active" | "unavailable";
+  watchedLocationCount: number;
+  lastEventAt: string | null;
+  error: string | null;
+}
+
+export interface DiagnosticsSnapshot {
+  watcher: WatcherDiagnostics;
+  acquisitions: AcquisitionDiagnostics[];
+  parserRevision: string;
+  pricingCatalogRevision: string;
+}

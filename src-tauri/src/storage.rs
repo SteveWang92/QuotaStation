@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use sqlx::{Row, SqlitePool, sqlite::{SqliteConnectOptions, SqlitePoolOptions}};
 
 use crate::domain::{
-    CCUSAGE_REVISION, DailyModelUsage, DailyUsagePoint, Freshness, HistorySnapshot, LimitKind,
-    LimitWindow, LiveSnapshot, ModelUsage, PRICING_CATALOG_REVISION, ProviderSnapshot,
-    TokenUsage, UsageRangeSnapshot,
+    AcquisitionDiagnostics, CCUSAGE_REVISION, DailyModelUsage, DailyUsagePoint, Freshness,
+    HistorySnapshot, LimitKind, LimitWindow, LiveSnapshot, ModelUsage, PRICING_CATALOG_REVISION,
+    ProviderSnapshot, TokenUsage, UsageRangeSnapshot,
 };
 
 #[derive(Clone)]
@@ -239,5 +239,57 @@ impl Storage {
             models,
             days,
         })
+    }
+
+    pub async fn load_acquisition_diagnostics(&self) -> Result<Vec<AcquisitionDiagnostics>> {
+        let provider_id = self.provider_id().await?;
+        let provider = sqlx::query(
+            "SELECT last_live_success_at, last_history_success_at FROM provider_instances WHERE id = ?",
+        )
+        .bind(provider_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let live_success: Option<String> = provider.try_get("last_live_success_at")?;
+        let history_success: Option<String> = provider.try_get("last_history_success_at")?;
+        let rows = sqlx::query(
+            "SELECT acquisition_path, started_at, status, error_message FROM refresh_runs \
+             WHERE provider_instance_id = ? AND id IN (\
+               SELECT MAX(id) FROM refresh_runs WHERE provider_instance_id = ? GROUP BY acquisition_path\
+             )",
+        )
+        .bind(provider_id)
+        .bind(provider_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut latest = BTreeMap::new();
+        for row in rows {
+            latest.insert(
+                row.get::<String, _>("acquisition_path"),
+                (
+                    row.get::<String, _>("started_at"),
+                    row.get::<String, _>("status"),
+                    row.try_get::<Option<String>, _>("error_message")?,
+                ),
+            );
+        }
+
+        Ok([
+            ("codex_live", "Live quota", live_success),
+            ("codex_history", "Local history", history_success),
+        ]
+        .into_iter()
+        .map(|(path, label, last_success_at)| {
+            let run = latest.get(path);
+            AcquisitionDiagnostics {
+                acquisition_path: path.to_string(),
+                label: label.to_string(),
+                status: run.map(|(_, status, _)| status.clone()).unwrap_or_else(|| "pending".to_string()),
+                last_attempt_at: run.map(|(started_at, _, _)| started_at.clone()),
+                last_success_at,
+                error: run.and_then(|(_, _, error)| error.clone()),
+            }
+        })
+        .collect())
     }
 }

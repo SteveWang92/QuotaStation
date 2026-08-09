@@ -12,7 +12,9 @@ QuotaStation includes source code from the following project.
 - Copyright: Copyright (c) 2025 ryoppippi
 - Local use: Codex session discovery, parsing, replay/fork deduplication,
   aggregation, service-tier interpretation, and cost calculation
-- Local modifications: none in the included upstream Rust source
+- Local modifications: exposes the adapter's resolved Codex usage directories through a
+  narrow read-only function so QuotaStation's watcher follows the exact same discovery rules
+  as the parser
 
 The vendored subset omits upstream tests and `insta` snapshot fixtures because they are not
 part of QuotaStation's dependency build. They remain available from the pinned upstream

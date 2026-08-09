@@ -6,17 +6,35 @@ use tauri::{AppHandle, Emitter};
 use crate::{AppState, domain::Freshness, providers::codex};
 
 pub async fn refresh_all(app: &AppHandle, state: &Arc<AppState>) -> crate::domain::ProviderSnapshot {
-    let _guard = state.refresh_lock.lock().await;
+    tokio::join!(refresh_live(app, state), refresh_history(app, state));
+    state.snapshot.read().await.clone()
+}
+
+pub async fn refresh_live(app: &AppHandle, state: &Arc<AppState>) {
+    let _guard = state.live_refresh_lock.lock().await;
     let started_at = now();
     {
         let mut snapshot = state.snapshot.write().await;
         snapshot.last_attempt_at = Some(started_at.clone());
     }
 
-    let (live_result, history_result) = tokio::join!(codex::read_live(), codex::read_history());
-    apply_live(state, &started_at, live_result).await;
-    apply_history(state, &started_at, history_result).await;
+    apply_live(state, &started_at, codex::read_live().await).await;
+    publish_snapshot(app, state).await;
+}
 
+pub async fn refresh_history(app: &AppHandle, state: &Arc<AppState>) {
+    let _guard = state.history_refresh_lock.lock().await;
+    let started_at = now();
+    {
+        let mut snapshot = state.snapshot.write().await;
+        snapshot.last_attempt_at = Some(started_at.clone());
+    }
+    apply_history(state, &started_at, codex::read_history().await).await;
+    publish_snapshot(app, state).await;
+    let _ = app.emit("history-updated", ());
+}
+
+async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) {
     let mut snapshot = state.snapshot.write().await;
     snapshot.freshness = match (&snapshot.live_error, &snapshot.history_error, snapshot.last_success_at.is_some()) {
         (None, None, true) => Freshness::Fresh,
@@ -26,7 +44,6 @@ pub async fn refresh_all(app: &AppHandle, state: &Arc<AppState>) -> crate::domai
     let current = snapshot.clone();
     drop(snapshot);
     let _ = app.emit("snapshot-updated", &current);
-    current
 }
 
 async fn apply_live(state: &Arc<AppState>, started_at: &str, result: Result<crate::domain::LiveSnapshot>) {

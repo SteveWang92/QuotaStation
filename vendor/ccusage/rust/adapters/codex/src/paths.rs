@@ -9,6 +9,14 @@ pub(super) fn codex_usage_sources() -> Result<Vec<CodexUsageSource>> {
     Ok(codex_usage_sources_from_homes(codex_home_paths()?))
 }
 
+/// Returns the same resolved usage directories consumed by the Codex loader.
+pub fn codex_usage_paths() -> Result<Vec<PathBuf>> {
+    Ok(codex_usage_sources()?
+        .into_iter()
+        .map(|source| source.dir)
+        .collect())
+}
+
 #[cfg(test)]
 fn codex_usage_paths_from_homes(homes: Vec<PathBuf>) -> Vec<PathBuf> {
     codex_usage_sources_from_homes(homes)

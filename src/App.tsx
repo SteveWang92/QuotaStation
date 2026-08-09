@@ -1,12 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QuotaSection } from "./components/QuotaSection";
 import { StatusBar } from "./components/StatusBar";
 import { UsageSummary } from "./components/UsageSummary";
 import { createPresetRange, type DateRangeSelection } from "./dateRanges";
-import { formatTimestamp } from "./format";
-import type { ProviderSnapshot, UsageRangeSnapshot } from "./types";
+import type { DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot } from "./types";
 
 const EMPTY_SNAPSHOT: ProviderSnapshot = {
   provider: "codex",
@@ -35,6 +35,13 @@ const EMPTY_USAGE_RANGE: UsageRangeSnapshot = {
   days: [],
 };
 
+const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
+  watcher: { status: "starting", watchedLocationCount: 0, lastEventAt: null, error: null },
+  acquisitions: [],
+  parserRevision: EMPTY_SNAPSHOT.parserRevision,
+  pricingCatalogRevision: EMPTY_SNAPSHOT.pricingCatalogRevision,
+};
+
 export default function App() {
   const [snapshot, setSnapshot] = useState<ProviderSnapshot>(EMPTY_SNAPSHOT);
   const [usageRange, setUsageRange] = useState<UsageRangeSnapshot>(EMPTY_USAGE_RANGE);
@@ -42,6 +49,7 @@ export default function App() {
   const [rangeLoading, setRangeLoading] = useState(false);
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
   const activeRangeRef = useRef(INITIAL_RANGE);
   const rangeRequestId = useRef(0);
 
@@ -69,6 +77,11 @@ export default function App() {
     }
   }, []);
 
+  const loadDiagnostics = useCallback(async () => {
+    const next = await invoke<DiagnosticsSnapshot>("get_diagnostics");
+    setDiagnostics(next);
+  }, []);
+
   const selectRange = useCallback((range: DateRangeSelection) => {
     activeRangeRef.current = range;
     setActiveRange(range);
@@ -80,19 +93,37 @@ export default function App() {
     try {
       const next = await invoke<ProviderSnapshot>("refresh_now");
       setSnapshot(next);
-      await loadUsageRange(activeRangeRef.current);
+      await Promise.all([loadUsageRange(activeRangeRef.current), loadDiagnostics()]);
     } finally {
       setRefreshing(false);
     }
-  }, [loadUsageRange]);
+  }, [loadDiagnostics, loadUsageRange]);
 
   useEffect(() => {
-    void Promise.all([loadSnapshot(), loadUsageRange(activeRangeRef.current)]);
+    let disposed = false;
+    let unlisten: Array<() => void> = [];
+    void Promise.all([loadSnapshot(), loadUsageRange(activeRangeRef.current), loadDiagnostics()]);
+    void Promise.all([
+      listen<ProviderSnapshot>("snapshot-updated", ({ payload }) => {
+        setSnapshot(payload);
+        void loadDiagnostics();
+      }),
+      listen("history-updated", () => {
+        void loadUsageRange(activeRangeRef.current);
+      }),
+    ]).then((listeners) => {
+      if (disposed) listeners.forEach((stop) => stop());
+      else unlisten = listeners;
+    });
     const timer = window.setInterval(() => {
-      void Promise.all([loadSnapshot(), loadUsageRange(activeRangeRef.current)]);
+      void Promise.all([loadSnapshot(), loadUsageRange(activeRangeRef.current), loadDiagnostics()]);
     }, 30_000);
-    return () => window.clearInterval(timer);
-  }, [loadSnapshot, loadUsageRange]);
+    return () => {
+      disposed = true;
+      unlisten.forEach((stop) => stop());
+      window.clearInterval(timer);
+    };
+  }, [loadDiagnostics, loadSnapshot, loadUsageRange]);
 
   return (
     <main className="app-shell">
@@ -103,7 +134,6 @@ export default function App() {
           <p>Local quota and usage data from the installed Codex client.</p>
         </div>
         <div className="header-actions">
-          <span>Last updated <strong>{formatTimestamp(snapshot.lastAttemptAt)}</strong></span>
           <button type="button" onClick={() => void refresh()} disabled={refreshing}>
             <RefreshCw aria-hidden="true" className={refreshing ? "spinning" : ""} />
             {refreshing ? "Refreshing" : "Refresh"}
@@ -119,7 +149,7 @@ export default function App() {
         error={rangeError}
         onSelectRange={selectRange}
       />
-      <StatusBar snapshot={snapshot} />
+      <StatusBar snapshot={snapshot} diagnostics={diagnostics} />
     </main>
   );
 }

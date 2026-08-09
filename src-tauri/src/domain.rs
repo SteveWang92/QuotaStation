@@ -130,6 +130,46 @@ pub struct UsageRangeSnapshot {
     pub days: Vec<DailyUsagePoint>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcquisitionDiagnostics {
+    pub acquisition_path: String,
+    pub label: String,
+    pub status: String,
+    pub last_attempt_at: Option<String>,
+    pub last_success_at: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatcherDiagnostics {
+    pub status: String,
+    pub watched_location_count: usize,
+    pub last_event_at: Option<String>,
+    pub error: Option<String>,
+}
+
+impl Default for WatcherDiagnostics {
+    fn default() -> Self {
+        Self {
+            status: "starting".to_string(),
+            watched_location_count: 0,
+            last_event_at: None,
+            error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticsSnapshot {
+    pub watcher: WatcherDiagnostics,
+    pub acquisitions: Vec<AcquisitionDiagnostics>,
+    pub parser_revision: String,
+    pub pricing_catalog_revision: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct LiveSnapshot {
     pub plan_type: Option<String>,
