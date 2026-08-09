@@ -4,16 +4,19 @@ mod refresh;
 mod session_watcher;
 mod storage;
 
-use std::{sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use domain::{DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot, WatcherDiagnostics};
 use storage::Storage;
 use tauri::{
     Manager, State,
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tokio::sync::{Mutex, RwLock};
+
+#[cfg(desktop)]
+use tauri_plugin_autostart::ManagerExt;
 
 pub struct AppState {
     storage: Storage,
@@ -65,23 +68,93 @@ fn show_main(app: &tauri::AppHandle) {
     }
 }
 
+#[cfg(windows)]
+fn create_desktop_shortcut(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let shortcut_path = app
+        .path()
+        .desktop_dir()
+        .map_err(|error| error.to_string())?
+        .join("QuotaStation.lnk");
+    let mut shortcut = mslnk::ShellLink::new(&executable).map_err(|error| error.to_string())?;
+    if let Some(working_directory) = executable.parent() {
+        shortcut.set_working_dir(Some(working_directory.to_string_lossy().into_owned()));
+    }
+    shortcut.set_name(Some("QuotaStation".to_string()));
+    shortcut.create_lnk(&shortcut_path).map_err(|error| error.to_string())?;
+    Ok(shortcut_path)
+}
+
+#[cfg(not(windows))]
+fn create_desktop_shortcut(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Err("Desktop shortcuts are currently supported on Windows only.".to_string())
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show QuotaStation", true, None::<&str>)?;
     let refresh = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+    let autostart = CheckMenuItem::with_id(
+        app,
+        "autostart",
+        "Start with Windows",
+        true,
+        autostart_enabled,
+        None::<&str>,
+    )?;
+    let desktop_shortcut = MenuItem::with_id(
+        app,
+        "desktop_shortcut",
+        "Create desktop shortcut",
+        true,
+        None::<&str>,
+    )?;
+    let separator_before_quit = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &refresh, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show,
+            &refresh,
+            &separator,
+            &autostart,
+            &desktop_shortcut,
+            &separator_before_quit,
+            &quit,
+        ],
+    )?;
     let icon = app.default_window_icon().cloned().expect("application icon must be configured");
+    let autostart_menu_item = autostart.clone();
     TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
+        .on_menu_event(move |app, event| match event.id.as_ref() {
             "show" => show_main(app),
             "refresh" => {
                 let app = app.clone();
                 let state = app.state::<Arc<AppState>>().inner().clone();
                 tauri::async_runtime::spawn(async move { refresh::refresh_all(&app, &state).await; });
             }
+            "autostart" => {
+                let manager = app.autolaunch();
+                let enabled = manager.is_enabled().unwrap_or(false);
+                let result = if enabled { manager.disable() } else { manager.enable() };
+                match result {
+                    Ok(()) => {
+                        let _ = autostart_menu_item.set_checked(!enabled);
+                    }
+                    Err(error) => {
+                        eprintln!("failed to update start-with-Windows setting: {error}");
+                        let _ = autostart_menu_item.set_checked(enabled);
+                    }
+                }
+            }
+            "desktop_shortcut" => match create_desktop_shortcut(app) {
+                Ok(path) => eprintln!("desktop shortcut created at {}", path.display()),
+                Err(error) => eprintln!("failed to create desktop shortcut: {error}"),
+            },
             "quit" => app.exit(0),
             _ => {}
         })
@@ -96,6 +169,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main(app);
+        }))
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             let database_path = app.path().app_data_dir()?.join("quotastation.db");
             let storage = tauri::async_runtime::block_on(Storage::open(&database_path))
