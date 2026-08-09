@@ -1,5 +1,5 @@
 import type { LimitWindow } from "../types";
-import { formatCountdown } from "../format";
+import { formatCountdown, formatResetTimestamp } from "../format";
 
 interface QuotaSectionProps {
   limits: LimitWindow[];
@@ -30,6 +30,9 @@ function QuotaRow({ limit }: { limit: LimitWindow }) {
       <div className="quota-reset">
         <span>Resets in</span>
         <strong>{formatCountdown(limit.resetsAt)}</strong>
+        <time dateTime={limit.resetsAt === null ? undefined : new Date(limit.resetsAt * 1000).toISOString()}>
+          {formatResetTimestamp(limit.resetsAt)}
+        </time>
       </div>
     </div>
   );

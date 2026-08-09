@@ -29,3 +29,11 @@ export function formatCountdown(epochSeconds: number | null): string {
   const minutes = totalMinutes % 60;
   return days > 0 ? `${days}d ${hours}h ${minutes}m` : `${hours}h ${minutes}m`;
 }
+
+export function formatResetTimestamp(epochSeconds: number | null): string {
+  if (epochSeconds === null) return "Reset time unknown";
+  return new Intl.DateTimeFormat("en-AU", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(epochSeconds * 1000));
+}
