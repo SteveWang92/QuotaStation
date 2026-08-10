@@ -20,6 +20,19 @@
         "minHeight": 720,
         "center": true,
         "resizable": true
+      },
+      {
+        "label": "quick-panel",
+        "title": "QuotaStation Quick Panel",
+        "url": "index.html",
+        "width": 390,
+        "height": 540,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": true,
+        "visible": false
       }
     ],
     "security": {

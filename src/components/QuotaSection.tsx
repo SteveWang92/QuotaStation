@@ -5,6 +5,7 @@ interface QuotaSectionProps {
   limits: LimitWindow[];
   earnedResetCount: number | null;
   statusColor: string;
+  compact?: boolean;
 }
 
 function QuotaRow({ limit }: { limit: LimitWindow }) {
@@ -40,10 +41,10 @@ function QuotaRow({ limit }: { limit: LimitWindow }) {
   );
 }
 
-export function QuotaSection({ limits, earnedResetCount, statusColor }: QuotaSectionProps) {
+export function QuotaSection({ limits, earnedResetCount, statusColor, compact = false }: QuotaSectionProps) {
   return (
     <section
-      className="quota-section"
+      className={`quota-section${compact ? " compact" : ""}`}
       aria-label="Codex quota windows"
       style={{ "--quota-status-color": statusColor } as React.CSSProperties}
     >

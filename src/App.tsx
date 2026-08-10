@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QuotaSection } from "./components/QuotaSection";
+import { QuickPanel } from "./components/QuickPanel";
 import { StatusBar } from "./components/StatusBar";
 import { UsageSummary } from "./components/UsageSummary";
 import { createPresetRange, type DateRangeSelection } from "./dateRanges";
@@ -50,7 +52,10 @@ const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
   pricingCatalogRevision: EMPTY_SNAPSHOT.pricingCatalogRevision,
 };
 
-export default function App() {
+const CURRENT_WINDOW_LABEL = getCurrentWindow().label;
+document.documentElement.classList.toggle("quick-panel-window", CURRENT_WINDOW_LABEL === "quick-panel");
+
+function Dashboard() {
   const [snapshot, setSnapshot] = useState<ProviderSnapshot>(EMPTY_SNAPSHOT);
   const [usageRange, setUsageRange] = useState<UsageRangeSnapshot>(EMPTY_USAGE_RANGE);
   const [activeRange, setActiveRange] = useState<DateRangeSelection>(INITIAL_RANGE);
@@ -164,4 +169,10 @@ export default function App() {
       <StatusBar snapshot={snapshot} diagnostics={diagnostics} />
     </main>
   );
+}
+
+export default function App() {
+  return CURRENT_WINDOW_LABEL === "quick-panel"
+    ? <QuickPanel initialSnapshot={EMPTY_SNAPSHOT} />
+    : <Dashboard />;
 }
