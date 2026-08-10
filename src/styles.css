@@ -19,7 +19,8 @@
 
 * { box-sizing: border-box; }
 html, body, #root { min-width: 800px; min-height: 100%; margin: 0; }
-html.quick-panel-window, html.quick-panel-window body, html.quick-panel-window #root { min-width: 0; width: 100%; height: 100%; overflow: hidden; }
+html.compact-window, html.compact-window body, html.compact-window #root { min-width: 0; width: 100%; height: 100%; overflow: hidden; }
+html.taskbar-window, html.taskbar-window body, html.taskbar-window #root { background: transparent; }
 body {
   min-height: 100vh;
   background:
@@ -251,3 +252,12 @@ button { font: inherit; }
 .dashboard-link { margin-top: auto; width: 100%; min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid #6f7d87; border-radius: 5px; color: var(--text); background: #172129; cursor: pointer; font-weight: 650; }
 .dashboard-link:hover { background: #202c35; }
 .dashboard-link svg { width: 16px; height: 16px; }
+
+.taskbar-widget-shell { width: 100vw; height: 100vh; padding: 3px 6px; display: flex; flex-direction: column; justify-content: center; gap: 2px; overflow: hidden; background: transparent; }
+.taskbar-quota { min-width: 0; display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 2px 5px; }
+.taskbar-quota span { color: #aeb7bd; font-size: 10px; font-weight: 700; text-transform: lowercase; }
+.taskbar-quota strong { grid-column: 3; color: var(--taskbar-status-color); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+.taskbar-quota time { grid-column: 4; color: #aeb7bd; font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.taskbar-quota i { grid-column: 1 / -1; height: 3px; overflow: hidden; border-radius: 2px; background: rgba(138, 149, 157, 0.32); }
+.taskbar-quota b { display: block; height: 100%; border-radius: inherit; background: var(--taskbar-status-color); }
+.taskbar-unavailable { grid-column: 1 / -1; color: var(--taskbar-status-color); font-size: 11px; text-align: center; }

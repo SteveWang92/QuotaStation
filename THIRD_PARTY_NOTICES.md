@@ -29,3 +29,41 @@ the UI for provenance. Updating the reviewed ccusage revision also updates this 
 pin without maintaining model prices by hand.
 
 QuotaStation does not include ccusage telemetry, credential handling, or upload behavior.
+
+## Claude Code Usage Monitor
+
+- Repository: <https://github.com/CodeZeno/Claude-Code-Usage-Monitor>
+- Revision: `7b108da813550fc9500a3d8843ed207ab55b07df`
+- Included component: minimal Windows taskbar parent/style/position interop adapted into
+  QuotaStation's isolated taskbar adapter
+- License: MIT
+- Copyright: Copyright (c) 2025 Craig Constable
+- Local use: locating the Windows taskbar and notification area, converting the Tauri status
+  window into a non-activating taskbar child, and positioning it beside the notification area
+- Local modifications: provider, credential, polling, rendering, settings, update, localization,
+  and native tray implementations are excluded; QuotaStation renders its shared normalized
+  snapshot through the existing Tauri React surface
+
+The upstream MIT license text is reproduced below:
+
+> MIT License
+>
+> Copyright (c) 2025 Craig Constable
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.

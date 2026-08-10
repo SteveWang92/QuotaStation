@@ -5,6 +5,7 @@ import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QuotaSection } from "./components/QuotaSection";
 import { QuickPanel } from "./components/QuickPanel";
+import { TaskbarWidget } from "./components/TaskbarWidget";
 import { StatusBar } from "./components/StatusBar";
 import { UsageSummary } from "./components/UsageSummary";
 import { createPresetRange, type DateRangeSelection } from "./dateRanges";
@@ -53,7 +54,8 @@ const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
 };
 
 const CURRENT_WINDOW_LABEL = getCurrentWindow().label;
-document.documentElement.classList.toggle("quick-panel-window", CURRENT_WINDOW_LABEL === "quick-panel");
+document.documentElement.classList.toggle("compact-window", CURRENT_WINDOW_LABEL !== "main");
+document.documentElement.classList.toggle("taskbar-window", CURRENT_WINDOW_LABEL === "taskbar-widget");
 
 function Dashboard() {
   const [snapshot, setSnapshot] = useState<ProviderSnapshot>(EMPTY_SNAPSHOT);
@@ -172,7 +174,7 @@ function Dashboard() {
 }
 
 export default function App() {
-  return CURRENT_WINDOW_LABEL === "quick-panel"
-    ? <QuickPanel initialSnapshot={EMPTY_SNAPSHOT} />
-    : <Dashboard />;
+  if (CURRENT_WINDOW_LABEL === "quick-panel") return <QuickPanel initialSnapshot={EMPTY_SNAPSHOT} />;
+  if (CURRENT_WINDOW_LABEL === "taskbar-widget") return <TaskbarWidget initialSnapshot={EMPTY_SNAPSHOT} />;
+  return <Dashboard />;
 }

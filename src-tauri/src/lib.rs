@@ -3,8 +3,9 @@ mod providers;
 mod refresh;
 mod session_watcher;
 mod storage;
+mod taskbar;
 
-use std::{path::PathBuf, sync::{Arc, Mutex as StdMutex}, time::{Duration, Instant}};
+use std::{path::PathBuf, sync::{Arc, Mutex as StdMutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 
 use domain::{DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot, WatcherDiagnostics};
 use storage::Storage;
@@ -14,6 +15,39 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tokio::sync::{Mutex, RwLock};
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppSettings {
+    #[serde(default = "default_taskbar_widget_enabled")]
+    taskbar_widget_enabled: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self { taskbar_widget_enabled: default_taskbar_widget_enabled() }
+    }
+}
+
+fn default_taskbar_widget_enabled() -> bool { true }
+
+fn load_settings(path: &std::path::Path) -> AppSettings {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
+fn save_settings(state: &AppState) -> Result<(), String> {
+    let settings = AppSettings {
+        taskbar_widget_enabled: state.taskbar_widget_enabled.load(Ordering::Relaxed),
+    };
+    if let Some(parent) = state.settings_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let content = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
+    std::fs::write(&state.settings_path, content).map_err(|error| error.to_string())
+}
 
 #[cfg(desktop)]
 use tauri_plugin_autostart::ManagerExt;
@@ -25,6 +59,8 @@ pub struct AppState {
     history_refresh_lock: Mutex<()>,
     watcher_diagnostics: RwLock<WatcherDiagnostics>,
     quick_panel_focus_lost_at: StdMutex<Option<Instant>>,
+    taskbar_widget_enabled: AtomicBool,
+    settings_path: PathBuf,
 }
 
 #[tauri::command]
@@ -57,6 +93,30 @@ fn open_dashboard(app: tauri::AppHandle) {
         let _ = panel.hide();
     }
     show_main(&app);
+}
+
+fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
+    let state = app.state::<Arc<AppState>>();
+    state.taskbar_widget_enabled.store(visible, Ordering::Relaxed);
+    if let Err(error) = save_settings(&state) {
+        eprintln!("failed to save application settings: {error}");
+    }
+    if let Some(widget) = app.get_webview_window("taskbar-widget") {
+        if visible {
+            let _ = widget.show();
+            if let Err(error) = taskbar::position_widget(app) {
+                eprintln!("taskbar positioning failed: {error}");
+                let _ = taskbar::position_widget_fallback(app);
+            }
+        } else {
+            let _ = widget.hide();
+        }
+    }
+}
+
+#[tauri::command]
+fn set_taskbar_widget_columns(app: tauri::AppHandle, columns: usize) -> Result<(), String> {
+    taskbar::set_widget_columns(&app, columns)
 }
 
 #[tauri::command]
@@ -180,6 +240,18 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
+    let taskbar_widget_enabled = app
+        .state::<Arc<AppState>>()
+        .taskbar_widget_enabled
+        .load(Ordering::Relaxed);
+    let taskbar_widget = CheckMenuItem::with_id(
+        app,
+        "taskbar_widget",
+        "Show taskbar status",
+        true,
+        taskbar_widget_enabled,
+        None::<&str>,
+    )?;
     let separator_before_quit = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(
@@ -190,12 +262,14 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             &separator,
             &autostart,
             &desktop_shortcut,
+            &taskbar_widget,
             &separator_before_quit,
             &quit,
         ],
     )?;
     let icon = app.default_window_icon().cloned().expect("application icon must be configured");
     let autostart_menu_item = autostart.clone();
+    let taskbar_widget_menu_item = taskbar_widget.clone();
     TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
@@ -225,6 +299,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 Ok(path) => eprintln!("desktop shortcut created at {}", path.display()),
                 Err(error) => eprintln!("failed to create desktop shortcut: {error}"),
             },
+            "taskbar_widget" => {
+                let state = app.state::<Arc<AppState>>();
+                let enabled = !state.taskbar_widget_enabled.load(Ordering::Relaxed);
+                set_taskbar_widget_visible(app, enabled);
+                let _ = taskbar_widget_menu_item.set_checked(enabled);
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -247,7 +327,10 @@ pub fn run() {
             None,
         ))
         .setup(|app| {
-            let database_path = app.path().app_data_dir()?.join("quotastation.db");
+            let app_data_dir = app.path().app_data_dir()?;
+            let database_path = app_data_dir.join("quotastation.db");
+            let settings_path = app_data_dir.join("settings.json");
+            let settings = load_settings(&settings_path);
             let storage = tauri::async_runtime::block_on(Storage::open(&database_path))
                 .map_err(|error| error.to_string())?;
             if let Err(error) = tauri::async_runtime::block_on(storage.run_retention_if_due()) {
@@ -262,9 +345,14 @@ pub fn run() {
                 history_refresh_lock: Mutex::new(()),
                 watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
                 quick_panel_focus_lost_at: StdMutex::new(None),
+                taskbar_widget_enabled: AtomicBool::new(settings.taskbar_widget_enabled),
+                settings_path,
             });
             app.manage(state.clone());
             build_tray(app)?;
+            if state.taskbar_widget_enabled.load(Ordering::Relaxed) {
+                set_taskbar_widget_visible(app.handle(), true);
+            }
             if session_watcher::start(app.handle().clone(), state.clone()).is_err() {
                 tauri::async_runtime::block_on(async {
                     let mut diagnostics = state.watcher_diagnostics.write().await;
@@ -275,6 +363,20 @@ pub fn run() {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 refresh::refresh_all(&app_handle, &state).await;
+            });
+            let app_handle = app.handle().clone();
+            let taskbar_state = app.state::<Arc<AppState>>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(2));
+                loop {
+                    interval.tick().await;
+                    if taskbar_state.taskbar_widget_enabled.load(Ordering::Relaxed) {
+                        if let Err(error) = taskbar::position_widget(&app_handle) {
+                            eprintln!("taskbar repositioning failed: {error}");
+                            let _ = taskbar::position_widget_fallback(&app_handle);
+                        }
+                    }
+                }
             });
             let app_handle = app.handle().clone();
             let live_state = app.state::<Arc<AppState>>().inner().clone();
@@ -298,7 +400,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_snapshot, get_usage_range, refresh_now, get_diagnostics, open_dashboard])
+        .invoke_handler(tauri::generate_handler![get_snapshot, get_usage_range, refresh_now, get_diagnostics, open_dashboard, set_taskbar_widget_columns])
         .on_window_event(|window, event| {
             if window.label() == "quick-panel" && matches!(event, tauri::WindowEvent::Focused(false)) {
                 let state = window.state::<Arc<AppState>>();

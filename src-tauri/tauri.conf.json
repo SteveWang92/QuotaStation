@@ -33,6 +33,20 @@
         "skipTaskbar": true,
         "shadow": true,
         "visible": false
+      },
+      {
+        "label": "taskbar-widget",
+        "title": "QuotaStation Taskbar Status",
+        "url": "index.html",
+        "width": 270,
+        "height": 40,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "transparent": true,
+        "shadow": false,
+        "visible": false
       }
     ],
     "security": {

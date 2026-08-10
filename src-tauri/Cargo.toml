@@ -32,6 +32,7 @@ which = "8"
 
 [target.'cfg(windows)'.dependencies]
 mslnk = "0.1.8"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
 default = ["custom-protocol"]
