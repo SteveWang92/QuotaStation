@@ -4,10 +4,12 @@ import { formatCountdown, formatResetTimestamp } from "../format";
 interface QuotaSectionProps {
   limits: LimitWindow[];
   earnedResetCount: number | null;
+  statusColor: string;
 }
 
 function QuotaRow({ limit }: { limit: LimitWindow }) {
   const used = limit.usedPercent;
+  const remaining = limit.remainingPercent;
   return (
     <div className="quota-row">
       <div className="quota-label">
@@ -24,8 +26,8 @@ function QuotaRow({ limit }: { limit: LimitWindow }) {
         </div>
       </div>
       <div className="quota-percent">
-        <strong>{used === null ? "—" : `${used.toFixed(1)}%`}</strong>
-        <span>{used === null ? "unavailable" : "used"}</span>
+        <strong>{remaining === null ? "—" : `${remaining.toFixed(1)}%`}</strong>
+        <span>{remaining === null ? "unavailable" : "remaining"}</span>
       </div>
       <div className="quota-reset">
         <span>Resets in</span>
@@ -38,9 +40,13 @@ function QuotaRow({ limit }: { limit: LimitWindow }) {
   );
 }
 
-export function QuotaSection({ limits, earnedResetCount }: QuotaSectionProps) {
+export function QuotaSection({ limits, earnedResetCount, statusColor }: QuotaSectionProps) {
   return (
-    <section className="quota-section" aria-label="Codex quota windows">
+    <section
+      className="quota-section"
+      aria-label="Codex quota windows"
+      style={{ "--quota-status-color": statusColor } as React.CSSProperties}
+    >
       {limits.length > 0 ? (
         limits.map((limit) => <QuotaRow key={limit.kind} limit={limit} />)
       ) : (

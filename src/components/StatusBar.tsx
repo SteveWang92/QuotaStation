@@ -5,14 +5,14 @@ import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
 
 export function StatusBar({ snapshot, diagnostics }: { snapshot: ProviderSnapshot; diagnostics: DiagnosticsSnapshot }) {
   const [expanded, setExpanded] = useState(false);
-  const healthy = snapshot.freshness === "fresh" && !snapshot.liveError && !snapshot.historyError;
-  const message = snapshot.liveError ?? snapshot.historyError ?? "Codex quota and local history are current.";
+  const status = snapshot.compactStatus;
+  const healthy = status.level === "healthy";
   return (
-    <footer className={`status-bar ${healthy ? "healthy" : "attention"}`}>
+    <footer className={`status-bar ${status.level}`} style={{ "--status-color": status.color } as React.CSSProperties}>
       <div className="status-summary">
         {healthy ? <CheckCircle2 aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}
-        <strong>{healthy ? "Data current" : snapshot.freshness === "stale" ? "Stale data" : "Provider unavailable"}</strong>
-        <span className="status-message">{message}</span>
+        <strong>{status.label}</strong>
+        <span className="status-message">{status.message}</span>
         <button
           type="button"
           className="diagnostics-toggle"

@@ -28,7 +28,9 @@ pub struct AppState {
 
 #[tauri::command]
 async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<ProviderSnapshot, String> {
-    Ok(state.snapshot.read().await.clone())
+    let mut snapshot = state.snapshot.read().await.clone();
+    snapshot.update_compact_status();
+    Ok(snapshot)
 }
 
 #[tauri::command]

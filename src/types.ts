@@ -4,6 +4,7 @@ export interface LimitWindow {
   kind: "primary" | "secondary";
   label: string;
   usedPercent: number | null;
+  remainingPercent: number | null;
   windowDurationMins: number | null;
   resetsAt: number | null;
 }
@@ -31,6 +32,13 @@ export interface ProviderSnapshot {
   apiEquivalentCostUsd: number | null;
   models: ModelUsage[];
   freshness: Freshness;
+  staleAgeSeconds: number | null;
+  compactStatus: {
+    level: "healthy" | "warning" | "critical" | "stale" | "unavailable";
+    label: string;
+    message: string;
+    color: string;
+  };
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
   liveError: string | null;

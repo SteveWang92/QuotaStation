@@ -17,6 +17,13 @@ const EMPTY_SNAPSHOT: ProviderSnapshot = {
   apiEquivalentCostUsd: null,
   models: [],
   freshness: "unavailable",
+  staleAgeSeconds: null,
+  compactStatus: {
+    level: "unavailable",
+    label: "Provider unavailable",
+    message: "No current Codex quota data is available.",
+    color: "#ff7469",
+  },
   lastAttemptAt: null,
   lastSuccessAt: null,
   liveError: null,
@@ -141,7 +148,11 @@ export default function App() {
           </button>
         </div>
       </header>
-      <QuotaSection limits={snapshot.limits} earnedResetCount={snapshot.earnedResetCount} />
+      <QuotaSection
+        limits={snapshot.limits}
+        earnedResetCount={snapshot.earnedResetCount}
+        statusColor={snapshot.compactStatus.color}
+      />
       <UsageSummary
         snapshot={snapshot}
         range={usageRange}

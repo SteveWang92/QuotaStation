@@ -151,6 +151,7 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
             kind,
             label: label_for(kind, minutes),
             used_percent: value.get("usedPercent").and_then(Value::as_f64),
+            remaining_percent: value.get("usedPercent").and_then(Value::as_f64).map(|used| (100.0 - used).clamp(0.0, 100.0)),
             window_duration_mins: minutes,
             resets_at: value.get("resetsAt").and_then(Value::as_i64),
         });

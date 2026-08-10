@@ -41,6 +41,7 @@ async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) {
         (_, _, true) => Freshness::Stale,
         _ => Freshness::Unavailable,
     };
+    snapshot.update_compact_status();
     let current = snapshot.clone();
     drop(snapshot);
     let _ = app.emit("snapshot-updated", &current);

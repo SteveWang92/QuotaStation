@@ -282,6 +282,7 @@ impl Storage {
                 kind,
                 label: match kind { LimitKind::Primary => "Primary window", LimitKind::Secondary => "Secondary window" }.to_string(),
                 used_percent: row.try_get("used_percent").ok(),
+                remaining_percent: row.try_get::<Option<f64>, _>("used_percent").ok().flatten().map(|used| (100.0 - used).clamp(0.0, 100.0)),
                 window_duration_mins: row.try_get("window_duration_mins").ok(),
                 resets_at: row.try_get("resets_at").ok(),
             })
@@ -293,6 +294,7 @@ impl Storage {
         snapshot.models = today.models;
         snapshot.api_equivalent_cost_usd = today.api_equivalent_cost_usd;
         snapshot.freshness = if snapshot.last_success_at.is_some() { Freshness::Stale } else { Freshness::Unavailable };
+        snapshot.update_compact_status();
         snapshot.pricing_catalog_revision = PRICING_CATALOG_REVISION.to_string();
         Ok(snapshot)
     }
