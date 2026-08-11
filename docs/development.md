@@ -43,6 +43,25 @@ data.
 
 ## Build and verify
 
+Run the renderer tests. They cover the shared formatting, date-range, and error helpers,
+and they avoid asserting locale-specific output because every surface formats with the
+locale the machine reports:
+
+```powershell
+npm test
+```
+
+Run the core tests. They cover status thresholds, error sanitization, quota-window naming,
+and the SQLite layer, including that migrations apply and that a history refresh replaces
+only the days it parsed:
+
+```powershell
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+Both suites, plus the renderer build, run on a Windows runner for every pull request into
+`dev` and every push to `dev` or `main`; see `.github/workflows/ci.yml`.
+
 Build the renderer:
 
 ```powershell

@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  # Base-branch filter, not a typo: pull_request fires on the PR's target branch. Work
+  # PRs target dev and run here; the dev->main release PR is covered by the push run on
+  # dev's commit, which is the same SHA.
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [main, dev]
+
+# One run per commit: a newer push to a branch cancels its in-flight run. main is exempt so
+# a release commit's check always completes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # QuotaStation is a Windows desktop application: the core compiles Win32 window
+  # management, and the Tauri build script needs the built renderer in dist/, so both
+  # halves are verified together on a Windows runner.
+  verify:
+    name: Test and build
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.1
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test renderer
+        id: test_renderer
+        run: npm test
+
+      - name: Build renderer
+        id: build_renderer
+        run: npm run build
+
+      # The vendored ccusage crates and Tauri dominate a cold build, so the registry and
+      # the target directory are restored between runs.
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Test core
+        id: test_core
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Write job summary
+        if: always()
+        shell: bash
+        env:
+          TEST_RENDERER_OUTCOME: ${{ steps.test_renderer.outcome }}
+          BUILD_RENDERER_OUTCOME: ${{ steps.build_renderer.outcome }}
+          TEST_CORE_OUTCOME: ${{ steps.test_core.outcome }}
+        run: |
+          icon() { case "$1" in success) echo "✅";; failure) echo "❌";; skipped) echo "⏭️";; *) echo "❓";; esac; }
+          {
+            echo "## CI: test and build"
+            echo ""
+            echo "| Step | Result |"
+            echo "| --- | --- |"
+            echo "| Test renderer | $(icon "$TEST_RENDERER_OUTCOME") $TEST_RENDERER_OUTCOME |"
+            echo "| Build renderer | $(icon "$BUILD_RENDERER_OUTCOME") $BUILD_RENDERER_OUTCOME |"
+            echo "| Test core | $(icon "$TEST_CORE_OUTCOME") $TEST_CORE_OUTCOME |"
+          } >> "$GITHUB_STEP_SUMMARY"
