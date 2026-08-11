@@ -3,7 +3,13 @@ import { useState } from "react";
 import { formatTimestamp } from "../format";
 import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
 
-export function StatusBar({ snapshot, diagnostics }: { snapshot: ProviderSnapshot; diagnostics: DiagnosticsSnapshot }) {
+interface StatusBarProps {
+  snapshot: ProviderSnapshot;
+  diagnostics: DiagnosticsSnapshot;
+  interfaceError: string | null;
+}
+
+export function StatusBar({ snapshot, diagnostics, interfaceError }: StatusBarProps) {
   const [expanded, setExpanded] = useState(false);
   const status = snapshot.compactStatus;
   const healthy = status.level === "healthy";
@@ -42,6 +48,14 @@ export function StatusBar({ snapshot, diagnostics }: { snapshot: ProviderSnapsho
               <strong className={diagnostics.retention.status}>{diagnostics.retention.status}</strong>
               <small>Last completed {formatTimestamp(diagnostics.retention.lastCompletedAt)}</small>
               {diagnostics.retention.error ? <small className="diagnostic-error">{diagnostics.retention.error}</small> : null}
+            </div>
+            <div className="diagnostic-item">
+              <span>Application interface</span>
+              <strong className={interfaceError ? "failed" : "succeeded"}>
+                {interfaceError ? "failed" : "connected"}
+              </strong>
+              <small>Local command channel to the QuotaStation core</small>
+              {interfaceError ? <small className="diagnostic-error">{interfaceError}</small> : null}
             </div>
             <div className="diagnostic-item">
               <span>Session watcher</span>

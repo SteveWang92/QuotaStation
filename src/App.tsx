@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { errorMessage } from "./errors";
+import { useSnapshot } from "./useSnapshot";
 import { QuotaSection } from "./components/QuotaSection";
 import { QuickPanel } from "./components/QuickPanel";
 import { TaskbarWidget } from "./components/TaskbarWidget";
@@ -58,20 +60,16 @@ document.documentElement.classList.toggle("compact-window", CURRENT_WINDOW_LABEL
 document.documentElement.classList.toggle("taskbar-window", CURRENT_WINDOW_LABEL === "taskbar-widget");
 
 function Dashboard() {
-  const [snapshot, setSnapshot] = useState<ProviderSnapshot>(EMPTY_SNAPSHOT);
   const [usageRange, setUsageRange] = useState<UsageRangeSnapshot>(EMPTY_USAGE_RANGE);
   const [activeRange, setActiveRange] = useState<DateRangeSelection>(INITIAL_RANGE);
   const [rangeLoading, setRangeLoading] = useState(false);
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [commandError, setCommandError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
   const activeRangeRef = useRef(INITIAL_RANGE);
   const rangeRequestId = useRef(0);
-
-  const loadSnapshot = useCallback(async () => {
-    const next = await invoke<ProviderSnapshot>("get_snapshot");
-    setSnapshot(next);
-  }, []);
+  const rangeRequested = useRef(false);
 
   const loadUsageRange = useCallback(async (range: DateRangeSelection) => {
     const requestId = ++rangeRequestId.current;
@@ -84,18 +82,32 @@ function Dashboard() {
       });
       if (requestId === rangeRequestId.current) setUsageRange(next);
     } catch (error) {
-      if (requestId === rangeRequestId.current) {
-        setRangeError(error instanceof Error ? error.message : String(error));
-      }
+      if (requestId === rangeRequestId.current) setRangeError(errorMessage(error));
     } finally {
       if (requestId === rangeRequestId.current) setRangeLoading(false);
     }
   }, []);
 
   const loadDiagnostics = useCallback(async () => {
-    const next = await invoke<DiagnosticsSnapshot>("get_diagnostics");
-    setDiagnostics(next);
+    try {
+      setDiagnostics(await invoke<DiagnosticsSnapshot>("get_diagnostics"));
+      setCommandError(null);
+    } catch (error) {
+      setCommandError(errorMessage(error));
+    }
   }, []);
+
+  // The shared subscription retries until the core is ready, so the first usage
+  // range read waits for it instead of failing against an unmanaged state.
+  const onSnapshot = useCallback(() => {
+    void loadDiagnostics();
+    if (!rangeRequested.current) {
+      rangeRequested.current = true;
+      void loadUsageRange(activeRangeRef.current);
+    }
+  }, [loadDiagnostics, loadUsageRange]);
+
+  const { snapshot, error: snapshotError } = useSnapshot(EMPTY_SNAPSHOT, onSnapshot);
 
   const selectRange = useCallback((range: DateRangeSelection) => {
     activeRangeRef.current = range;
@@ -106,9 +118,12 @@ function Dashboard() {
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const next = await invoke<ProviderSnapshot>("refresh_now");
-      setSnapshot(next);
+      // refresh_now publishes the new snapshot through the shared subscription.
+      await invoke("refresh_now");
+      setCommandError(null);
       await Promise.all([loadUsageRange(activeRangeRef.current), loadDiagnostics()]);
+    } catch (error) {
+      setCommandError(errorMessage(error));
     } finally {
       setRefreshing(false);
     }
@@ -116,29 +131,27 @@ function Dashboard() {
 
   useEffect(() => {
     let disposed = false;
-    let unlisten: Array<() => void> = [];
-    void Promise.all([loadSnapshot(), loadUsageRange(activeRangeRef.current), loadDiagnostics()]);
-    void Promise.all([
-      listen<ProviderSnapshot>("snapshot-updated", ({ payload }) => {
-        setSnapshot(payload);
-        void loadDiagnostics();
-      }),
-      listen("history-updated", () => {
-        void loadUsageRange(activeRangeRef.current);
-      }),
-    ]).then((listeners) => {
-      if (disposed) listeners.forEach((stop) => stop());
-      else unlisten = listeners;
-    });
+    let stopListening = () => {};
+    void listen("history-updated", () => {
+      rangeRequested.current = true;
+      void loadUsageRange(activeRangeRef.current);
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else stopListening = unlisten;
+      })
+      .catch((error) => {
+        if (!disposed) setCommandError(errorMessage(error));
+      });
     const timer = window.setInterval(() => {
-      void Promise.all([loadSnapshot(), loadUsageRange(activeRangeRef.current), loadDiagnostics()]);
+      if (rangeRequested.current) void loadUsageRange(activeRangeRef.current);
     }, 30_000);
     return () => {
       disposed = true;
-      unlisten.forEach((stop) => stop());
+      stopListening();
       window.clearInterval(timer);
     };
-  }, [loadDiagnostics, loadSnapshot, loadUsageRange]);
+  }, [loadUsageRange]);
 
   return (
     <main className="app-shell">
@@ -168,7 +181,7 @@ function Dashboard() {
         error={rangeError}
         onSelectRange={selectRange}
       />
-      <StatusBar snapshot={snapshot} diagnostics={diagnostics} />
+      <StatusBar snapshot={snapshot} diagnostics={diagnostics} interfaceError={snapshotError ?? commandError} />
     </main>
   );
 }

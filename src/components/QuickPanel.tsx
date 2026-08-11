@@ -1,44 +1,30 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { ArrowUpRight, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { errorMessage } from "../errors";
 import { formatCurrency, formatNumber } from "../format";
 import type { ProviderSnapshot } from "../types";
+import { useSnapshot } from "../useSnapshot";
 import { QuotaSection } from "./QuotaSection";
 
 export function QuickPanel({ initialSnapshot }: { initialSnapshot: ProviderSnapshot }) {
-  const [snapshot, setSnapshot] = useState(initialSnapshot);
+  const { snapshot, error } = useSnapshot(initialSnapshot);
   const [refreshing, setRefreshing] = useState(false);
-
-  const loadSnapshot = useCallback(async () => {
-    setSnapshot(await invoke<ProviderSnapshot>("get_snapshot"));
-  }, []);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
+    setRefreshError(null);
     try {
-      setSnapshot(await invoke<ProviderSnapshot>("refresh_now"));
+      await invoke("refresh_now");
+    } catch (cause) {
+      setRefreshError(errorMessage(cause));
     } finally {
       setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => {
-    let disposed = false;
-    let stop = () => {};
-    void loadSnapshot();
-    void listen<ProviderSnapshot>("snapshot-updated", ({ payload }) => setSnapshot(payload)).then((unlisten) => {
-      if (disposed) unlisten();
-      else stop = unlisten;
-    });
-    const timer = window.setInterval(() => void loadSnapshot(), 30_000);
-    return () => {
-      disposed = true;
-      stop();
-      window.clearInterval(timer);
-    };
-  }, [loadSnapshot]);
-
+  const failure = refreshError ?? error;
   return (
     <main className="quick-panel-shell">
       <header className="quick-panel-header">
@@ -60,8 +46,12 @@ export function QuickPanel({ initialSnapshot }: { initialSnapshot: ProviderSnaps
         <div><span>Today</span><strong>{formatNumber(snapshot.today.total)}</strong><small>tokens</small></div>
         <div><span>API equivalent</span><strong>{formatCurrency(snapshot.apiEquivalentCostUsd)}</strong><small>estimated cost</small></div>
       </section>
-      <p className="quick-freshness">{snapshot.compactStatus.message}</p>
-      <button type="button" className="dashboard-link" onClick={() => void invoke("open_dashboard")}>
+      <p className={`quick-freshness${failure ? " failed" : ""}`}>{failure ?? snapshot.compactStatus.message}</p>
+      <button
+        type="button"
+        className="dashboard-link"
+        onClick={() => void invoke("open_dashboard").catch((cause) => setRefreshError(errorMessage(cause)))}
+      >
         Open dashboard <ArrowUpRight aria-hidden="true" />
       </button>
     </main>
