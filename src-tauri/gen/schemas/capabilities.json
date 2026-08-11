@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capability for the QuotaStation main window","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"Default capability for every QuotaStation window","local":true,"windows":["main","quick-panel","taskbar-widget"],"permissions":["core:default"]}}
