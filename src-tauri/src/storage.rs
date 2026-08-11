@@ -281,12 +281,13 @@ impl Storage {
         snapshot.limits = limits.into_iter().filter_map(|row| {
             let kind: String = row.try_get("window_kind").ok()?;
             let kind = match kind.as_str() { "primary" => LimitKind::Primary, "secondary" => LimitKind::Secondary, _ => return None };
+            let window_duration_mins = row.try_get("window_duration_mins").ok();
             Some(LimitWindow {
                 kind,
-                label: match kind { LimitKind::Primary => "Primary window", LimitKind::Secondary => "Secondary window" }.to_string(),
+                label: kind.window_label(window_duration_mins),
                 used_percent: row.try_get("used_percent").ok(),
                 remaining_percent: row.try_get::<Option<f64>, _>("used_percent").ok().flatten().map(|used| (100.0 - used).clamp(0.0, 100.0)),
-                window_duration_mins: row.try_get("window_duration_mins").ok(),
+                window_duration_mins,
                 resets_at: row.try_get("resets_at").ok(),
             })
         }).collect();

@@ -149,7 +149,7 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
         let minutes = value.get("windowDurationMins").and_then(Value::as_i64);
         limits.push(LimitWindow {
             kind,
-            label: label_for(kind, minutes),
+            label: kind.window_label(minutes),
             used_percent: value.get("usedPercent").and_then(Value::as_f64),
             remaining_percent: value.get("usedPercent").and_then(Value::as_f64).map(|used| (100.0 - used).clamp(0.0, 100.0)),
             window_duration_mins: minutes,
@@ -161,14 +161,4 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
         limits,
         earned_reset_count: rate_result.pointer("/rateLimitResetCredits/availableCount").and_then(Value::as_u64),
     })
-}
-
-fn label_for(kind: LimitKind, minutes: Option<i64>) -> String {
-    match minutes {
-        Some(300) => "5-hour window".to_string(),
-        Some(10_080) => "Weekly window".to_string(),
-        Some(value) if value % 1_440 == 0 => format!("{}-day window", value / 1_440),
-        Some(value) if value % 60 == 0 => format!("{}-hour window", value / 60),
-        _ => match kind { LimitKind::Primary => "Primary window", LimitKind::Secondary => "Secondary window" }.to_string(),
-    }
 }

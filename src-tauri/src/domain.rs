@@ -48,6 +48,24 @@ pub enum LimitKind {
     Secondary,
 }
 
+impl LimitKind {
+    /// Live acquisition and restored snapshots share this naming so every surface
+    /// describes the same quota window identically.
+    pub fn window_label(self, window_duration_mins: Option<i64>) -> String {
+        match window_duration_mins {
+            Some(300) => "5-hour window".to_string(),
+            Some(10_080) => "Weekly window".to_string(),
+            Some(value) if value % 1_440 == 0 => format!("{}-day window", value / 1_440),
+            Some(value) if value % 60 == 0 => format!("{}-hour window", value / 60),
+            _ => match self {
+                LimitKind::Primary => "Primary window",
+                LimitKind::Secondary => "Secondary window",
+            }
+            .to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LimitWindow {
@@ -195,6 +213,14 @@ mod tests {
         };
         snapshot.update_compact_status();
         snapshot
+    }
+
+    #[test]
+    fn window_labels_describe_the_server_reported_duration() {
+        assert_eq!(LimitKind::Primary.window_label(Some(300)), "5-hour window");
+        assert_eq!(LimitKind::Secondary.window_label(Some(10_080)), "Weekly window");
+        assert_eq!(LimitKind::Secondary.window_label(Some(2_880)), "2-day window");
+        assert_eq!(LimitKind::Primary.window_label(None), "Primary window");
     }
 
     #[test]
