@@ -96,6 +96,20 @@ fn open_dashboard(app: tauri::AppHandle) {
     show_main(&app);
 }
 
+/// Placement runs on a short loop so the widget follows taskbar changes. Repeating the
+/// same failure every tick would bury every other message, so only changes are reported.
+fn place_taskbar_widget(app: &tauri::AppHandle) {
+    static LAST_ERROR: StdMutex<Option<String>> = StdMutex::new(None);
+    let error = taskbar::place_widget(app).err();
+    let Ok(mut last_error) = LAST_ERROR.lock() else { return };
+    if *last_error != error {
+        if let Some(message) = &error {
+            eprintln!("taskbar status placement: {message}");
+        }
+        *last_error = error;
+    }
+}
+
 fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     let state = app.state::<Arc<AppState>>();
     state.taskbar_widget_enabled.store(visible, Ordering::Relaxed);
@@ -105,10 +119,7 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     if let Some(widget) = app.get_webview_window("taskbar-widget") {
         if visible {
             let _ = widget.show();
-            if let Err(error) = taskbar::position_widget(app) {
-                eprintln!("taskbar positioning failed: {error}");
-                let _ = taskbar::position_widget_fallback(app);
-            }
+            place_taskbar_widget(app);
         } else {
             let _ = widget.hide();
         }
@@ -117,6 +128,10 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
 
 #[tauri::command]
 fn set_taskbar_widget_columns(app: tauri::AppHandle, columns: usize) -> Result<(), String> {
+    // A hidden widget still runs its renderer; resizing it must not bring it back.
+    if !app.state::<Arc<AppState>>().taskbar_widget_enabled.load(Ordering::Relaxed) {
+        return Ok(());
+    }
     taskbar::set_widget_columns(&app, columns)
 }
 
@@ -372,10 +387,7 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     if taskbar_state.taskbar_widget_enabled.load(Ordering::Relaxed) {
-                        if let Err(error) = taskbar::position_widget(&app_handle) {
-                            eprintln!("taskbar repositioning failed: {error}");
-                            let _ = taskbar::position_widget_fallback(&app_handle);
-                        }
+                        place_taskbar_widget(&app_handle);
                     }
                 }
             });

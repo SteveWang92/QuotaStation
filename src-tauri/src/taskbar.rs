@@ -21,8 +21,22 @@ fn window_rect(hwnd: HWND) -> Option<RECT> {
     Some(rect)
 }
 
+/// Docks the widget inside the taskbar, falling back to a floating window whenever the
+/// taskbar cannot host it. The widget stays visible either way; a failed dock must never
+/// leave the user with a status surface that nothing brings back.
 #[cfg(windows)]
-pub fn position_widget(app: &tauri::AppHandle) -> Result<(), String> {
+pub fn place_widget(app: &tauri::AppHandle) -> Result<(), String> {
+    match dock_widget(app) {
+        Ok(()) => Ok(()),
+        Err(reason) => match float_widget(app) {
+            Ok(()) => Err(format!("{reason}; showing the status as a floating window instead")),
+            Err(error) => Err(format!("{reason}; floating fallback failed: {error}")),
+        },
+    }
+}
+
+#[cfg(windows)]
+fn dock_widget(app: &tauri::AppHandle) -> Result<(), String> {
     let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
     let taskbar = unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) }
         .map_err(|error| error.to_string())?;
@@ -30,7 +44,6 @@ pub fn position_widget(app: &tauri::AppHandle) -> Result<(), String> {
     let taskbar_width = taskbar_rect.right - taskbar_rect.left;
     let taskbar_height = taskbar_rect.bottom - taskbar_rect.top;
     if taskbar_width <= taskbar_height {
-        let _ = widget.hide();
         return Err("vertical taskbars are not supported yet".to_string());
     }
 
@@ -70,34 +83,48 @@ pub fn set_widget_columns(app: &tauri::AppHandle, columns: usize) -> Result<(), 
     let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
     let width = if columns <= 1 { 148 } else { 270 };
     widget.set_size(PhysicalSize::new(width, 40)).map_err(|error| error.to_string())?;
-    position_widget(app)
+    place_widget(app)
 }
 
+/// Parks the widget above the taskbar as an ordinary window. Every step is skipped when
+/// it already holds, so the repositioning loop does not fight the window every tick.
 #[cfg(windows)]
-pub fn position_widget_fallback(app: &tauri::AppHandle) -> Result<(), String> {
+fn float_widget(app: &tauri::AppHandle) -> Result<(), String> {
     let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
+    let hwnd = widget.hwnd().map_err(|error| error.to_string())?;
+    let mut detached = false;
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        if style & WS_CHILD.0 != 0 {
+            SetWindowLongW(hwnd, GWL_STYLE, ((style & !WS_CHILD.0) | WS_POPUP.0) as i32);
+            SetParent(hwnd, None).map_err(|error| error.to_string())?;
+            detached = true;
+        }
+    }
+    if detached {
+        // Parenting the widget to the taskbar dropped its topmost placement.
+        widget.set_always_on_top(true).map_err(|error| error.to_string())?;
+    }
+
     let monitor = app.primary_monitor().map_err(|error| error.to_string())?.ok_or("primary monitor missing")?;
     let origin = monitor.position();
-    let size = monitor.size();
-    let width = 270_u32;
-    let height = 40_u32;
-    widget.set_size(PhysicalSize::new(width, height)).map_err(|error| error.to_string())?;
-    widget
-        .set_position(PhysicalPosition::new(
-            origin.x + size.width as i32 - width as i32 - 12,
-            origin.y + size.height as i32 - height as i32 - 60,
-        ))
-        .map_err(|error| error.to_string())?;
+    let bounds = monitor.size();
+    let size = widget.outer_size().map_err(|error| error.to_string())?;
+    let position = PhysicalPosition::new(
+        origin.x + bounds.width as i32 - size.width as i32 - 12,
+        origin.y + bounds.height as i32 - size.height as i32 - 60,
+    );
+    if widget.outer_position().map_err(|error| error.to_string())? != position {
+        widget.set_position(position).map_err(|error| error.to_string())?;
+    }
+    if !widget.is_visible().unwrap_or(true) {
+        widget.show().map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 
 #[cfg(not(windows))]
-pub fn position_widget(_app: &tauri::AppHandle) -> Result<(), String> {
-    Err("taskbar status is supported on Windows only".to_string())
-}
-
-#[cfg(not(windows))]
-pub fn position_widget_fallback(_app: &tauri::AppHandle) -> Result<(), String> {
+pub fn place_widget(_app: &tauri::AppHandle) -> Result<(), String> {
     Err("taskbar status is supported on Windows only".to_string())
 }
 
