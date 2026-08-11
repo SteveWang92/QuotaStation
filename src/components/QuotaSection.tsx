@@ -1,5 +1,5 @@
 import type { LimitWindow } from "../types";
-import { formatCountdown, formatResetTimestamp } from "../format";
+import { formatCountdown, formatResetTimestamp, formatWindowDuration } from "../format";
 
 interface QuotaSectionProps {
   limits: LimitWindow[];
@@ -15,11 +15,7 @@ function QuotaRow({ limit }: { limit: LimitWindow }) {
     <div className="quota-row">
       <div className="quota-label">
         <h2>{limit.label}</h2>
-        <p>
-          {limit.windowDurationMins === null
-            ? "Window duration unavailable"
-            : `${Math.round(limit.windowDurationMins / 60)} hour quota window`}
-        </p>
+        <p>{formatWindowDuration(limit.windowDurationMins)}</p>
       </div>
       <div className="quota-meter" aria-label={`${limit.label} usage`}>
         <div className="quota-track">
