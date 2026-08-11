@@ -1,6 +1,7 @@
 mod domain;
 mod providers;
 mod refresh;
+mod sanitize;
 mod session_watcher;
 mod storage;
 mod taskbar;

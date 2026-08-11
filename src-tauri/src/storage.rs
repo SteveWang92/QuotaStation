@@ -8,6 +8,7 @@ use crate::domain::{
     HistorySnapshot, LimitKind, LimitWindow, LiveSnapshot, ModelUsage, PRICING_CATALOG_REVISION,
     ProviderSnapshot, RetentionDiagnostics, TokenUsage, UsageRangeSnapshot,
 };
+use crate::sanitize::sanitize_error;
 
 #[derive(Clone)]
 pub struct Storage {
@@ -149,7 +150,7 @@ impl Storage {
         }
 
         if let Err(error) = self.run_retention_at(&now.to_string()).await {
-            let message = sanitize_storage_error(&error.to_string());
+            let message = sanitize_error(&error.to_string(), "Retention failed");
             sqlx::query(
                 "INSERT INTO retention_state (job_name, last_status, last_error) VALUES ('normalized_data', 'failed', ?) \
                  ON CONFLICT(job_name) DO UPDATE SET last_status = excluded.last_status, last_error = excluded.last_error",
@@ -420,9 +421,4 @@ impl Storage {
         })
         .collect())
     }
-}
-
-fn sanitize_storage_error(error: &str) -> String {
-    let line = error.lines().next().unwrap_or("Retention failed");
-    if line.len() > 220 { format!("{}…", &line[..220]) } else { line.to_string() }
 }

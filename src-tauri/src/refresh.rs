@@ -3,7 +3,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use tauri::{AppHandle, Emitter};
 
-use crate::{AppState, domain::Freshness, providers::codex};
+use crate::{AppState, domain::Freshness, providers::codex, sanitize::sanitize_error};
+
+const PROVIDER_FALLBACK: &str = "Provider refresh failed";
+const STORAGE_FALLBACK: &str = "Local storage write failed";
 
 pub async fn refresh_all(app: &AppHandle, state: &Arc<AppState>) -> crate::domain::ProviderSnapshot {
     tokio::join!(refresh_live(app, state), refresh_history(app, state));
@@ -51,7 +54,7 @@ async fn apply_live(state: &Arc<AppState>, started_at: &str, result: Result<crat
     let completed_at = now();
     match result {
         Ok(live) => {
-            let save_error = state.storage.save_live(&live, &completed_at).await.err().map(|e| e.to_string());
+            let save_error = state.storage.save_live(&live, &completed_at).await.err().map(storage_error);
             let mut snapshot = state.snapshot.write().await;
             snapshot.plan_type = live.plan_type;
             snapshot.limits = live.limits;
@@ -59,7 +62,10 @@ async fn apply_live(state: &Arc<AppState>, started_at: &str, result: Result<crat
             snapshot.live_error = save_error;
             if snapshot.live_error.is_none() { snapshot.last_success_at = Some(completed_at.clone()); }
         }
-        Err(error) => state.snapshot.write().await.live_error = Some(sanitize_error(&error.to_string())),
+        Err(error) => {
+            state.snapshot.write().await.live_error =
+                Some(sanitize_error(&error.to_string(), PROVIDER_FALLBACK))
+        }
     }
     let error = state.snapshot.read().await.live_error.clone();
     let _ = state.storage.record_refresh("codex_live", started_at, &completed_at, error.as_deref()).await;
@@ -71,7 +77,7 @@ async fn apply_history(state: &Arc<AppState>, started_at: &str, result: Result<c
         Ok(history) => {
             let today_date = jiff::Zoned::now().date().to_string();
             let today = history.days.iter().find(|day| day.date == today_date).cloned();
-            let save_error = state.storage.save_history(&history, &completed_at).await.err().map(|e| e.to_string());
+            let save_error = state.storage.save_history(&history, &completed_at).await.err().map(storage_error);
             let mut snapshot = state.snapshot.write().await;
             if let Some(today) = today {
                 snapshot.today = today.usage;
@@ -85,15 +91,17 @@ async fn apply_history(state: &Arc<AppState>, started_at: &str, result: Result<c
             snapshot.history_error = save_error;
             if snapshot.history_error.is_none() { snapshot.last_success_at = Some(completed_at.clone()); }
         }
-        Err(error) => state.snapshot.write().await.history_error = Some(sanitize_error(&error.to_string())),
+        Err(error) => {
+            state.snapshot.write().await.history_error =
+                Some(sanitize_error(&error.to_string(), PROVIDER_FALLBACK))
+        }
     }
     let error = state.snapshot.read().await.history_error.clone();
     let _ = state.storage.record_refresh("codex_history", started_at, &completed_at, error.as_deref()).await;
 }
 
-fn sanitize_error(error: &str) -> String {
-    let line = error.lines().next().unwrap_or("Provider refresh failed");
-    if line.len() > 220 { format!("{}…", &line[..220]) } else { line.to_string() }
+fn storage_error(error: anyhow::Error) -> String {
+    sanitize_error(&error.to_string(), STORAGE_FALLBACK)
 }
 
 fn now() -> String {
