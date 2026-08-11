@@ -81,9 +81,11 @@ impl Storage {
         )
         .bind(CCUSAGE_REVISION).bind(observed_at).bind(observed_at).bind(provider_id)
         .execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM daily_usage WHERE provider_instance_id = ?")
-            .bind(provider_id).execute(&mut *tx).await?;
+        // Replace only the days the current parse covers. Sessions Codex has already
+        // rotated away are absent from a parse, and their stored days must survive.
         for day in &history.days {
+            sqlx::query("DELETE FROM daily_usage WHERE provider_instance_id = ? AND usage_date = ?")
+                .bind(provider_id).bind(&day.date).execute(&mut *tx).await?;
             for row in &day.model_rows {
                 self.insert_daily_model(&mut tx, provider_id, &day.date, row, observed_at).await?;
             }
