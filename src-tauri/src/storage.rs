@@ -378,6 +378,16 @@ impl Storage {
         })
     }
 
+    #[cfg(test)]
+    async fn table_names(&self) -> Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
+             AND name <> '_sqlx_migrations' ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn load_acquisition_diagnostics(&self) -> Result<Vec<AcquisitionDiagnostics>> {
         let provider_id = self.provider_id().await?;
         let provider = sqlx::query(
@@ -428,5 +438,140 @@ impl Storage {
             }
         })
         .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::*;
+    use crate::domain::{HistoryDay, LimitWindow, LiveSnapshot};
+
+    /// Each test owns a database file in the temporary directory and removes it, along
+    /// with the write-ahead files SQLite may leave beside it, when it finishes.
+    struct TempDatabase {
+        path: std::path::PathBuf,
+    }
+
+    impl TempDatabase {
+        fn new() -> Self {
+            static COUNTER: AtomicU32 = AtomicU32::new(0);
+            let name = format!(
+                "quotastation-{}-{}.db",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            );
+            Self { path: std::env::temp_dir().join(name) }
+        }
+    }
+
+    impl Drop for TempDatabase {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut path = self.path.clone().into_os_string();
+                path.push(suffix);
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+
+    async fn open_storage() -> (Storage, TempDatabase) {
+        let database = TempDatabase::new();
+        let storage = Storage::open(&database.path).await.expect("open storage");
+        (storage, database)
+    }
+
+    fn day(date: &str, model: &str, total: u64) -> HistoryDay {
+        HistoryDay {
+            date: date.to_string(),
+            usage: TokenUsage { input: total / 2, cache_read: 0, output: total / 2, reasoning: 0, total },
+            models: vec![ModelUsage { model: model.to_string(), tokens: total, percent: 100.0 }],
+            cost_usd: 1.5,
+            model_rows: vec![DailyModelUsage {
+                model: model.to_string(),
+                input: total / 2,
+                cache_read: 0,
+                output: total / 2,
+                reasoning: 0,
+                total,
+                cost_usd: 1.5,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn migrations_leave_only_the_tables_the_core_writes() {
+        let (storage, _database) = open_storage().await;
+        assert_eq!(
+            storage.table_names().await.expect("read table names"),
+            [
+                "daily_usage",
+                "limit_current",
+                "limit_rollups",
+                "limit_samples",
+                "provider_instances",
+                "refresh_runs",
+                "retention_state",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_history_refresh_replaces_only_the_days_it_parsed() {
+        let (storage, _database) = open_storage().await;
+        let first = HistorySnapshot { days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5", 200)] };
+        storage.save_history(&first, "2026-08-02T00:00:00Z").await.expect("save first history");
+
+        // A later parse no longer sees the rotated-away session that produced 08-01.
+        let second = HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 500)] };
+        storage.save_history(&second, "2026-08-02T01:00:00Z").await.expect("save second history");
+
+        let range = storage.load_usage_range("2026-08-01", "2026-08-02").await.expect("load range");
+        assert_eq!(range.days.len(), 2, "the day outside the parse must survive");
+        assert_eq!(range.days[0].usage.total, 100);
+        assert_eq!(range.days[1].usage.total, 500, "the reparsed day must be replaced, not added to");
+        assert_eq!(range.usage.total, 600);
+    }
+
+    #[tokio::test]
+    async fn a_usage_range_reports_only_the_requested_days() {
+        let (storage, _database) = open_storage().await;
+        let history = HistorySnapshot {
+            days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5-codex", 300)],
+        };
+        storage.save_history(&history, "2026-08-02T00:00:00Z").await.expect("save history");
+
+        let range = storage.load_usage_range("2026-08-02", "2026-08-02").await.expect("load range");
+        assert_eq!(range.days.len(), 1);
+        assert_eq!(range.usage.total, 300);
+        assert_eq!(range.models.len(), 1);
+        assert_eq!(range.models[0].model, "gpt-5-codex");
+        assert_eq!(range.api_equivalent_cost_usd, Some(1.5));
+    }
+
+    #[tokio::test]
+    async fn a_restored_snapshot_keeps_the_window_naming_of_the_live_read() {
+        let (storage, _database) = open_storage().await;
+        let live = LiveSnapshot {
+            plan_type: Some("plus".to_string()),
+            earned_reset_count: Some(2),
+            limits: vec![LimitWindow {
+                kind: LimitKind::Primary,
+                label: LimitKind::Primary.window_label(Some(300)),
+                used_percent: Some(40.0),
+                remaining_percent: Some(60.0),
+                window_duration_mins: Some(300),
+                resets_at: Some(1_800_000_000),
+            }],
+        };
+        storage.save_live(&live, "2026-08-11T00:00:00Z").await.expect("save live");
+
+        let snapshot = storage.load_snapshot().await.expect("load snapshot");
+        assert_eq!(snapshot.plan_type.as_deref(), Some("plus"));
+        assert_eq!(snapshot.limits.len(), 1);
+        assert_eq!(snapshot.limits[0].label, "5-hour window");
+        assert_eq!(snapshot.limits[0].remaining_percent, Some(60.0));
+        assert_eq!(snapshot.freshness, Freshness::Stale, "a restored snapshot is never fresh");
     }
 }
