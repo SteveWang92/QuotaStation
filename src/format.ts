@@ -1,10 +1,17 @@
+/**
+ * QuotaStation reads local data for one machine, so numbers and dates follow the locale
+ * that machine reports. Leaving the locale undefined asks Intl for exactly that, and
+ * every surface shares this one decision instead of naming a region of its own.
+ */
+export const LOCALE: string | undefined = undefined;
+
 export function formatNumber(value: number): string {
-  return new Intl.NumberFormat("en-AU").format(value);
+  return new Intl.NumberFormat(LOCALE).format(value);
 }
 
 export function formatCurrency(value: number | null): string {
   if (value === null) return "Unavailable";
-  return new Intl.NumberFormat("en-AU", {
+  return new Intl.NumberFormat(LOCALE, {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
@@ -14,7 +21,7 @@ export function formatCurrency(value: number | null): string {
 
 export function formatTimestamp(value: string | null): string {
   if (!value) return "Never";
-  return new Intl.DateTimeFormat("en-AU", {
+  return new Intl.DateTimeFormat(LOCALE, {
     dateStyle: "medium",
     timeStyle: "medium",
   }).format(new Date(value));
@@ -52,7 +59,7 @@ export function formatRevision(value: string): string {
 
 export function formatResetTimestamp(epochSeconds: number | null): string {
   if (epochSeconds === null) return "Reset time unknown";
-  return new Intl.DateTimeFormat("en-AU", {
+  return new Intl.DateTimeFormat(LOCALE, {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(epochSeconds * 1_000));

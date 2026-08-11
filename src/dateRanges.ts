@@ -1,3 +1,5 @@
+import { LOCALE } from "./format";
+
 export type RangePreset = "today" | "3d" | "7d" | "30d" | "custom";
 
 export interface DateRangeSelection {
@@ -41,11 +43,11 @@ export function createCustomRange(startDate: string, endDate: string): DateRange
 }
 
 export function formatRangeDate(value: string): string {
-  return new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short", year: "numeric" })
+  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short", year: "numeric" })
     .format(new Date(`${value}T00:00:00`));
 }
 
 export function formatShortDate(value: string): string {
-  return new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short" })
+  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short" })
     .format(new Date(`${value}T00:00:00`));
 }
