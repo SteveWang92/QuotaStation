@@ -42,6 +42,14 @@ export function formatCompactCountdown(epochSeconds: number | null): string {
   return days > 0 ? `${days}d ${hours}h` : `${hours}h ${minutes}m`;
 }
 
+/**
+ * The core owns the parser and pricing revisions, so the renderer never carries a
+ * copy of them; an empty value simply means no snapshot has arrived yet.
+ */
+export function formatRevision(value: string): string {
+  return value.length === 0 ? "unavailable" : value.slice(0, 12);
+}
+
 export function formatResetTimestamp(epochSeconds: number | null): string {
   if (epochSeconds === null) return "Reset time unknown";
   return new Intl.DateTimeFormat("en-AU", {

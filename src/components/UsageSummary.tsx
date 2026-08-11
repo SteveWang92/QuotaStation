@@ -8,7 +8,7 @@ import {
   type DateRangeSelection,
   type RangePreset,
 } from "../dateRanges";
-import { formatCurrency, formatNumber } from "../format";
+import { formatCurrency, formatNumber, formatRevision } from "../format";
 import type { ProviderSnapshot, UsageRangeSnapshot } from "../types";
 
 const PRESETS: Array<{ value: Exclude<RangePreset, "custom">; label: string }> = [
@@ -164,7 +164,7 @@ export function UsageSummary({ snapshot, range, selection, loading, error, onSel
 
           <article className="history-card token-card">
             <div className="card-heading">
-              <div><h3>Token breakdown</h3><span>Catalog {snapshot.pricingCatalogRevision.slice(0, 12)}</span></div>
+              <div><h3>Token breakdown</h3><span>Catalog {formatRevision(snapshot.pricingCatalogRevision)}</span></div>
               <span>{snapshot.planType ?? "Unknown plan"}</span>
             </div>
             <div className="token-list">

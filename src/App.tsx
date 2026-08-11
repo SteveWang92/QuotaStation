@@ -33,8 +33,8 @@ const EMPTY_SNAPSHOT: ProviderSnapshot = {
   lastSuccessAt: null,
   liveError: null,
   historyError: null,
-  parserRevision: "033c1f7631f603fc939fdc85163e8203f0084f83",
-  pricingCatalogRevision: "pending-build",
+  parserRevision: "",
+  pricingCatalogRevision: "",
 };
 
 const INITIAL_RANGE = createPresetRange("today");

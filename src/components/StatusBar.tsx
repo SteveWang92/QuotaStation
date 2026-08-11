@@ -1,6 +1,6 @@
 import { AlertTriangle, CheckCircle2, ChevronDown } from "lucide-react";
 import { useState } from "react";
-import { formatTimestamp } from "../format";
+import { formatRevision, formatTimestamp } from "../format";
 import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
 
 interface StatusBarProps {
@@ -67,8 +67,8 @@ export function StatusBar({ snapshot, diagnostics, interfaceError }: StatusBarPr
             </div>
           </div>
           <div className="diagnostic-revisions">
-            <span>ccusage <code>{diagnostics.parserRevision.slice(0, 12)}</code></span>
-            <span>Pricing <code>{diagnostics.pricingCatalogRevision.slice(0, 12)}</code></span>
+            <span>ccusage <code>{formatRevision(diagnostics.parserRevision)}</code></span>
+            <span>Pricing <code>{formatRevision(diagnostics.pricingCatalogRevision)}</code></span>
           </div>
         </div>
       ) : null}
