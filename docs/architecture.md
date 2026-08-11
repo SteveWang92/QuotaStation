@@ -50,9 +50,9 @@ out, changes configuration, consumes reset credits, or calls other mutation oper
 
 ### Usage parsers
 
-Parsers read supported local session formats and emit normalized usage events. The core
-model distinguishes input, output, cache read, and cache write tokens rather than reducing
-them to a single total.
+Parsers read supported local session formats and emit normalized usage records. The core
+model keeps token categories separate rather than reducing them to a single total; Codex
+reports input, cache read, output, and reasoning tokens.
 
 The Codex parser directly reuses the MIT-licensed Rust adapter from `ccusage`, pinned to a
 reviewed revision and isolated behind QuotaStation's own adapter interface. Direct Cargo
@@ -72,9 +72,10 @@ SQLite is the planned store for normalized history, refresh metadata, pricing sn
 and schema versioning. Credentials, prompts, source content, and unnecessary raw logs do
 not belong in the database.
 
-The schema covers provider instances, current limits and samples, normalized usage
-events and daily aggregates, pricing entries, ingestion cursors, refresh runs, and quota
-rollups. Five-minute quota samples are retained for 14 days, then hourly through day 60
+The schema covers provider instances, current limits and samples, normalized daily usage
+aggregates, refresh runs, and quota rollups. Event-level storage and a database-resident
+pricing catalogue are not part of it: the Codex parser reports daily aggregates and
+carries its own embedded pricing map. Five-minute quota samples are retained for 14 days, then hourly through day 60
 and daily through day 180. Rollups preserve boundary and summary values and remain
 segmented across quota resets. Successful refresh records are retained for 30 days and
 failed records for 180 days, with the newest record per acquisition path always kept. Daily

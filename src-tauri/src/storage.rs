@@ -10,6 +10,11 @@ use crate::domain::{
 };
 use crate::sanitize::sanitize_error;
 
+/// The Codex daily report aggregates every service tier into one row per model, so the
+/// tier dimension of `daily_usage` records that the row spans tiers rather than guessing
+/// one. A per-tier writer must use the tier it observed, never this value.
+const AGGREGATE_SERVICE_TIER: &str = "mixed";
+
 #[derive(Clone)]
 pub struct Storage {
     pool: SqlitePool,
@@ -106,9 +111,9 @@ impl Storage {
             "INSERT INTO daily_usage \
              (provider_instance_id, usage_date, model, service_tier, input_tokens, cache_read_tokens, \
               output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, updated_at) \
-             VALUES (?, ?, ?, 'mixed', ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(provider_id).bind(date).bind(&row.model).bind(row.input as i64)
+        .bind(provider_id).bind(date).bind(&row.model).bind(AGGREGATE_SERVICE_TIER).bind(row.input as i64)
         .bind(row.cache_read as i64).bind(row.output as i64).bind(row.reasoning as i64)
         .bind(row.total as i64).bind(row.cost_usd).bind(CCUSAGE_REVISION).bind(observed_at)
         .execute(&mut **tx).await?;
