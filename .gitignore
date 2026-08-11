@@ -9,6 +9,8 @@
 
 # Dependencies and generated output
 node_modules/
+# Tauri regenerates the capability and permission schemas on every build.
+src-tauri/gen/
 dist/
 build/
 coverage/
