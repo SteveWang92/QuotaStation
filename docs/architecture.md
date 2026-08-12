@@ -25,8 +25,8 @@ QuotaStation is a local Windows application with three responsibilities:
 3. Present current state and history through a shared application core used by the system
    tray, compact monitor, and full dashboard.
 
-Codex is the first release target. Claude, Gemini, and other providers remain future
-adapters and do not block a useful Codex-only release.
+Codex was the first release target. Claude Code is now a second adapter, off by default.
+Gemini and other providers remain future adapters and do not block a release.
 
 ## Logical components
 
@@ -48,14 +48,31 @@ transport, completes the protocol handshake, and uses only supported account, ra
 and usage read operations. It listens for rate-limit updates but never logs users in or
 out, changes configuration, consumes reset credits, or calls other mutation operations.
 
+Claude Code publishes no comparable local interface: it has no usage subcommand, and no
+file it writes records remaining quota or a forward-looking reset. Its only authoritative
+source is Anthropic's own OAuth usage endpoint. The Claude adapter therefore reads the
+access token Claude Code already stored and presents it to that endpoint, which is the
+single acquisition path in the application that leaves the machine and the only one that
+touches a credential. Because of that it is disabled by default and requires an explicit
+in-application confirmation before it can be enabled.
+
+The token is read in the adapter alone. It is never persisted, logged, exported in
+diagnostics, or passed to the renderer. The adapter never refreshes the token itself and
+never sends a chat request to read rate-limit response headers; both would write to
+account state. An expired sign-in and a rate-limited read are reported as themselves, and
+the endpoint's `Retry-After` is honoured so a scheduled refresh cannot hammer it.
+
+Claude reports no reset-credit inventory, and its five-hour and seven-day windows map onto
+the shared primary and secondary quota windows.
+
 ### Usage parsers
 
 Parsers read supported local session formats and emit normalized usage records. The core
 model keeps token categories separate rather than reducing them to a single total; Codex
 reports input, cache read, output, and reasoning tokens.
 
-The Codex parser directly reuses the MIT-licensed Rust adapter from `ccusage`, pinned to a
-reviewed revision and isolated behind QuotaStation's own adapter interface. Direct Cargo
+The Codex and Claude parsers directly reuse the MIT-licensed Rust adapters from `ccusage`,
+pinned to a reviewed revision and isolated behind QuotaStation's own adapter interface. Direct Cargo
 consumption is preferred; minimal vendoring from the same revision is the fallback when
 the upstream workspace cannot be consumed cleanly. A local parser rewrite is a last resort,
 not the default.
@@ -88,7 +105,9 @@ window restarted more than two hours before its published expiry is classified a
 unplanned. Codex writes the same rate-limit answers into its own rollout logs, so a
 startup scan of those logs recovers resets that happened while QuotaStation was closed;
 the scan reads only rate-limit fields, skips files older than its previous run, and never
-retains conversation content.
+retains conversation content. Claude Code records a reset time only inside the error it
+raises once a limit has already been reached, with no usage percentage, so it has no
+equivalent backfill and its restart history begins when monitoring is enabled.
 
 ## Runtime ownership
 
@@ -118,7 +137,8 @@ telemetry, mutation calls, and raw-data upload behavior are excluded.
 - Secrets remain in their originating credential store or client.
 - Raw prompts, source code, and complete file paths are not collected.
 - Diagnostic export must be explicit and redact account and machine identifiers.
-- Network access must be attributable to a provider refresh or pricing update.
+- Network access must be attributable to a provider refresh or pricing update, and the
+  Claude usage read is the only refresh that makes one.
 
 ## Deferred decisions
 
