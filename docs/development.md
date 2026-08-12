@@ -140,16 +140,21 @@ QuotaStation reuses ccusage's pricing build integration instead of maintaining a
 price list.
 
 - `vendor/ccusage/flake.lock` pins the reviewed LiteLLM pricing revision.
-- On the first clean Rust build, ccusage downloads that pinned catalog and writes a generated
-  `litellm-pricing.json` under
+- `vendor/litellm/model_prices_and_context_window.json` is that pinned catalog, reduced to
+  the model identifiers ccusage embeds. `.cargo/config.toml` points
+  `CCUSAGE_PRICING_JSON_PATH` at it, so builds never download the catalog: the upstream
+  fetch allows ten seconds for a 1.6 MB file and a slow connection fails the build.
+- On the first clean Rust build, ccusage's build script reads that snapshot and writes a
+  generated `litellm-pricing.json` under
   `src-tauri/target/<profile>/build/ccusage-core-*/out/`.
 - Cargo embeds the filtered OpenAI/GPT catalog in the binary. The generated file is under
   ignored `target/` output and must not be committed.
 - `vendor/ccusage/rust/crates/ccusage-core/src/models-dev-pricing.json` is different: it is
   ccusage's source-controlled override table for development and alias model identifiers.
   The crate embeds it directly with `include_str!`, so it is required and committed.
-- Updating the reviewed ccusage revision updates the catalog pin. Review the upstream
-  changes, licenses, notices, and the minimal vendored source together.
+- Updating the reviewed ccusage revision updates the catalog pin. Refresh the snapshot from
+  the revision the new `flake.lock` names, keeping the same model-identifier filter, and
+  review the upstream changes, licenses, notices, and the minimal vendored source together.
 
 Cargo reuses its build output during normal incremental builds. Cleaning `target/`, changing
 the relevant ccusage build inputs, or moving to a new pinned revision causes the catalog to

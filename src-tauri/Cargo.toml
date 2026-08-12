@@ -17,7 +17,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 anyhow = "1"
 ccusage-adapter-codex = { path = "../vendor/ccusage/rust/adapters/codex" }
-ccusage-core = { path = "../vendor/ccusage/rust/crates/ccusage-core", features = ["fetch-litellm-pricing"] }
+# The pricing catalog comes from the vendored snapshot named in .cargo/config.toml, so the
+# build does not need ccusage's downloader or the TLS stack behind it.
+ccusage-core = { path = "../vendor/ccusage/rust/crates/ccusage-core" }
 jiff = "0.2"
 notify = "8"
 serde = { version = "1", features = ["derive"] }

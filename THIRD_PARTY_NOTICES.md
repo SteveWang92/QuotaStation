@@ -22,13 +22,30 @@ revision.
 
 The complete upstream MIT license is preserved at `vendor/ccusage/LICENSE`.
 
-QuotaStation enables ccusage's build-time pricing integration. Clean Rust builds download
-the complete LiteLLM pricing catalog pinned by the vendored ccusage `flake.lock`, then
-embed the GPT/OpenAI subset into the application. The pinned source revision is exposed in
-the UI for provenance. Updating the reviewed ccusage revision also updates this price-source
-pin without maintaining model prices by hand.
+QuotaStation reuses ccusage's build-time pricing integration, and supplies the catalog from
+the vendored snapshot described below instead of ccusage's optional downloader. The pinned
+source revision is exposed in the UI for provenance. Updating the reviewed ccusage revision
+also updates this price-source pin without maintaining model prices by hand.
 
 QuotaStation does not include ccusage telemetry, credential handling, or upload behavior.
+
+## LiteLLM model prices
+
+- Repository: <https://github.com/BerriAI/litellm>
+- Revision: `ba917681461b1ad04d30f91da26e75b3521996f3`, the revision pinned by
+  `vendor/ccusage/flake.lock`
+- Included component: `model_prices_and_context_window.json`
+- License: MIT
+- Copyright: Copyright (c) 2023 Berri AI
+- Local use: the API-equivalent cost estimate, embedded at build time by ccusage's build
+  script through `CCUSAGE_PRICING_JSON_PATH`
+- Local modifications: entries are restricted to the model identifiers ccusage's build script
+  already embeds, so the catalog compiled into the application is unchanged; every retained
+  entry keeps its upstream values verbatim
+
+Vendoring the snapshot keeps a clean build reproducible and off the network. The upstream
+license is preserved at `vendor/litellm/LICENSE`; the catalog sits outside the `enterprise/`
+directory that license carves out, so the MIT terms apply to it.
 
 ## Claude Code Usage Monitor
 

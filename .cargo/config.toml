@@ -1,0 +1,9 @@
+# ccusage's build script reads the LiteLLM pricing catalog from this variable. Pointing it
+# at the vendored snapshot keeps the embedded catalog pinned and reproducible, and keeps a
+# clean build off the network: the upstream download has a ten-second timeout that a normal
+# connection does not always meet for a 1.6 MB file.
+#
+# Cargo finds this file by walking up from the working directory, so it applies to
+# `cargo` run from the repository root and to the Tauri CLI, which runs cargo in `src-tauri`.
+[env]
+CCUSAGE_PRICING_JSON_PATH = { value = "vendor/litellm/model_prices_and_context_window.json", relative = true }
