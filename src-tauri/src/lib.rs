@@ -16,7 +16,7 @@ use domain::{
 use providers::ProviderKind;
 use storage::Storage;
 use tauri::{
-    Manager, PhysicalPosition, State,
+    Emitter, Manager, PhysicalPosition, State,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -311,10 +311,16 @@ async fn backfill_resets(state: &Arc<AppState>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Windows refuses a raise request from a process that does not own the foreground, which
+/// a tray menu click does not, so a window that is merely behind another one stays there
+/// after `set_focus`. Briefly claiming always-on-top is what actually brings it forward.
 fn show_main(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
         let _ = window.show();
+        let _ = window.set_always_on_top(true);
         let _ = window.set_focus();
+        let _ = window.set_always_on_top(false);
     }
 }
 
@@ -518,9 +524,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let enabled = !state.claude_enabled.load(Ordering::Relaxed);
                 if enabled && !state.claude_consent_granted.load(Ordering::Relaxed) {
                     // The first enable has to be explained before it takes effect, and
-                    // the dashboard is where that explanation lives.
+                    // the dashboard is where that explanation lives. Saying so is what
+                    // keeps the unchanged tick from reading as a broken menu item.
                     let _ = claude_provider_menu_item.set_checked(false);
                     show_main(app);
+                    let _ = app.emit_to("main", "claude-consent-requested", ());
                     return;
                 }
                 apply_claude_enabled(app, &state, enabled);

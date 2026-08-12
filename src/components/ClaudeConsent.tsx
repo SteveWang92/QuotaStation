@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../errors";
 
 interface ProviderSettings {
@@ -16,6 +17,8 @@ export function ClaudeConsent() {
   const [settings, setSettings] = useState<ProviderSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [requested, setRequested] = useState(false);
+  const card = useRef<HTMLElement | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -27,6 +30,25 @@ export function ClaudeConsent() {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // The tray toggle cannot turn Claude on by itself the first time, so it sends the user
+  // here instead. Without this the dashboard simply appears and the card is easy to miss.
+  useEffect(() => {
+    let disposed = false;
+    let stopListening = () => {};
+    void listen("claude-consent-requested", () => {
+      setRequested(true);
+      void load();
+      card.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else stopListening = unlisten;
+    });
+    return () => {
+      disposed = true;
+      stopListening();
+    };
   }, [load]);
 
   const setEnabled = useCallback(
@@ -47,7 +69,11 @@ export function ClaudeConsent() {
   if (!settings || settings.claudeEnabled) return null;
 
   return (
-    <section className="provider-consent" aria-label="Claude Code monitoring">
+    <section
+      ref={card}
+      className={`provider-consent${requested ? " requested" : ""}`}
+      aria-label="Claude Code monitoring"
+    >
       <div>
         <h2>Show Claude Code usage</h2>
         {settings.claudeConsentGranted ? (

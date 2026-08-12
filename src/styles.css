@@ -127,6 +127,7 @@ button { font: inherit; }
 .provider-tabs button.active { color: #10150c; background: var(--lime); }
 
 .provider-consent { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.provider-consent.requested { border-color: var(--lime); box-shadow: 0 0 0 1px var(--lime); }
 .provider-consent h2 { margin: 0 0 5px; font-size: 14px; font-weight: 650; }
 .provider-consent p { margin: 0; max-width: 78ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .provider-consent-error { margin-top: 6px !important; color: #ffaaa3 !important; }
