@@ -3,13 +3,36 @@ import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { useCallback, useState } from "react";
 import { errorMessage } from "../errors";
 import { formatCurrency, formatNumber } from "../format";
-import type { WorkspaceSnapshot } from "../types";
+import type { ProviderSnapshot, WorkspaceSnapshot } from "../types";
 import { useSnapshot } from "../useSnapshot";
 import { QuotaSection } from "./QuotaSection";
 
+function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
+  return (
+    <section className="quick-provider" aria-label={`${snapshot.displayName} status`}>
+      <header className="quick-provider-header">
+        <h2>{snapshot.displayName}</h2>
+        <span style={{ color: snapshot.compactStatus.color }}>{snapshot.compactStatus.label}</span>
+      </header>
+      <QuotaSection
+        compact
+        provider={snapshot.displayName}
+        limits={snapshot.limits}
+        earnedResetCount={snapshot.earnedResetCount}
+        resets={snapshot.recentResets}
+        statusColor={snapshot.compactStatus.color}
+      />
+      <section className="quick-usage" aria-label={`${snapshot.displayName} usage today`}>
+        <div><span>Today</span><strong>{formatNumber(snapshot.today.total)}</strong><small>tokens</small></div>
+        <div><span>API equivalent</span><strong>{formatCurrency(snapshot.apiEquivalentCostUsd)}</strong><small>estimated cost</small></div>
+      </section>
+      <p className="quick-freshness">{snapshot.compactStatus.message}</p>
+    </section>
+  );
+}
+
 export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSnapshot }) {
   const { workspace, error } = useSnapshot(initialWorkspace);
-  const snapshot = workspace.providers[0];
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
@@ -37,18 +60,12 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
           <RefreshCw aria-hidden="true" className={refreshing ? "spinning" : ""} />
         </button>
       </header>
-      <QuotaSection
-        compact
-        limits={snapshot.limits}
-        earnedResetCount={snapshot.earnedResetCount}
-        resets={snapshot.recentResets}
-        statusColor={snapshot.compactStatus.color}
-      />
-      <section className="quick-usage" aria-label="Today's usage">
-        <div><span>Today</span><strong>{formatNumber(snapshot.today.total)}</strong><small>tokens</small></div>
-        <div><span>API equivalent</span><strong>{formatCurrency(snapshot.apiEquivalentCostUsd)}</strong><small>estimated cost</small></div>
-      </section>
-      <p className={`quick-freshness${failure ? " failed" : ""}`}>{failure ?? snapshot.compactStatus.message}</p>
+      <div className={`quick-providers${workspace.providers.length <= 1 ? " single" : ""}`}>
+        {workspace.providers.map((snapshot) => (
+          <ProviderColumn key={snapshot.provider} snapshot={snapshot} />
+        ))}
+      </div>
+      {failure ? <p className="quick-freshness failed">{failure}</p> : null}
       <button
         type="button"
         className="dashboard-link"

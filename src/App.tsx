@@ -5,6 +5,7 @@ import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "./errors";
 import { useSnapshot } from "./useSnapshot";
+import { ClaudeConsent } from "./components/ClaudeConsent";
 import { QuotaSection } from "./components/QuotaSection";
 import { QuickPanel } from "./components/QuickPanel";
 import { TaskbarWidget } from "./components/TaskbarWidget";
@@ -45,6 +46,9 @@ function Dashboard() {
   const [commandError, setCommandError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
   const activeRangeRef = useRef(INITIAL_RANGE);
+  // The usage history is long, so it shows one provider at a time while the quota
+  // sections above show them all.
+  const [selectedProvider, setSelectedProvider] = useState<ProviderKey>("codex");
   const providerRef = useRef<ProviderKey>("codex");
   const rangeRequestId = useRef(0);
   const rangeRequested = useRef(false);
@@ -87,7 +91,18 @@ function Dashboard() {
   }, [loadDiagnostics, loadUsageRange]);
 
   const { workspace, error: snapshotError } = useSnapshot(EMPTY_WORKSPACE, onSnapshot);
-  const snapshot = workspace.providers[0];
+  const historyProvider =
+    workspace.providers.find((provider) => provider.provider === selectedProvider) ??
+    workspace.providers[0];
+
+  const selectProvider = useCallback(
+    (provider: ProviderKey) => {
+      providerRef.current = provider;
+      setSelectedProvider(provider);
+      void loadUsageRange(activeRangeRef.current, provider);
+    },
+    [loadUsageRange],
+  );
 
   const selectRange = useCallback((range: DateRangeSelection) => {
     activeRangeRef.current = range;
@@ -138,7 +153,9 @@ function Dashboard() {
       <header className="app-header">
         <div className="identity">
           <h1>QuotaStation</h1>
-          <span className="provider-name">{snapshot.displayName}</span>
+          <span className="provider-name">
+            {workspace.providers.map((provider) => provider.displayName).join(" · ")}
+          </span>
           <p>Local quota and usage data from the installed provider clients.</p>
         </div>
         <div className="header-actions">
@@ -148,21 +165,40 @@ function Dashboard() {
           </button>
         </div>
       </header>
-      <QuotaSection
-        limits={snapshot.limits}
-        earnedResetCount={snapshot.earnedResetCount}
-        resets={snapshot.recentResets}
-        statusColor={snapshot.compactStatus.color}
-      />
+      <ClaudeConsent />
+      <div className={`provider-grid${workspace.providers.length <= 1 ? " single" : ""}`}>
+        {workspace.providers.map((provider) => (
+          <section key={provider.provider} className="provider-panel">
+            <header className="provider-panel-header">
+              <h2>{provider.displayName}</h2>
+              <span style={{ color: provider.compactStatus.color }}>{provider.compactStatus.label}</span>
+            </header>
+            <QuotaSection
+              provider={provider.displayName}
+              limits={provider.limits}
+              earnedResetCount={provider.earnedResetCount}
+              resets={provider.recentResets}
+              statusColor={provider.compactStatus.color}
+            />
+          </section>
+        ))}
+      </div>
       <UsageSummary
-        snapshot={snapshot}
+        snapshot={historyProvider}
+        providers={workspace.providers}
+        activeProvider={selectedProvider}
+        onSelectProvider={selectProvider}
         range={usageRange}
         selection={activeRange}
         loading={rangeLoading}
         error={rangeError}
         onSelectRange={selectRange}
       />
-      <StatusBar snapshot={snapshot} diagnostics={diagnostics} interfaceError={snapshotError ?? commandError} />
+      <StatusBar
+        snapshot={historyProvider}
+        diagnostics={diagnostics}
+        interfaceError={snapshotError ?? commandError}
+      />
     </main>
   );
 }

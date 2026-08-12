@@ -24,8 +24,17 @@ pub async fn refresh_all(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSna
     state.workspace_snapshot().await
 }
 
-pub async fn refresh_live(app: &AppHandle, state: &Arc<AppState>) {
-    refresh_live_for(app, state, &state.enabled_providers()).await;
+/// Refreshes one provider's live quota, for the schedulers that run each provider on its
+/// own interval.
+pub async fn refresh_live_for_provider(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    provider: ProviderKind,
+) {
+    if !state.enabled_providers().contains(&provider) {
+        return;
+    }
+    refresh_live_for(app, state, &[provider]).await;
 }
 
 pub async fn refresh_history(app: &AppHandle, state: &Arc<AppState>) {

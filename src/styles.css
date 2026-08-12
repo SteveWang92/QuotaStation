@@ -111,6 +111,29 @@ button { font: inherit; }
 .quota-empty p, .empty-copy { margin: 0; color: var(--muted); font-size: 13px; }
 
 .history-section { display: flex; flex-direction: column; gap: 14px; }
+/* Both providers' quota sit side by side so the dashboard answers "how much is left?"
+   for each of them without scrolling. The usage history below switches instead, because
+   its table and model mix are far too tall to show twice. */
+.provider-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.provider-grid.single { grid-template-columns: minmax(0, 1fr); }
+.provider-panel { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.provider-panel-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.provider-panel-header h2 { margin: 0; font-size: 15px; font-weight: 650; }
+.provider-panel-header span { font-size: 12px; font-weight: 630; }
+
+.provider-tabs { display: inline-flex; align-items: center; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: rgba(16, 23, 29, 0.78); }
+.provider-tabs button { height: 30px; padding: 0 13px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; font-size: 12px; font-weight: 630; }
+.provider-tabs button:hover { color: var(--text); background: #1a242c; }
+.provider-tabs button.active { color: #10150c; background: var(--lime); }
+
+.provider-consent { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.provider-consent h2 { margin: 0 0 5px; font-size: 14px; font-weight: 650; }
+.provider-consent p { margin: 0; max-width: 78ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.provider-consent-error { margin-top: 6px !important; color: #ffaaa3 !important; }
+.provider-consent button { flex: none; height: 36px; padding: 0 16px; border: 1px solid #6f7d87; border-radius: 5px; color: var(--text); background: #172129; cursor: pointer; font-weight: 650; }
+.provider-consent button:hover:not(:disabled) { background: #202c35; }
+.provider-consent button:disabled { opacity: 0.55; cursor: wait; }
+
 .history-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
 .history-heading h2 { margin: 3px 0 0; font-size: 24px; }
 .section-kicker { color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: 0.12em; text-transform: uppercase; }
@@ -205,6 +228,7 @@ button { font: inherit; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1050px) {
+  .provider-grid { grid-template-columns: minmax(0, 1fr); }
   .app-shell { padding: 24px; }
   .identity p { display: none; }
   .quota-row { grid-template-columns: 190px minmax(210px, 1fr) 92px 150px; gap: 18px; padding-inline: 22px; }
@@ -239,6 +263,15 @@ button { font: inherit; }
 .quick-panel-header button { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: transparent; cursor: pointer; }
 .quick-panel-header button:disabled { opacity: 0.5; }
 .quick-panel-header svg { width: 16px; height: 16px; }
+/* Providers sit side by side so the panel answers "how much is left?" for both in one
+   look. A single provider keeps the original single-column width. */
+.quick-providers { min-height: 0; flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.quick-providers.single { grid-template-columns: minmax(0, 1fr); }
+.quick-provider { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.quick-provider-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.quick-provider-header h2 { margin: 0; font-size: 13px; font-weight: 650; }
+.quick-provider-header span { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.quick-provider .quick-freshness { margin-top: auto; }
 .quota-section.compact { border-color: var(--line); }
 .quota-section.compact .quota-row { min-height: 120px; grid-template-columns: minmax(0, 1fr) 86px; grid-template-areas: "label percent" "meter meter" "reset reset"; gap: 8px 14px; padding: 13px 15px; }
 .quota-section.compact .quota-label { grid-area: label; }
@@ -267,7 +300,11 @@ button { font: inherit; }
 .dashboard-link:hover { background: #202c35; }
 .dashboard-link svg { width: 16px; height: 16px; }
 
-.taskbar-widget-shell { width: 100vw; height: 100vh; padding: 3px 6px; display: flex; flex-direction: column; justify-content: center; gap: 2px; overflow: hidden; background: transparent; }
+/* The taskbar clamps this window to 30-44px tall, so providers sit side by side and only
+   their quota windows stack. */
+.taskbar-widget-shell { width: 100vw; height: 100vh; padding: 3px 6px; display: flex; flex-direction: row; align-items: center; gap: 10px; overflow: hidden; background: transparent; }
+.taskbar-provider { min-width: 0; flex: 1 1 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+.taskbar-widget-shell:not(.single) .taskbar-provider + .taskbar-provider { padding-left: 10px; border-left: 1px solid rgba(138, 149, 157, 0.32); }
 .taskbar-quota { min-width: 0; display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 2px 5px; }
 .taskbar-quota span { color: #aeb7bd; font-size: 10px; font-weight: 700; text-transform: lowercase; }
 .taskbar-quota strong { grid-column: 3; color: var(--taskbar-status-color); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }

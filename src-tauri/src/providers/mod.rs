@@ -1,7 +1,7 @@
 pub mod claude;
 pub mod codex;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -39,11 +39,15 @@ impl ProviderKind {
         }
     }
 
-    /// A name short enough for the taskbar slice, where a full name would not fit.
-    pub fn short_name(self) -> &'static str {
+    /// How often live quota may be read. Codex answers from a local process, so it is
+    /// polled as often as the display needs. Claude's usage endpoint rate-limits reads
+    /// over a window of tens of minutes and answers a five-minute poll with a refusal,
+    /// so it is read far less often; its windows are five hours and seven days, which a
+    /// quarter-hour reading still tracks closely.
+    pub fn live_refresh_interval(self) -> Duration {
         match self {
-            ProviderKind::Codex => "CDX",
-            ProviderKind::Claude => "CLD",
+            ProviderKind::Codex => Duration::from_secs(300),
+            ProviderKind::Claude => Duration::from_secs(900),
         }
     }
 

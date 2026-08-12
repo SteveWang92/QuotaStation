@@ -2,6 +2,8 @@ import type { LimitResetEvent, LimitWindow } from "../types";
 import { formatCountdown, formatEarlyBy, formatResetTimestamp, formatWindowDuration } from "../format";
 
 interface QuotaSectionProps {
+  /** Display name of the provider these windows belong to, for labels and empty copy. */
+  provider: string;
   limits: LimitWindow[];
   earnedResetCount: number | null;
   resets: LimitResetEvent[];
@@ -82,11 +84,11 @@ function ResetHistory({ resets }: { resets: LimitResetEvent[] }) {
   );
 }
 
-export function QuotaSection({ limits, earnedResetCount, resets, statusColor, compact = false }: QuotaSectionProps) {
+export function QuotaSection({ provider, limits, earnedResetCount, resets, statusColor, compact = false }: QuotaSectionProps) {
   return (
     <section
       className={`quota-section${compact ? " compact" : ""}`}
-      aria-label="Codex quota windows"
+      aria-label={`${provider} quota windows`}
       style={{ "--quota-status-color": statusColor } as React.CSSProperties}
     >
       {limits.length > 0 ? (
@@ -94,7 +96,7 @@ export function QuotaSection({ limits, earnedResetCount, resets, statusColor, co
       ) : (
         <div className="quota-empty">
           <h2>Quota windows unavailable</h2>
-          <p>QuotaStation will keep retrying the local Codex read interface.</p>
+          <p>QuotaStation will keep retrying the {provider} quota source.</p>
         </div>
       )}
       <div className="reset-inventory">

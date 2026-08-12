@@ -78,11 +78,21 @@ fn dock_widget(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// The widget grows sideways only: the taskbar clamps its height, so a second provider
+/// has to become a second column. A provider showing one window needs less room than one
+/// showing both, and `place_widget` narrows the result again when the taskbar is short of
+/// space beside the notification area.
+pub fn widget_width(providers: usize, windows: usize) -> u32 {
+    let column = if windows <= 1 { 148 } else { 270 };
+    column * providers.clamp(1, 3) as u32
+}
+
 #[cfg(windows)]
-pub fn set_widget_columns(app: &tauri::AppHandle, columns: usize) -> Result<(), String> {
+pub fn set_widget_size(app: &tauri::AppHandle, providers: usize, windows: usize) -> Result<(), String> {
     let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
-    let width = if columns <= 1 { 148 } else { 270 };
-    widget.set_size(PhysicalSize::new(width, 40)).map_err(|error| error.to_string())?;
+    widget
+        .set_size(PhysicalSize::new(widget_width(providers, windows), 40))
+        .map_err(|error| error.to_string())?;
     place_widget(app)
 }
 
@@ -129,6 +139,22 @@ pub fn place_widget(_app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-pub fn set_widget_columns(_app: &tauri::AppHandle, _columns: usize) -> Result<(), String> {
+pub fn set_widget_size(_app: &tauri::AppHandle, _providers: usize, _windows: usize) -> Result<(), String> {
     Err("taskbar status is supported on Windows only".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::widget_width;
+
+    #[test]
+    fn a_second_provider_widens_the_widget_instead_of_stacking_it() {
+        assert_eq!(widget_width(1, 2), 270);
+        assert_eq!(widget_width(2, 2), 540);
+        // A provider reporting a single window needs a narrower column.
+        assert_eq!(widget_width(1, 1), 148);
+        assert_eq!(widget_width(2, 1), 296);
+        // A provider count of zero still has to produce a usable window.
+        assert_eq!(widget_width(0, 2), 270);
+    }
 }

@@ -201,12 +201,16 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
 }
 
 #[tauri::command]
-fn set_taskbar_widget_columns(app: tauri::AppHandle, columns: usize) -> Result<(), String> {
+fn set_taskbar_widget_size(
+    app: tauri::AppHandle,
+    providers: usize,
+    windows: usize,
+) -> Result<(), String> {
     // A hidden widget still runs its renderer; resizing it must not bring it back.
     if !app.state::<Arc<AppState>>().taskbar_widget_enabled.load(Ordering::Relaxed) {
         return Ok(());
     }
-    taskbar::set_widget_columns(&app, columns)
+    taskbar::set_widget_size(&app, providers, windows)
 }
 
 /// What the renderer needs to show the Claude opt-in: whether it is on, and whether the
@@ -314,9 +318,22 @@ fn show_main(app: &tauri::AppHandle) {
     }
 }
 
+/// The panel shows one column per provider, so its width follows how many are enabled.
+/// Sizing it as it opens keeps the edge anchoring below working from the real size.
+const QUICK_PANEL_COLUMN_WIDTH: u32 = 390;
+const QUICK_PANEL_HEIGHT: u32 = 560;
+
+fn quick_panel_size(providers: usize) -> tauri::PhysicalSize<u32> {
+    tauri::PhysicalSize::new(
+        QUICK_PANEL_COLUMN_WIDTH * providers.clamp(1, 2) as u32,
+        QUICK_PANEL_HEIGHT,
+    )
+}
+
 fn toggle_quick_panel(app: &tauri::AppHandle, click: PhysicalPosition<f64>, tray_rect: tauri::Rect) {
     let Some(panel) = app.get_webview_window("quick-panel") else { return };
     let state = app.state::<Arc<AppState>>();
+    let _ = panel.set_size(quick_panel_size(state.enabled_providers().len()));
     if let Ok(mut focus_lost_at) = state.quick_panel_focus_lost_at.lock()
         && focus_lost_at.is_some_and(|lost_at| lost_at.elapsed() < Duration::from_millis(500))
     {
@@ -328,7 +345,9 @@ fn toggle_quick_panel(app: &tauri::AppHandle, click: PhysicalPosition<f64>, tray
         return;
     }
 
-    let size = panel.outer_size().unwrap_or_else(|_| tauri::PhysicalSize::new(390, 540));
+    let size = panel
+        .outer_size()
+        .unwrap_or_else(|_| quick_panel_size(state.enabled_providers().len()));
     let monitor = app.monitor_from_point(click.x, click.y).ok().flatten();
     let (x, y) = if let Some(monitor) = monitor {
         let origin = monitor.position();
@@ -592,16 +611,20 @@ pub fn run() {
                     }
                 }
             });
-            let app_handle = app.handle().clone();
-            let live_state = app.state::<Arc<AppState>>().inner().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(300));
-                interval.tick().await;
-                loop {
+            // Each provider polls on its own interval: a local process tolerates a
+            // frequent read, a rate-limited remote endpoint does not.
+            for provider in ProviderKind::ALL {
+                let app_handle = app.handle().clone();
+                let live_state = app.state::<Arc<AppState>>().inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(provider.live_refresh_interval());
                     interval.tick().await;
-                    refresh::refresh_live(&app_handle, &live_state).await;
-                }
-            });
+                    loop {
+                        interval.tick().await;
+                        refresh::refresh_live_for_provider(&app_handle, &live_state, provider).await;
+                    }
+                });
+            }
             let app_handle = app.handle().clone();
             let history_state = app.state::<Arc<AppState>>().inner().clone();
             tauri::async_runtime::spawn(async move {
@@ -622,7 +645,7 @@ pub fn run() {
             get_provider_settings,
             set_claude_enabled,
             open_dashboard,
-            set_taskbar_widget_columns
+            set_taskbar_widget_size
         ])
         .on_window_event(|window, event| {
             if window.label() == "quick-panel" && matches!(event, tauri::WindowEvent::Focused(false)) {

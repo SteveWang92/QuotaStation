@@ -9,7 +9,7 @@ import {
   type RangePreset,
 } from "../dateRanges";
 import { formatCurrency, formatNumber, formatRevision } from "../format";
-import type { ProviderSnapshot, UsageRangeSnapshot } from "../types";
+import type { ProviderKey, ProviderSnapshot, UsageRangeSnapshot } from "../types";
 
 const PRESETS: Array<{ value: Exclude<RangePreset, "custom">; label: string }> = [
   { value: "today", label: "Today" },
@@ -20,6 +20,10 @@ const PRESETS: Array<{ value: Exclude<RangePreset, "custom">; label: string }> =
 
 interface UsageSummaryProps {
   snapshot: ProviderSnapshot;
+  /** All enabled providers, so the history can be switched between them. */
+  providers: ProviderSnapshot[];
+  activeProvider: ProviderKey;
+  onSelectProvider: (provider: ProviderKey) => void;
   range: UsageRangeSnapshot;
   selection: DateRangeSelection;
   loading: boolean;
@@ -27,7 +31,17 @@ interface UsageSummaryProps {
   onSelectRange: (range: DateRangeSelection) => void;
 }
 
-export function UsageSummary({ snapshot, range, selection, loading, error, onSelectRange }: UsageSummaryProps) {
+export function UsageSummary({
+  snapshot,
+  providers,
+  activeProvider,
+  onSelectProvider,
+  range,
+  selection,
+  loading,
+  error,
+  onSelectRange,
+}: UsageSummaryProps) {
   const [showCustom, setShowCustom] = useState(false);
   const [customStart, setCustomStart] = useState(selection.startDate);
   const [customEnd, setCustomEnd] = useState(selection.endDate);
@@ -62,12 +76,28 @@ export function UsageSummary({ snapshot, range, selection, loading, error, onSel
   }
 
   return (
-    <section className="history-section" aria-label="Codex usage history">
+    <section className="history-section" aria-label={`${snapshot.displayName} usage history`}>
       <div className="history-heading">
         <div>
           <span className="section-kicker">Usage history</span>
           <h2>{selection.label}</h2>
         </div>
+        {providers.length > 1 ? (
+          <div className="provider-tabs" role="tablist" aria-label="Usage history provider">
+            {providers.map((provider) => (
+              <button
+                type="button"
+                key={provider.provider}
+                role="tab"
+                aria-selected={provider.provider === activeProvider}
+                className={provider.provider === activeProvider ? "active" : ""}
+                onClick={() => onSelectProvider(provider.provider)}
+              >
+                {provider.displayName}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <div className="range-control" aria-label="Usage date range">
           {PRESETS.map((preset) => (
             <button
