@@ -9,6 +9,19 @@ export interface LimitWindow {
   resetsAt: number | null;
 }
 
+export interface LimitResetEvent {
+  windowKind: "primary" | "secondary";
+  windowLabel: string;
+  windowDurationMins: number;
+  /** When the restarted window began, recovered from its new expiry. */
+  anchoredAt: number;
+  newResetsAt: number;
+  previousResetsAt: number;
+  usedPercentBefore: number;
+  earlyBySeconds: number;
+  classification: "scheduled" | "unplanned";
+}
+
 export interface ModelUsage {
   model: string;
   tokens: number;
@@ -28,6 +41,7 @@ export interface ProviderSnapshot {
   planType: string | null;
   limits: LimitWindow[];
   earnedResetCount: number | null;
+  recentResets: LimitResetEvent[];
   today: TokenUsage;
   apiEquivalentCostUsd: number | null;
   models: ModelUsage[];

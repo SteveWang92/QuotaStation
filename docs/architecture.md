@@ -73,14 +73,22 @@ and schema versioning. Credentials, prompts, source content, and unnecessary raw
 not belong in the database.
 
 The schema covers provider instances, current limits and samples, normalized daily usage
-aggregates, refresh runs, and quota rollups. Event-level storage and a database-resident
+aggregates, refresh runs, quota rollups, and quota reset events. Event-level storage and a database-resident
 pricing catalogue are not part of it: the Codex parser reports daily aggregates and
 carries its own embedded pricing map. Five-minute quota samples are retained for 14 days, then hourly through day 60
 and daily through day 180. Rollups preserve boundary and summary values and remain
 segmented across quota resets. Successful refresh records are retained for 30 days and
 failed records for 180 days, with the newest record per acquisition path always kept. Daily
-usage aggregates are retained indefinitely. Raw
+usage aggregates and quota reset events are retained indefinitely. Raw
 session payloads and complete local paths are never retained.
+
+A quota reset is recorded when usage collapses to nothing, the published expiry jumps
+forward, and the restarted window is anchored inside the gap between the two readings. A
+window restarted more than two hours before its published expiry is classified as
+unplanned. Codex writes the same rate-limit answers into its own rollout logs, so a
+startup scan of those logs recovers resets that happened while QuotaStation was closed;
+the scan reads only rate-limit fields, skips files older than its previous run, and never
+retains conversation content.
 
 ## Runtime ownership
 

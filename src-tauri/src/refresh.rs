@@ -55,10 +55,14 @@ async fn apply_live(state: &Arc<AppState>, started_at: &str, result: Result<crat
     match result {
         Ok(live) => {
             let save_error = state.storage.save_live(&live, &completed_at).await.err().map(storage_error);
+            // Reading the restarts back after the save keeps one owner of the detection,
+            // so a restart recognised by this very save is already part of the snapshot.
+            let recent_resets = state.storage.load_recent_resets().await.unwrap_or_default();
             let mut snapshot = state.snapshot.write().await;
             snapshot.plan_type = live.plan_type;
             snapshot.limits = live.limits;
             snapshot.earned_reset_count = live.earned_reset_count;
+            snapshot.recent_resets = recent_resets;
             snapshot.live_error = save_error;
             if snapshot.live_error.is_none() { snapshot.last_success_at = Some(completed_at.clone()); }
         }

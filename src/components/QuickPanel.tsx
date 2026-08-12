@@ -40,6 +40,7 @@ export function QuickPanel({ initialSnapshot }: { initialSnapshot: ProviderSnaps
         compact
         limits={snapshot.limits}
         earnedResetCount={snapshot.earnedResetCount}
+        resets={snapshot.recentResets}
         statusColor={snapshot.compactStatus.color}
       />
       <section className="quick-usage" aria-label="Today's usage">

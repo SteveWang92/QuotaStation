@@ -77,6 +77,40 @@ pub struct LimitWindow {
     pub resets_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ResetClassification {
+    /// The window restarted at, or close enough to, the expiry Codex had published.
+    Scheduled,
+    /// The server restarted the window well before its published expiry, discarding the
+    /// unused remainder and moving the next expiry later.
+    Unplanned,
+}
+
+impl ResetClassification {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResetClassification::Scheduled => "scheduled",
+            ResetClassification::Unplanned => "unplanned",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LimitResetEvent {
+    pub window_kind: LimitKind,
+    pub window_label: String,
+    pub window_duration_mins: i64,
+    /// When the restarted window began, recovered from its new expiry.
+    pub anchored_at: i64,
+    pub new_resets_at: i64,
+    pub previous_resets_at: i64,
+    pub used_percent_before: f64,
+    pub early_by_seconds: i64,
+    pub classification: ResetClassification,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
@@ -102,6 +136,9 @@ pub struct ProviderSnapshot {
     pub plan_type: Option<String>,
     pub limits: Vec<LimitWindow>,
     pub earned_reset_count: Option<u64>,
+    /// Most recent restarts first, so a surface can both annotate the window currently
+    /// running and list the ones before it.
+    pub recent_resets: Vec<LimitResetEvent>,
     pub today: TokenUsage,
     pub api_equivalent_cost_usd: Option<f64>,
     pub models: Vec<ModelUsage>,
@@ -123,6 +160,7 @@ impl Default for ProviderSnapshot {
             plan_type: None,
             limits: Vec::new(),
             earned_reset_count: None,
+            recent_resets: Vec::new(),
             today: TokenUsage::default(),
             api_equivalent_cost_usd: None,
             models: Vec::new(),

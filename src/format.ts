@@ -65,6 +65,19 @@ export function formatResetTimestamp(epochSeconds: number | null): string {
   }).format(new Date(epochSeconds * 1_000));
 }
 
+/**
+ * How far ahead of its published expiry a window restarted. Whole days carry the point
+ * on their own; anything shorter is the polling interval and reads better in hours.
+ */
+export function formatEarlyBy(seconds: number): string {
+  if (seconds >= 86_400) {
+    const days = seconds / 86_400;
+    return `${days.toFixed(days >= 10 ? 0 : 1)} days early`;
+  }
+  const hours = Math.round(seconds / 3_600);
+  return hours <= 1 ? "under an hour early" : `${hours} hours early`;
+}
+
 function windowParts(durationMins: number) {
   if (durationMins % 1_440 === 0) return { value: durationMins / 1_440, unit: "day" };
   if (durationMins % 60 === 0) return { value: durationMins / 60, unit: "hour" };

@@ -1,14 +1,30 @@
-import type { LimitWindow } from "../types";
-import { formatCountdown, formatResetTimestamp, formatWindowDuration } from "../format";
+import type { LimitResetEvent, LimitWindow } from "../types";
+import { formatCountdown, formatEarlyBy, formatResetTimestamp, formatWindowDuration } from "../format";
 
 interface QuotaSectionProps {
   limits: LimitWindow[];
   earnedResetCount: number | null;
+  resets: LimitResetEvent[];
   statusColor: string;
   compact?: boolean;
 }
 
-function QuotaRow({ limit }: { limit: LimitWindow }) {
+/**
+ * A window whose expiry matches a recorded restart is the window that restart began, so
+ * the note explains an expiry that otherwise looks like it moved for no reason. Only an
+ * unplanned restart is worth saying anything about; the scheduled ones are the ordinary
+ * case and stay in the history below.
+ */
+function originOf(limit: LimitWindow, resets: LimitResetEvent[]): LimitResetEvent | undefined {
+  return resets.find(
+    (event) =>
+      event.classification === "unplanned" &&
+      event.newResetsAt === limit.resetsAt &&
+      event.windowKind === limit.kind,
+  );
+}
+
+function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEvent }) {
   const used = limit.usedPercent;
   const remaining = limit.remainingPercent;
   return (
@@ -33,11 +49,40 @@ function QuotaRow({ limit }: { limit: LimitWindow }) {
           {formatResetTimestamp(limit.resetsAt)}
         </time>
       </div>
+      {origin ? (
+        <p className="quota-origin">
+          Started by an unplanned reset on {formatResetTimestamp(origin.anchoredAt)} —{" "}
+          {formatEarlyBy(origin.earlyBySeconds)}, at {origin.usedPercentBefore.toFixed(0)}% used.
+        </p>
+      ) : null}
     </div>
   );
 }
 
-export function QuotaSection({ limits, earnedResetCount, statusColor, compact = false }: QuotaSectionProps) {
+function ResetHistory({ resets }: { resets: LimitResetEvent[] }) {
+  const unplanned = resets.filter((event) => event.classification === "unplanned").length;
+  return (
+    <details className="reset-history">
+      <summary>
+        Reset history <span>{resets.length} recorded, {unplanned} unplanned</span>
+      </summary>
+      <ul>
+        {resets.map((event) => (
+          <li key={`${event.windowKind}-${event.newResetsAt}`} className={event.classification}>
+            <time dateTime={new Date(event.anchoredAt * 1000).toISOString()}>
+              {formatResetTimestamp(event.anchoredAt)}
+            </time>
+            <span>{event.windowLabel}</span>
+            <strong>{event.usedPercentBefore.toFixed(0)}% used</strong>
+            <em>{event.classification === "unplanned" ? formatEarlyBy(event.earlyBySeconds) : "on schedule"}</em>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+export function QuotaSection({ limits, earnedResetCount, resets, statusColor, compact = false }: QuotaSectionProps) {
   return (
     <section
       className={`quota-section${compact ? " compact" : ""}`}
@@ -45,7 +90,7 @@ export function QuotaSection({ limits, earnedResetCount, statusColor, compact = 
       style={{ "--quota-status-color": statusColor } as React.CSSProperties}
     >
       {limits.length > 0 ? (
-        limits.map((limit) => <QuotaRow key={limit.kind} limit={limit} />)
+        limits.map((limit) => <QuotaRow key={limit.kind} limit={limit} origin={originOf(limit, resets)} />)
       ) : (
         <div className="quota-empty">
           <h2>Quota windows unavailable</h2>
@@ -56,6 +101,7 @@ export function QuotaSection({ limits, earnedResetCount, statusColor, compact = 
         <span>Earned resets</span>
         <strong>{earnedResetCount ?? "Unknown"}</strong>
       </div>
+      {!compact && resets.length > 0 ? <ResetHistory resets={resets} /> : null}
     </section>
   );
 }

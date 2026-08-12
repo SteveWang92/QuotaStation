@@ -1,6 +1,7 @@
 mod domain;
 mod providers;
 mod refresh;
+mod resets;
 mod sanitize;
 mod session_watcher;
 mod storage;
@@ -146,6 +147,18 @@ async fn get_diagnostics(state: State<'_, Arc<AppState>>) -> Result<DiagnosticsS
         parser_revision: domain::CCUSAGE_REVISION.to_string(),
         pricing_catalog_revision: domain::PRICING_CATALOG_REVISION.to_string(),
     })
+}
+
+/// Codex logs the server's rate-limit answer alongside its own token counts, which
+/// reaches back further than this database and covers every stretch when QuotaStation was
+/// closed. Replaying it on startup is what makes the restart history complete rather than
+/// starting from whenever this feature was installed.
+async fn backfill_resets(state: &Arc<AppState>) -> anyhow::Result<()> {
+    let since = state.storage.reset_backfill_start().await?;
+    let observations = providers::codex::read_observations(since).await?;
+    let scanned_at = jiff::Timestamp::now().to_string();
+    state.storage.backfill_resets(&observations, &scanned_at).await?;
+    Ok(())
 }
 
 fn show_main(app: &tauri::AppHandle) {
@@ -379,6 +392,12 @@ pub fn run() {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 refresh::refresh_all(&app_handle, &state).await;
+            });
+            let backfill_state = app.state::<Arc<AppState>>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = backfill_resets(&backfill_state).await {
+                    eprintln!("quota reset backfill failed: {error:#}");
+                }
             });
             let app_handle = app.handle().clone();
             let taskbar_state = app.state::<Arc<AppState>>().inner().clone();

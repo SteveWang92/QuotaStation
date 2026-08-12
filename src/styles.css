@@ -14,6 +14,7 @@
   --lime: #b5e835;
   --violet: #9b7cff;
   --blue: #738cff;
+  --warning: #f0b84b;
   --danger: #ff7469;
 }
 
@@ -92,6 +93,17 @@ button { font: inherit; }
 .quota-reset { min-height: 70px; padding-left: 28px; border-left: 1px solid #66737d; display: flex; flex-direction: column; justify-content: center; }
 .quota-reset strong { margin-top: 7px; color: var(--lime); font-size: 19px; font-variant-numeric: tabular-nums; }
 .quota-reset time { margin-top: 6px; color: #c4ccd1; font-size: 11px; font-variant-numeric: tabular-nums; }
+.quota-origin { grid-column: 1 / -1; margin: 0; padding-left: 11px; border-left: 2px solid var(--warning); color: var(--warning); font-size: 12px; line-height: 1.4; }
+.reset-history { border-top: 1px solid var(--line); font-size: 12px; }
+.reset-history summary { padding: 11px 28px; color: var(--muted); cursor: pointer; font-weight: 630; list-style-position: inside; }
+.reset-history summary span { margin-left: 8px; font-weight: 400; }
+.reset-history ul { margin: 0; padding: 0 28px 14px; list-style: none; }
+.reset-history li { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr) 84px minmax(0, 120px); align-items: baseline; gap: 14px; padding: 6px 0; border-top: 1px solid var(--line-soft); }
+.reset-history li time { color: #c4ccd1; font-variant-numeric: tabular-nums; }
+.reset-history li span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reset-history li strong { font-weight: 620; font-variant-numeric: tabular-nums; }
+.reset-history li em { color: var(--muted); font-style: normal; text-align: right; }
+.reset-history li.unplanned em { color: var(--warning); font-weight: 620; }
 .reset-inventory { height: 42px; display: flex; align-items: center; gap: 30px; padding: 0 28px; font-size: 14px; }
 .reset-inventory strong { color: var(--lime); font-size: 16px; }
 .quota-empty { min-height: 150px; padding: 34px; display: flex; flex-direction: column; justify-content: center; border-bottom: 1px solid var(--line); }
@@ -239,6 +251,7 @@ button { font: inherit; }
 .quota-section.compact .quota-reset { grid-area: reset; min-height: 0; padding: 0; border: 0; display: grid; grid-template-columns: auto auto minmax(0, 1fr); justify-content: initial; align-items: baseline; gap: 8px; }
 .quota-section.compact .quota-reset strong { margin: 0; font-size: 13px; }
 .quota-section.compact .quota-reset time { margin: 0; overflow: hidden; color: var(--muted); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.quota-section.compact .quota-origin { padding-left: 8px; font-size: 10px; }
 .quota-section.compact .reset-inventory { height: 34px; justify-content: space-between; padding-inline: 15px; font-size: 11px; }
 .quota-section.compact .reset-inventory strong { font-size: 13px; }
 .quota-section.compact .quota-empty { min-height: 100px; padding: 18px; }

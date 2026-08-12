@@ -3,6 +3,7 @@ import {
   formatCompactCountdown,
   formatCountdown,
   formatCurrency,
+  formatEarlyBy,
   formatResetTimestamp,
   formatRevision,
   formatTimestamp,
@@ -70,6 +71,20 @@ describe("quota window durations", () => {
   it("falls back to the window label when the provider reports no duration", () => {
     expect(formatWindowDuration(null)).toBe("Window duration unavailable");
     expect(formatWindowBadge(null, "Weekly window")).toBe("WE");
+  });
+});
+
+describe("how early a window restarted", () => {
+  it("keeps a fraction of a day so a reset days early stays legible", () => {
+    expect(formatEarlyBy(Math.round(4.8 * 86_400))).toBe("4.8 days early");
+    expect(formatEarlyBy(Math.round(6.36 * 86_400))).toBe("6.4 days early");
+    expect(formatEarlyBy(Math.round(12.4 * 86_400))).toBe("12 days early");
+  });
+
+  it("falls back to hours below a day, where the polling interval dominates", () => {
+    expect(formatEarlyBy(3 * 3_600)).toBe("3 hours early");
+    expect(formatEarlyBy(7_500)).toBe("2 hours early");
+    expect(formatEarlyBy(2_000)).toBe("under an hour early");
   });
 });
 

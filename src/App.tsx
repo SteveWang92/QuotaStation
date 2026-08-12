@@ -18,7 +18,8 @@ const EMPTY_SNAPSHOT: ProviderSnapshot = {
   planType: null,
   limits: [],
   earnedResetCount: null,
-  today: { input: 0, cacheRead: 0, output: 0, reasoning: 0, total: 0 },
+  recentResets: [],
+  today:{ input: 0, cacheRead: 0, output: 0, reasoning: 0, total: 0 },
   apiEquivalentCostUsd: null,
   models: [],
   freshness: "unavailable",
@@ -171,6 +172,7 @@ function Dashboard() {
       <QuotaSection
         limits={snapshot.limits}
         earnedResetCount={snapshot.earnedResetCount}
+        resets={snapshot.recentResets}
         statusColor={snapshot.compactStatus.color}
       />
       <UsageSummary

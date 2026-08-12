@@ -5,15 +5,44 @@ use sqlx::{Row, SqlitePool, sqlite::{SqliteConnectOptions, SqlitePoolOptions}};
 
 use crate::domain::{
     AcquisitionDiagnostics, CCUSAGE_REVISION, DailyModelUsage, DailyUsagePoint, Freshness,
-    HistorySnapshot, LimitKind, LimitWindow, LiveSnapshot, ModelUsage, PRICING_CATALOG_REVISION,
-    ProviderSnapshot, RetentionDiagnostics, TokenUsage, UsageRangeSnapshot,
+    HistorySnapshot, LimitKind, LimitResetEvent, LimitWindow, LiveSnapshot, ModelUsage,
+    PRICING_CATALOG_REVISION, ProviderSnapshot, ResetClassification, RetentionDiagnostics,
+    TokenUsage, UsageRangeSnapshot,
 };
+use crate::resets::{ResetTracker, WindowObservation, detect};
 use crate::sanitize::sanitize_error;
 
 /// The Codex daily report aggregates every service tier into one row per model, so the
 /// tier dimension of `daily_usage` records that the row spans tiers rather than guessing
 /// one. A per-tier writer must use the tier it observed, never this value.
 const AGGREGATE_SERVICE_TIER: &str = "mixed";
+
+/// The rollout scan skips files older than its previous run, with this much overlap so a
+/// window that reset across the boundary still has an earlier reading to compare against.
+const BACKFILL_OVERLAP_HOURS: i64 = 48;
+
+/// How many restarts the surfaces are given. They annotate the window running now and
+/// list the ones before it, neither of which needs the whole history.
+const RECENT_RESET_LIMIT: i64 = 8;
+
+fn kind_column(kind: LimitKind) -> &'static str {
+    match kind {
+        LimitKind::Primary => "primary",
+        LimitKind::Secondary => "secondary",
+    }
+}
+
+fn parse_kind(value: &str) -> Option<LimitKind> {
+    match value {
+        "primary" => Some(LimitKind::Primary),
+        "secondary" => Some(LimitKind::Secondary),
+        _ => None,
+    }
+}
+
+fn epoch_seconds(value: &str) -> Option<i64> {
+    value.parse::<jiff::Timestamp>().ok().map(|timestamp| timestamp.as_second())
+}
 
 #[derive(Clone)]
 pub struct Storage {
@@ -41,7 +70,30 @@ impl Storage {
 
     pub async fn save_live(&self, live: &LiveSnapshot, observed_at: &str) -> Result<()> {
         let provider_id = self.provider_id().await?;
+        // The row about to be overwritten is the only record of what the window looked
+        // like before this reading, so a restart has to be recognised here.
+        let previous = self.load_current_observations(provider_id).await?;
         let mut tx = self.pool.begin().await?;
+        if let Some(now) = epoch_seconds(observed_at) {
+            for limit in &live.limits {
+                let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) =
+                    (limit.used_percent, limit.window_duration_mins, limit.resets_at)
+                else {
+                    continue;
+                };
+                let current = WindowObservation {
+                    observed_at: now,
+                    kind: limit.kind,
+                    used_percent,
+                    window_duration_mins,
+                    resets_at,
+                };
+                let Some(earlier) = previous.get(kind_column(limit.kind)) else { continue };
+                if let Some(event) = detect(*earlier, current) {
+                    Self::insert_reset(&mut tx, provider_id, &event, "live", observed_at).await?;
+                }
+            }
+        }
         sqlx::query(
             "UPDATE provider_instances SET plan_type = ?, earned_reset_count = ?, \
              last_live_success_at = ?, updated_at = ? WHERE id = ?",
@@ -54,7 +106,7 @@ impl Storage {
         .execute(&mut *tx)
         .await?;
         for limit in &live.limits {
-            let kind = match limit.kind { LimitKind::Primary => "primary", LimitKind::Secondary => "secondary" };
+            let kind = kind_column(limit.kind);
             sqlx::query(
                 "INSERT INTO limit_current \
                  (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
@@ -75,6 +127,176 @@ impl Storage {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn load_current_observations(
+        &self,
+        provider_id: i64,
+    ) -> Result<BTreeMap<String, WindowObservation>> {
+        let rows = sqlx::query(
+            "SELECT window_kind, used_percent, window_duration_mins, resets_at, observed_at \
+             FROM limit_current WHERE provider_instance_id = ?",
+        )
+        .bind(provider_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut observations = BTreeMap::new();
+        for row in rows {
+            let name: String = row.get("window_kind");
+            let (Some(kind), Some(observed_at)) = (
+                parse_kind(&name),
+                row.try_get::<String, _>("observed_at").ok().as_deref().and_then(epoch_seconds),
+            ) else {
+                continue;
+            };
+            let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) = (
+                row.try_get::<Option<f64>, _>("used_percent")?,
+                row.try_get::<Option<i64>, _>("window_duration_mins")?,
+                row.try_get::<Option<i64>, _>("resets_at")?,
+            ) else {
+                continue;
+            };
+            observations.insert(
+                name,
+                WindowObservation { observed_at, kind, used_percent, window_duration_mins, resets_at },
+            );
+        }
+        Ok(observations)
+    }
+
+    async fn insert_reset(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        provider_id: i64,
+        event: &LimitResetEvent,
+        source: &str,
+        detected_at: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO limit_resets \
+             (provider_instance_id, window_kind, window_duration_mins, anchored_at, new_resets_at, \
+              previous_resets_at, used_percent_before, early_by_seconds, classification, source, detected_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(provider_id)
+        .bind(kind_column(event.window_kind))
+        .bind(event.window_duration_mins)
+        .bind(event.anchored_at)
+        .bind(event.new_resets_at)
+        .bind(event.previous_resets_at)
+        .bind(event.used_percent_before)
+        .bind(event.early_by_seconds)
+        .bind(event.classification.as_str())
+        .bind(source)
+        .bind(detected_at)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// The instant a rollout scan may start from, leaving enough overlap for a window
+    /// that reset either side of the previous scan to still be paired with a reading.
+    pub async fn reset_backfill_start(&self) -> Result<Option<i64>> {
+        let last_completed: Option<String> = sqlx::query_scalar(
+            "SELECT last_completed_at FROM retention_state WHERE job_name = 'codex_reset_backfill'",
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+        Ok(last_completed
+            .as_deref()
+            .and_then(epoch_seconds)
+            .map(|completed| completed - BACKFILL_OVERLAP_HOURS * 3_600))
+    }
+
+    /// Replays observations Codex logged itself, merged with the samples this machine
+    /// already stored, so restarts that happened while QuotaStation was closed are still
+    /// recorded. Storing an event twice is prevented by the table, not by the caller.
+    pub async fn backfill_resets(&self, observations: &[WindowObservation], scanned_at: &str) -> Result<usize> {
+        let provider_id = self.provider_id().await?;
+        let mut merged = observations.to_vec();
+        merged.extend(self.load_sample_observations(provider_id).await?);
+        merged.sort_by_key(|observation| observation.observed_at);
+
+        let mut tracker = ResetTracker::default();
+        let mut events = Vec::new();
+        for observation in merged {
+            if let Some(event) = tracker.push(observation) {
+                events.push(event);
+            }
+        }
+
+        let mut tx = self.pool.begin().await?;
+        for event in &events {
+            Self::insert_reset(&mut tx, provider_id, event, "backfill", scanned_at).await?;
+        }
+        sqlx::query(
+            "INSERT INTO retention_state (job_name, last_completed_at, last_status, last_error) \
+             VALUES ('codex_reset_backfill', ?, 'succeeded', NULL) ON CONFLICT(job_name) DO UPDATE SET \
+             last_completed_at=excluded.last_completed_at, last_status=excluded.last_status, last_error=NULL",
+        )
+        .bind(scanned_at)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(events.len())
+    }
+
+    async fn load_sample_observations(&self, provider_id: i64) -> Result<Vec<WindowObservation>> {
+        let rows = sqlx::query(
+            "SELECT window_kind, used_percent, window_duration_mins, resets_at, observed_at \
+             FROM limit_samples WHERE provider_instance_id = ? ORDER BY observed_at, id",
+        )
+        .bind(provider_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
+                Some(WindowObservation {
+                    observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
+                    kind,
+                    used_percent: row.try_get::<Option<f64>, _>("used_percent").ok()??,
+                    window_duration_mins: row.try_get::<Option<i64>, _>("window_duration_mins").ok()??,
+                    resets_at: row.try_get::<Option<i64>, _>("resets_at").ok()??,
+                })
+            })
+            .collect())
+    }
+
+    pub async fn load_recent_resets(&self) -> Result<Vec<LimitResetEvent>> {
+        let provider_id = self.provider_id().await?;
+        let rows = sqlx::query(
+            "SELECT window_kind, window_duration_mins, anchored_at, new_resets_at, previous_resets_at, \
+             used_percent_before, early_by_seconds, classification FROM limit_resets \
+             WHERE provider_instance_id = ? ORDER BY anchored_at DESC LIMIT ?",
+        )
+        .bind(provider_id)
+        .bind(RECENT_RESET_LIMIT)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
+                let window_duration_mins: i64 = row.try_get("window_duration_mins").ok()?;
+                let classification = match row.try_get::<String, _>("classification").ok()?.as_str() {
+                    "unplanned" => ResetClassification::Unplanned,
+                    _ => ResetClassification::Scheduled,
+                };
+                Some(LimitResetEvent {
+                    window_kind: kind,
+                    window_label: kind.window_label(Some(window_duration_mins)),
+                    window_duration_mins,
+                    anchored_at: row.try_get("anchored_at").ok()?,
+                    new_resets_at: row.try_get("new_resets_at").ok()?,
+                    previous_resets_at: row.try_get("previous_resets_at").ok()?,
+                    used_percent_before: row.try_get("used_percent_before").ok()?,
+                    early_by_seconds: row.try_get("early_by_seconds").ok()?,
+                    classification,
+                })
+            })
+            .collect())
     }
 
     pub async fn save_history(&self, history: &HistorySnapshot, observed_at: &str) -> Result<()> {
@@ -284,8 +506,7 @@ impl Storage {
              FROM limit_current WHERE provider_instance_id = ? ORDER BY window_kind",
         ).bind(provider_id).fetch_all(&self.pool).await?;
         snapshot.limits = limits.into_iter().filter_map(|row| {
-            let kind: String = row.try_get("window_kind").ok()?;
-            let kind = match kind.as_str() { "primary" => LimitKind::Primary, "secondary" => LimitKind::Secondary, _ => return None };
+            let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
             let window_duration_mins = row.try_get("window_duration_mins").ok();
             Some(LimitWindow {
                 kind,
@@ -297,6 +518,7 @@ impl Storage {
             })
         }).collect();
 
+        snapshot.recent_resets = self.load_recent_resets().await?;
         let date = jiff::Zoned::now().date().to_string();
         let today = self.load_usage_range(&date, &date).await?;
         snapshot.today = today.usage;
@@ -508,6 +730,7 @@ mod tests {
             [
                 "daily_usage",
                 "limit_current",
+                "limit_resets",
                 "limit_rollups",
                 "limit_samples",
                 "provider_instances",
@@ -573,5 +796,87 @@ mod tests {
         assert_eq!(snapshot.limits[0].label, "5-hour window");
         assert_eq!(snapshot.limits[0].remaining_percent, Some(60.0));
         assert_eq!(snapshot.freshness, Freshness::Stale, "a restored snapshot is never fresh");
+    }
+
+    const WEEK_MINUTES: i64 = 10_080;
+
+    fn weekly_live(used_percent: f64, resets_at: i64) -> LiveSnapshot {
+        LiveSnapshot {
+            plan_type: Some("plus".to_string()),
+            earned_reset_count: Some(0),
+            limits: vec![LimitWindow {
+                kind: LimitKind::Primary,
+                label: LimitKind::Primary.window_label(Some(WEEK_MINUTES)),
+                used_percent: Some(used_percent),
+                remaining_percent: Some(100.0 - used_percent),
+                window_duration_mins: Some(WEEK_MINUTES),
+                resets_at: Some(resets_at),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn a_window_that_restarts_early_is_recorded_against_the_reading_it_replaced() {
+        let (storage, _database) = open_storage().await;
+        // Two days of the weekly window were spent and four remained.
+        storage
+            .save_live(&weekly_live(52.0, 1_786_800_000), "2026-08-10T15:00:00Z")
+            .await
+            .expect("save the reading before the restart");
+        storage
+            .save_live(&weekly_live(0.0, 1_787_026_583), "2026-08-11T09:29:00Z")
+            .await
+            .expect("save the reading after the restart");
+
+        let snapshot = storage.load_snapshot().await.expect("load snapshot");
+        assert_eq!(snapshot.recent_resets.len(), 1);
+        let event = &snapshot.recent_resets[0];
+        assert_eq!(event.classification, ResetClassification::Unplanned);
+        assert_eq!(event.used_percent_before, 52.0);
+        assert_eq!(event.anchored_at, 1_787_026_583 - WEEK_MINUTES * 60);
+        assert_eq!(event.previous_resets_at, 1_786_800_000);
+    }
+
+    #[tokio::test]
+    async fn a_window_ageing_out_earlier_requests_is_not_recorded_as_a_restart() {
+        let (storage, _database) = open_storage().await;
+        let expiry = 1_786_800_000;
+        storage.save_live(&weekly_live(15.0, expiry), "2026-06-04T10:00:00Z").await.expect("save first");
+        storage.save_live(&weekly_live(4.0, expiry + 7_200), "2026-06-04T15:00:00Z").await.expect("save second");
+        assert!(storage.load_recent_resets().await.expect("load resets").is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_backfill_recovers_restarts_from_readings_taken_while_the_app_was_closed() {
+        let (storage, _database) = open_storage().await;
+        let anchor = 1_786_500_000;
+        let observations = vec![
+            WindowObservation {
+                observed_at: anchor,
+                kind: LimitKind::Primary,
+                used_percent: 25.0,
+                window_duration_mins: WEEK_MINUTES,
+                resets_at: anchor + 3 * 86_400,
+            },
+            WindowObservation {
+                observed_at: anchor + 3_600,
+                kind: LimitKind::Primary,
+                used_percent: 0.0,
+                window_duration_mins: WEEK_MINUTES,
+                resets_at: anchor + 3_600 + WEEK_MINUTES * 60,
+            },
+        ];
+        let recorded = storage
+            .backfill_resets(&observations, "2026-08-12T00:00:00Z")
+            .await
+            .expect("run the backfill");
+        assert_eq!(recorded, 1);
+
+        // A second scan sees the same readings again and must not duplicate the event.
+        storage.backfill_resets(&observations, "2026-08-12T01:00:00Z").await.expect("rerun the backfill");
+        let events = storage.load_recent_resets().await.expect("load resets");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].classification, ResetClassification::Unplanned);
+        assert!(storage.reset_backfill_start().await.expect("read cursor").is_some());
     }
 }
