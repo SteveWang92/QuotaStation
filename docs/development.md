@@ -32,6 +32,11 @@ Start the complete desktop application with the Tauri development server:
 npm run tauri dev
 ```
 
+This is the only mode that shows development output: the core's messages appear in the
+terminal that started it, and the webview offers right-click → Inspect. The application
+stops when that terminal stops. Built executables are windowed applications with no
+console attached, so they print nothing anywhere; use this mode to diagnose them.
+
 For renderer-only work, start Vite without the Rust host:
 
 ```powershell
@@ -62,31 +67,37 @@ cargo test --manifest-path src-tauri/Cargo.toml
 Both suites, plus the renderer build, run on a Windows runner for every pull request into
 `dev` and every push to `dev` or `main`; see `.github/workflows/ci.yml`.
 
-Build the renderer:
+### What each build command produces
 
-```powershell
-npm run build
-```
+The commands below overlap, and choosing the wrong one is the usual reason a build "works"
+but the result cannot be run. Each row states what lands on disk and what it is for.
 
-Check the Rust application:
+| Command | Produces | Use it for |
+| --- | --- | --- |
+| `npm run build` | `dist/` — the compiled renderer only | Type-checking and bundling the interface. Produces no executable |
+| `cargo check --manifest-path src-tauri/Cargo.toml` | Nothing on disk | Confirming the core compiles, faster than a build |
+| `npm run tauri dev` | A running application, plus a **dev-server-bound** `src-tauri/target/debug/quotastation.exe` | Development and diagnosis. See the caution below |
+| `npm run tauri -- build --debug --no-bundle` | `src-tauri/target/debug/quotastation.exe`, standalone | A runnable build with debug assertions and symbols |
+| `npm run tauri build -- --no-bundle` | `src-tauri/target/release/quotastation.exe`, standalone | The optimized application, run straight from `target/` |
+| `npm run tauri -- build --bundles nsis` | An NSIS installer under `src-tauri/target/release/bundle/nsis/` | Distribution only, as part of an explicitly requested release |
 
-```powershell
-cargo check --manifest-path src-tauri/Cargo.toml
-```
+Both `--no-bundle` forms embed `dist/` into the executable, so the file needs nothing beside
+it and runs from wherever it sits. The build runs `npm run build` first, so the renderer is
+always current. Windows 11 supplies the WebView2 runtime these builds require.
 
-Build a local debug executable without producing an installer:
+⚠️ `npm run tauri dev` writes its own `quotastation.exe` to the same `target/debug/` path,
+and that one loads the interface from `http://localhost:1420` instead of from itself.
+Launching it later without the dev server running gives a window with nothing in it. After
+running the development server, rebuild with `--debug --no-bundle` before running the debug
+executable by hand.
 
-```powershell
-npm run tauri -- build --debug --no-bundle
-```
+⚠️ Only one instance runs at a time. Starting a second executable hands over to the
+instance already running and exits immediately, which looks like the new build crashing.
+Close the running copy — including one started from the tray — before launching another.
 
-The executable is written to `src-tauri/target/debug/quotastation.exe`. Producing the NSIS
-installer is a release task and should only be done as part of an explicitly requested
-release workflow:
-
-```powershell
-npm run tauri -- build --bundles nsis
-```
+Every build shares one database and one settings file under
+`%APPDATA%\me.stevewang.quotastation`, so a development build sees the installed
+application's history, quota, and provider settings.
 
 Use the minimum relevant check for a focused change. Documentation-only changes need only
 a review of the edited files.
@@ -122,7 +133,9 @@ newest result for each acquisition path is always preserved.
 
 QuotaStation keeps live quota and local history acquisition independent:
 
-- Live quota refreshes at startup, on manual refresh, and every five minutes.
+- Live quota refreshes at startup, on manual refresh, and on a schedule of its own for each
+  provider: every five minutes for Codex, which answers from a local process, and every
+  fifteen minutes for Claude Code, whose remote usage endpoint rate-limits reads.
 - History refreshes at startup and on manual refresh. A recursive watcher reuses ccusage's
   resolved Codex session locations and debounces `.jsonl` changes for two seconds.
 - A full history reconciliation runs every fifteen minutes to recover missed filesystem
