@@ -462,6 +462,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccusage-adapter-claude"
+version = "0.0.0"
+dependencies = [
+ "ccusage-adapter-common",
+ "ccusage-core",
+ "jiff",
+ "memchr",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ccusage-adapter-codex"
 version = "0.0.0"
 dependencies = [
@@ -3122,6 +3135,7 @@ name = "quotastation"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ccusage-adapter-claude",
  "ccusage-adapter-codex",
  "ccusage-core",
  "jiff",

@@ -6,13 +6,13 @@ QuotaStation includes source code from the following project.
 
 - Repository: <https://github.com/ccusage/ccusage>
 - Revision: `033c1f7631f603fc939fdc85163e8203f0084f83`
-- Included components: `ccusage-adapter-codex`, `ccusage-adapter-common`,
-  `ccusage-core`, `ccusage-cli`, and `ccusage-terminal`
+- Included components: `ccusage-adapter-claude`, `ccusage-adapter-codex`,
+  `ccusage-adapter-common`, `ccusage-core`, `ccusage-cli`, and `ccusage-terminal`
 - License: MIT
 - Copyright: Copyright (c) 2025 ryoppippi
-- Local use: Codex session discovery, parsing, replay/fork deduplication,
+- Local use: Codex and Claude Code session discovery, parsing, replay/fork deduplication,
   aggregation, service-tier interpretation, and cost calculation
-- Local modifications: exposes the adapter's resolved Codex usage directories through a
+- Local modifications: each adapter exposes its resolved usage directories through a
   narrow read-only function so QuotaStation's watcher follows the exact same discovery rules
   as the parser
 
