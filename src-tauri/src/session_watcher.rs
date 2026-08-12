@@ -112,6 +112,11 @@ async fn run_event_loop(
                 }
                 for provider in pending {
                     refresh::refresh_history_for_provider(&app, &state, provider).await;
+                    // A provider whose quota window is derived from those same files has
+                    // a new window to report as soon as they change.
+                    if provider.live_follows_logs() {
+                        refresh::refresh_live_for_provider(&app, &state, provider).await;
+                    }
                 }
             }
         }

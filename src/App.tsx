@@ -5,7 +5,8 @@ import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "./errors";
 import { useSnapshot } from "./useSnapshot";
-import { ClaudeConsent } from "./components/ClaudeConsent";
+import { ClaudeCrossCheck } from "./components/ClaudeCrossCheck";
+import { ProviderSetup } from "./components/ProviderSetup";
 import { QuotaSection } from "./components/QuotaSection";
 import { QuickPanel } from "./components/QuickPanel";
 import { TaskbarWidget } from "./components/TaskbarWidget";
@@ -90,7 +91,7 @@ function Dashboard() {
     }
   }, [loadDiagnostics, loadUsageRange]);
 
-  const { workspace, error: snapshotError } = useSnapshot(EMPTY_WORKSPACE, onSnapshot);
+  const { workspace, error: snapshotError, loaded } = useSnapshot(EMPTY_WORKSPACE, onSnapshot);
   const historyProvider =
     workspace.providers.find((provider) => provider.provider === selectedProvider) ??
     workspace.providers[0];
@@ -148,6 +149,8 @@ function Dashboard() {
     };
   }, [loadUsageRange]);
 
+  const showCrossCheckCard = workspace.providers.some((provider) => provider.provider === "claude");
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -165,7 +168,8 @@ function Dashboard() {
           </button>
         </div>
       </header>
-      <ClaudeConsent />
+      {showCrossCheckCard ? <ClaudeCrossCheck /> : null}
+      {loaded && workspace.providers.length === 0 ? <ProviderSetup /> : null}
       <div className={`provider-grid${workspace.providers.length <= 1 ? " single" : ""}`}>
         {workspace.providers.map((provider) => (
           <section key={provider.provider} className="provider-panel">
@@ -183,19 +187,21 @@ function Dashboard() {
           </section>
         ))}
       </div>
-      <UsageSummary
-        snapshot={historyProvider}
-        providers={workspace.providers}
-        activeProvider={selectedProvider}
-        onSelectProvider={selectProvider}
-        range={usageRange}
-        selection={activeRange}
-        loading={rangeLoading}
-        error={rangeError}
-        onSelectRange={selectRange}
-      />
+      {historyProvider ? (
+        <UsageSummary
+          snapshot={historyProvider}
+          providers={workspace.providers}
+          activeProvider={selectedProvider}
+          onSelectProvider={selectProvider}
+          range={usageRange}
+          selection={activeRange}
+          loading={rangeLoading}
+          error={rangeError}
+          onSelectRange={selectRange}
+        />
+      ) : null}
       <StatusBar
-        snapshot={historyProvider}
+        status={workspace.aggregate}
         diagnostics={diagnostics}
         interfaceError={snapshotError ?? commandError}
       />

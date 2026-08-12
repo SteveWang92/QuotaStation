@@ -1,7 +1,7 @@
 export type Freshness = "fresh" | "stale" | "unavailable";
 
 /** Matches the Rust `ProviderKind`, which is also the database's provider key. */
-export type ProviderKey = "codex";
+export type ProviderKey = "codex" | "claude";
 
 export interface CompactStatus {
   level: "healthy" | "warning" | "critical" | "stale" | "unavailable";

@@ -20,7 +20,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use tokio::time::{Duration, timeout};
 
-use crate::domain::{LimitKind, LimitWindow, LiveSnapshot};
+use crate::domain::{LimitKind, LimitWindow};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -54,29 +54,50 @@ struct UsageBucket {
 /// keeping the account permanently limited.
 static RETRY_AFTER_UNTIL: AtomicI64 = AtomicI64::new(0);
 
-pub async fn read_live() -> Result<LiveSnapshot> {
-    timeout(REQUEST_TIMEOUT, read_live_inner())
+/// The shortest gap between two reads of the endpoint, as an epoch second and a duration.
+/// Claude Code polls the same endpoint on its own schedule; reading it more often than
+/// this wins nothing and costs both readers the budget they share.
+const MIN_ATTEMPT_INTERVAL_SECS: i64 = 900;
+static LAST_ATTEMPT_AT: AtomicI64 = AtomicI64::new(0);
+
+/// The plan recorded next to the sign-in token. Reading it involves no request and no
+/// credential leaving this machine, so the session-log path can name the plan too.
+pub fn plan_type() -> Option<String> {
+    read_credentials().ok().and_then(|credentials| credentials.plan_type)
+}
+
+/// The quota windows as Anthropic itself reports them, or why they could not be read.
+///
+/// Claude Code reads this same endpoint for its own usage display, and the endpoint
+/// rate-limits an account as a whole, so two readers compete for one small budget. This
+/// one therefore yields: it never asks more often than [`MIN_ATTEMPT_INTERVAL_SECS`],
+/// always waits out a `Retry-After`, and its failures leave the session-log windows in
+/// place rather than becoming the provider's state.
+pub async fn read_windows() -> Result<Vec<LimitWindow>> {
+    timeout(REQUEST_TIMEOUT, read_windows_inner())
         .await
         .context("Claude usage read timed out")?
 }
 
-async fn read_live_inner() -> Result<LiveSnapshot> {
+async fn read_windows_inner() -> Result<Vec<LimitWindow>> {
     let now = jiff::Timestamp::now().as_second();
     let retry_at = RETRY_AFTER_UNTIL.load(Ordering::Relaxed);
     if retry_at > now {
         bail!("{}", rate_limited_message(Some(retry_at - now)));
     }
+    let last_attempt = LAST_ATTEMPT_AT.load(Ordering::Relaxed);
+    if last_attempt > 0 && now - last_attempt < MIN_ATTEMPT_INTERVAL_SECS {
+        bail!(
+            "Waiting before the next usage read so Claude Code's own reads are not crowded out."
+        );
+    }
     let credentials = read_credentials()?;
     if credentials.is_expired() {
         bail!("{SIGN_IN_EXPIRED}");
     }
+    LAST_ATTEMPT_AT.store(now, Ordering::Relaxed);
     let response = fetch_usage(&credentials.access_token).await?;
-    Ok(LiveSnapshot {
-        plan_type: credentials.plan_type,
-        limits: normalize(&response),
-        // Claude has no reset-credit inventory of the kind Codex grants.
-        earned_reset_count: None,
-    })
+    Ok(normalize(&response))
 }
 
 fn normalize(response: &UsageResponse) -> Vec<LimitWindow> {
@@ -322,9 +343,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a signed-in Claude Code installation and network access"]
     async fn claude_usage_endpoint_still_reports_both_windows() {
-        let live = read_live().await.expect("read live Claude quota");
-        println!("plan type: {:?}", live.plan_type);
-        for limit in &live.limits {
+        let limits = read_windows().await.expect("read live Claude quota");
+        println!("plan type: {:?}", plan_type());
+        for limit in &limits {
             println!(
                 "{} used {:?}% remaining {:?}% resets_at {:?}",
                 limit.label, limit.used_percent, limit.remaining_percent, limit.resets_at
@@ -332,7 +353,7 @@ mod tests {
             let used = limit.used_percent.expect("a window must report utilization");
             assert!((0.0..=100.0).contains(&used), "utilization must be a percentage");
         }
-        assert!(!live.limits.is_empty(), "the endpoint must report at least one window");
+        assert!(!limits.is_empty(), "the endpoint must report at least one window");
     }
 
     #[test]

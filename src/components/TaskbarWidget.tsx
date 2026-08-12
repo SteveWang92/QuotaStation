@@ -63,9 +63,11 @@ export function TaskbarWidget({ initialWorkspace }: { initialWorkspace: Workspac
       className={`taskbar-widget-shell${providers.length <= 1 ? " single" : ""}`}
       style={{ "--taskbar-status-color": workspace.aggregate.color } as React.CSSProperties}
     >
-      {providers.map((snapshot) => (
-        <ProviderColumn key={snapshot.provider} snapshot={snapshot} />
-      ))}
+      {providers.length > 0 ? (
+        providers.map((snapshot) => <ProviderColumn key={snapshot.provider} snapshot={snapshot} />)
+      ) : (
+        <span className="taskbar-unavailable">No provider detected</span>
+      )}
     </main>
   );
 }

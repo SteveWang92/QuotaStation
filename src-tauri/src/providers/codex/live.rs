@@ -160,5 +160,7 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
         plan_type,
         limits,
         earned_reset_count: rate_result.pointer("/rateLimitResetCredits/availableCount").and_then(Value::as_u64),
+        // Codex publishes its own percentages, so nothing needs corroborating.
+        cross_check: crate::domain::CrossCheck::NotAttempted,
     })
 }

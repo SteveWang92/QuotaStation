@@ -1,17 +1,17 @@
 import { AlertTriangle, CheckCircle2, ChevronDown } from "lucide-react";
 import { useState } from "react";
 import { formatRevision, formatTimestamp } from "../format";
-import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
+import type { CompactStatus, DiagnosticsSnapshot } from "../types";
 
 interface StatusBarProps {
-  snapshot: ProviderSnapshot;
+  /** The workspace status, so the bar reads the same whether one provider is shown or two. */
+  status: CompactStatus;
   diagnostics: DiagnosticsSnapshot;
   interfaceError: string | null;
 }
 
-export function StatusBar({ snapshot, diagnostics, interfaceError }: StatusBarProps) {
+export function StatusBar({ status, diagnostics, interfaceError }: StatusBarProps) {
   const [expanded, setExpanded] = useState(false);
-  const status = snapshot.compactStatus;
   const healthy = status.level === "healthy";
   return (
     <footer className={`status-bar ${status.level}`} style={{ "--status-color": status.color } as React.CSSProperties}>

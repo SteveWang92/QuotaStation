@@ -20,6 +20,9 @@ const MAX_RETRY_MS = 5_000;
 export function useSnapshot(initialSnapshot: WorkspaceSnapshot, onSnapshot?: () => void) {
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [error, setError] = useState<string | null>(null);
+  // A workspace with no providers means something different before and after the first
+  // answer: still starting, or no provider client on this machine.
+  const [loaded, setLoaded] = useState(false);
   const onSnapshotRef = useRef(onSnapshot);
 
   useEffect(() => {
@@ -34,6 +37,7 @@ export function useSnapshot(initialSnapshot: WorkspaceSnapshot, onSnapshot?: () 
 
     const apply = (next: WorkspaceSnapshot) => {
       setSnapshot(next);
+      setLoaded(true);
       setError(null);
       retryDelay = FIRST_RETRY_MS;
       onSnapshotRef.current?.();
@@ -76,5 +80,5 @@ export function useSnapshot(initialSnapshot: WorkspaceSnapshot, onSnapshot?: () 
     };
   }, []);
 
-  return { workspace: snapshot, error };
+  return { workspace: snapshot, error, loaded };
 }

@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{
     AppState,
-    domain::WorkspaceSnapshot,
+    domain::{CrossCheck, WorkspaceSnapshot},
     providers::{self, ProviderKind},
     sanitize::sanitize_error,
 };
@@ -16,7 +16,8 @@ const STORAGE_FALLBACK: &str = "Local storage write failed";
 /// Refreshes every enabled provider at once. A provider that fails leaves the others
 /// untouched, so one broken client never blanks the whole display.
 pub async fn refresh_all(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSnapshot {
-    let providers = state.enabled_providers();
+    // A client can be installed, or signed in for the first time, while this is running.
+    let providers = state.detect_providers();
     tokio::join!(
         refresh_live_for(app, state, &providers),
         refresh_history_for(app, state, &providers)
@@ -50,7 +51,9 @@ async fn refresh_live_for(app: &AppHandle, state: &Arc<AppState>, providers: &[P
                 snapshot.last_attempt_at = Some(started_at.clone());
             })
             .await;
-        apply_live(state, provider, &started_at, providers::read_live(provider).await).await;
+        let cross_check = state.cross_check_enabled(provider);
+        let live = providers::read_live(provider, cross_check).await;
+        apply_live(state, provider, &started_at, live).await;
     }
     publish_snapshot(app, state).await;
 }
@@ -102,6 +105,7 @@ async fn apply_live(
     let completed_at = now();
     match result {
         Ok(live) => {
+            record_cross_check(state, provider, started_at, &completed_at, &live.cross_check).await;
             let save_error = state
                 .storage
                 .save_live(provider, &live, &completed_at)
@@ -205,6 +209,27 @@ async fn apply_history(
             &completed_at,
             error.as_deref(),
         )
+        .await;
+}
+
+/// The optional second source gets its own diagnostics row, so a reading it could not
+/// confirm is visible without turning the provider itself into a failure.
+async fn record_cross_check(
+    state: &Arc<AppState>,
+    provider: ProviderKind,
+    started_at: &str,
+    completed_at: &str,
+    outcome: &CrossCheck,
+) {
+    let Some(path) = provider.cross_check_path() else { return };
+    let error = match outcome {
+        CrossCheck::NotAttempted => return,
+        CrossCheck::Confirmed => None,
+        CrossCheck::Failed(message) => Some(sanitize_error(message, PROVIDER_FALLBACK)),
+    };
+    let _ = state
+        .storage
+        .record_refresh(provider, &path, started_at, completed_at, error.as_deref())
         .await;
 }
 

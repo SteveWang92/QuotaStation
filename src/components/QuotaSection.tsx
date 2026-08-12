@@ -99,10 +99,14 @@ export function QuotaSection({ provider, limits, earnedResetCount, resets, statu
           <p>QuotaStation will keep retrying the {provider} quota source.</p>
         </div>
       )}
-      <div className="reset-inventory">
-        <span>Earned resets</span>
-        <strong>{earnedResetCount ?? "Unknown"}</strong>
-      </div>
+      {/* Only a provider that grants reset credits has an inventory to report; for the
+          others the row would say "Unknown" forever. */}
+      {earnedResetCount === null ? null : (
+        <div className="reset-inventory">
+          <span>Earned resets</span>
+          <strong>{earnedResetCount}</strong>
+        </div>
+      )}
       {!compact && resets.length > 0 ? <ResetHistory resets={resets} /> : null}
     </section>
   );

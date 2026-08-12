@@ -33,12 +33,16 @@ export function emptySnapshot(provider: ProviderKey, displayName: string): Provi
   };
 }
 
+/**
+ * The placeholder carries no providers: which ones exist is decided by what the core
+ * finds on this machine, so guessing one here would show a column that may not be there.
+ */
 export const EMPTY_WORKSPACE: WorkspaceSnapshot = {
-  providers: [emptySnapshot("codex", "Codex")],
+  providers: [],
   aggregate: {
     level: "unavailable",
-    label: "Provider unavailable",
-    message: "No current quota data is available.",
-    color: "#ff7469",
+    label: "Starting",
+    message: "Reading local provider data.",
+    color: "#9aa4ad",
   },
 };

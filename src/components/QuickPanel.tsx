@@ -5,6 +5,7 @@ import { errorMessage } from "../errors";
 import { formatCurrency, formatNumber } from "../format";
 import type { ProviderSnapshot, WorkspaceSnapshot } from "../types";
 import { useSnapshot } from "../useSnapshot";
+import { ProviderSetup } from "./ProviderSetup";
 import { QuotaSection } from "./QuotaSection";
 
 function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
@@ -32,7 +33,7 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
 }
 
 export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSnapshot }) {
-  const { workspace, error } = useSnapshot(initialWorkspace);
+  const { workspace, error, loaded } = useSnapshot(initialWorkspace);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
@@ -61,9 +62,13 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
         </button>
       </header>
       <div className={`quick-providers${workspace.providers.length <= 1 ? " single" : ""}`}>
-        {workspace.providers.map((snapshot) => (
-          <ProviderColumn key={snapshot.provider} snapshot={snapshot} />
-        ))}
+        {workspace.providers.length > 0 ? (
+          workspace.providers.map((snapshot) => (
+            <ProviderColumn key={snapshot.provider} snapshot={snapshot} />
+          ))
+        ) : loaded ? (
+          <ProviderSetup compact />
+        ) : null}
       </div>
       {failure ? <p className="quick-freshness failed">{failure}</p> : null}
       <button

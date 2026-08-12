@@ -258,7 +258,17 @@ impl ProviderSnapshot {
                     message: format!("{provider} quota and local history are current."),
                     color: "#b5e835".to_string(),
                 },
-                None => CompactStatus::unavailable(&provider),
+                // A window can be known without its allowance being published, which is
+                // the ordinary case for a provider read from its own logs. That is a
+                // working provider with less to say, not a broken one.
+                None => CompactStatus {
+                    level: CompactStatusLevel::Healthy,
+                    label: "Window tracked".to_string(),
+                    message: format!(
+                        "{provider} publishes no remaining percentage; the window timing comes from local history."
+                    ),
+                    color: "#b5e835".to_string(),
+                },
             }
         };
     }
@@ -477,4 +487,18 @@ pub struct LiveSnapshot {
     pub plan_type: Option<String>,
     pub limits: Vec<LimitWindow>,
     pub earned_reset_count: Option<u64>,
+    /// What an optional secondary source had to say about these windows. It is reported
+    /// rather than persisted: the windows above stand on their own either way.
+    pub cross_check: CrossCheck,
+}
+
+/// Whether a provider's optional second source confirmed the reading it is attached to.
+/// A source that only ever corrects the primary one must not be able to turn a working
+/// provider into a failed one, so its outcome travels beside the reading.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum CrossCheck {
+    #[default]
+    NotAttempted,
+    Confirmed,
+    Failed(String),
 }

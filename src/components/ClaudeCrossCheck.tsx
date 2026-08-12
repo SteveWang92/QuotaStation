@@ -4,16 +4,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../errors";
 
 interface ProviderSettings {
-  claudeEnabled: boolean;
+  claudeCrossCheckEnabled: boolean;
   claudeConsentGranted: boolean;
 }
 
 /**
- * Claude quota is the one acquisition path that presents a stored credential to a remote
- * service, so what that involves is spelled out before it can be switched on for the
- * first time. Once accepted, the tray toggle is enough and this card stays out of the way.
+ * Claude Code's session logs give the window that is running and when it ends, but never
+ * how much of it is left. Anthropic's usage endpoint is the only source for that, and
+ * asking it costs a stored credential and a share of a rate limit Claude Code itself is
+ * already using. That trade is explained before it can be taken for the first time; once
+ * accepted, the tray toggle is enough and this card stays out of the way.
  */
-export function ClaudeConsent() {
+export function ClaudeCrossCheck() {
   const [settings, setSettings] = useState<ProviderSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -32,8 +34,9 @@ export function ClaudeConsent() {
     void load();
   }, [load]);
 
-  // The tray toggle cannot turn Claude on by itself the first time, so it sends the user
-  // here instead. Without this the dashboard simply appears and the card is easy to miss.
+  // The tray toggle cannot turn the cross-check on by itself the first time, so it sends
+  // the user here instead. Without this the dashboard simply appears and the card is easy
+  // to miss.
   useEffect(() => {
     let disposed = false;
     let stopListening = () => {};
@@ -56,7 +59,9 @@ export function ClaudeConsent() {
       setBusy(true);
       setError(null);
       try {
-        setSettings(await invoke<ProviderSettings>("set_claude_enabled", { enabled, grantConsent }));
+        setSettings(
+          await invoke<ProviderSettings>("set_claude_cross_check", { enabled, grantConsent }),
+        );
       } catch (cause) {
         setError(errorMessage(cause));
       } finally {
@@ -66,25 +71,32 @@ export function ClaudeConsent() {
     [],
   );
 
-  if (!settings || settings.claudeEnabled) return null;
+  if (!settings || settings.claudeCrossCheckEnabled) return null;
 
   return (
     <section
       ref={card}
       className={`provider-consent${requested ? " requested" : ""}`}
-      aria-label="Claude Code monitoring"
+      aria-label="Claude Code online quota cross-check"
     >
       <div>
-        <h2>Show Claude Code usage</h2>
+        <h2>Check Claude quota online</h2>
         {settings.claudeConsentGranted ? (
-          <p>Claude Code monitoring is turned off. Turn it back on to see it beside Codex.</p>
+          <p>
+            The online cross-check is off. Claude Code's windows still come from its session
+            logs; turning this back on adds the remaining percentage to them.
+          </p>
         ) : (
           <p>
-            Unlike Codex, Claude Code publishes no local quota interface. To show its 5-hour
-            and weekly windows, QuotaStation reads the sign-in token Claude Code already
-            stored on this machine and sends it to Anthropic's own usage endpoint. The token
-            stays in the application core: it is never saved, logged, or shown. Nothing is
-            written to your account, and your local history is read without it.
+            Claude Code's session logs already give the window that is running and when it
+            ends. They do not publish an allowance, so the percentage remaining is unknown
+            without asking Anthropic. Turning this on lets QuotaStation read the sign-in token
+            Claude Code stored on this machine and present it to Anthropic's usage endpoint.
+            The token stays in the application core: it is never saved, logged, or shown, and
+            nothing is written to your account. Note that Claude Code reads that same endpoint
+            for its own usage display and the rate limit is shared, so the two can crowd each
+            other out — a reading that fails changes nothing, and the windows from the logs
+            stay on display.
           </p>
         )}
         {error ? <p className="provider-consent-error">{error}</p> : null}
@@ -94,7 +106,7 @@ export function ClaudeConsent() {
         onClick={() => void setEnabled(true, !settings.claudeConsentGranted)}
         disabled={busy}
       >
-        {settings.claudeConsentGranted ? "Turn on" : "Enable Claude Code"}
+        {settings.claudeConsentGranted ? "Turn on" : "Enable cross-check"}
       </button>
     </section>
   );

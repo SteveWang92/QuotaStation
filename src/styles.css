@@ -127,6 +127,12 @@ button { font: inherit; }
 .provider-tabs button.active { color: #10150c; background: var(--lime); }
 
 .provider-consent { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.provider-setup { padding: 22px; border: 1px dashed var(--line); border-radius: 8px; background: var(--surface); }
+.provider-setup h2 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
+.provider-setup p { margin: 0; max-width: 70ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.provider-setup.compact { padding: 16px; }
+.provider-setup.compact h2 { font-size: 13px; }
+.provider-setup.compact p { font-size: 11px; }
 .provider-consent.requested { border-color: var(--lime); box-shadow: 0 0 0 1px var(--lime); }
 .provider-consent h2 { margin: 0 0 5px; font-size: 14px; font-weight: 650; }
 .provider-consent p { margin: 0; max-width: 78ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -266,9 +272,11 @@ button { font: inherit; }
 .quick-panel-header svg { width: 16px; height: 16px; }
 /* Providers sit side by side so the panel answers "how much is left?" for both in one
    look. A single provider keeps the original single-column width. */
-.quick-providers { min-height: 0; flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+/* The columns scroll rather than grow: the panel is a fixed-size window, and content
+   taller than it must not run underneath the dashboard button below. */
+.quick-providers { min-height: 0; flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; overflow-y: auto; }
 .quick-providers.single { grid-template-columns: minmax(0, 1fr); }
-.quick-provider { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.quick-provider { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .quick-provider-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .quick-provider-header h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .quick-provider-header span { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }

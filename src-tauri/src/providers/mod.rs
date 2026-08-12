@@ -39,15 +39,13 @@ impl ProviderKind {
         }
     }
 
-    /// How often live quota may be read. Codex answers from a local process, so it is
-    /// polled as often as the display needs. Claude's usage endpoint rate-limits reads
-    /// over a window of tens of minutes and answers a five-minute poll with a refusal,
-    /// so it is read far less often; its windows are five hours and seven days, which a
-    /// quarter-hour reading still tracks closely.
+    /// How often live quota may be read. Codex answers from a local process; Claude is
+    /// read from its session logs, which means parsing them, and a five-hour window that
+    /// only moves when a new one opens does not repay doing that every five minutes.
     pub fn live_refresh_interval(self) -> Duration {
         match self {
             ProviderKind::Codex => Duration::from_secs(300),
-            ProviderKind::Claude => Duration::from_secs(900),
+            ProviderKind::Claude => Duration::from_secs(600),
         }
     }
 
@@ -58,6 +56,28 @@ impl ProviderKind {
 
     pub fn history_path(self) -> String {
         format!("{}_history", self.key())
+    }
+
+    /// Whether this provider's live quota comes from the same session files the history
+    /// is parsed from, so a change to them is worth re-reading the quota as well.
+    pub fn live_follows_logs(self) -> bool {
+        matches!(self, ProviderKind::Claude)
+    }
+
+    /// Whether this provider's client has left usage records on this machine. A provider
+    /// nobody uses is not shown at all, so the display never carries a column that can
+    /// only ever say "unavailable".
+    pub fn is_installed(self) -> bool {
+        self.usage_paths().is_ok_and(|paths| !paths.is_empty())
+    }
+
+    /// The acquisition path for a provider's optional second quota source, when it has
+    /// one. Only Claude does: its logs give window timing but no allowance.
+    pub fn cross_check_path(self) -> Option<String> {
+        match self {
+            ProviderKind::Codex => None,
+            ProviderKind::Claude => Some(format!("{}_api", self.key())),
+        }
     }
 
     /// Directories holding this provider's usage records, for filesystem watching.
@@ -72,11 +92,12 @@ impl ProviderKind {
 }
 
 /// Two providers is not enough to justify an async trait and the dependency it needs, so
-/// acquisition dispatches on the kind instead.
-pub async fn read_live(kind: ProviderKind) -> Result<LiveSnapshot> {
+/// acquisition dispatches on the kind instead. `cross_check` enables the optional second
+/// source of any provider that has one; a provider without one ignores it.
+pub async fn read_live(kind: ProviderKind, cross_check: bool) -> Result<LiveSnapshot> {
     match kind {
         ProviderKind::Codex => codex::read_live().await,
-        ProviderKind::Claude => claude::read_live().await,
+        ProviderKind::Claude => claude::read_live(cross_check).await,
     }
 }
 

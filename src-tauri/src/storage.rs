@@ -679,10 +679,20 @@ impl Storage {
         }
 
         let name = provider.display_name();
-        Ok([
+        let mut paths = vec![
             (provider.live_path(), format!("{name} live quota"), live_success),
             (provider.history_path(), format!("{name} local history"), history_success),
-        ]
+        ];
+        // A provider with a second, optional quota source reports it separately, so a
+        // cross-check that could not run is visible without looking like a failed read.
+        if let Some(path) = provider.cross_check_path() {
+            let last_success_at = latest
+                .get(&path)
+                .filter(|(_, status, _)| status == "succeeded")
+                .map(|(started_at, _, _)| started_at.clone());
+            paths.push((path, format!("{name} online cross-check"), last_success_at));
+        }
+        Ok(paths
         .into_iter()
         .map(|(path, label, last_success_at)| {
             let run = latest.get(&path);
@@ -706,7 +716,7 @@ mod tests {
     use super::*;
 
     const CODEX: ProviderKind = ProviderKind::Codex;
-    use crate::domain::{HistoryDay, LimitWindow, LiveSnapshot};
+    use crate::domain::{CrossCheck, HistoryDay, LimitWindow, LiveSnapshot};
 
     /// Each test owns a database file in the temporary directory and removes it, along
     /// with the write-ahead files SQLite may leave beside it, when it finishes.
@@ -825,6 +835,7 @@ mod tests {
                 window_duration_mins: Some(300),
                 resets_at: Some(1_800_000_000),
             }],
+            cross_check: CrossCheck::NotAttempted,
         };
         storage.save_live(CODEX, &live, "2026-08-11T00:00:00Z").await.expect("save live");
 
@@ -850,6 +861,7 @@ mod tests {
                 window_duration_mins: Some(WEEK_MINUTES),
                 resets_at: Some(resets_at),
             }],
+            cross_check: CrossCheck::NotAttempted,
         }
     }
 
