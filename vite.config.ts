@@ -7,6 +7,9 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    // The core's build directory is not renderer source, and watching it makes the dev
+    // server die with EBUSY the moment cargo rewrites a locked artifact.
+    watch: { ignored: ["**/src-tauri/**"] },
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
