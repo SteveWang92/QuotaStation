@@ -27,11 +27,23 @@ use tokio::sync::{Mutex, RwLock};
 struct AppSettings {
     #[serde(default = "default_taskbar_widget_enabled")]
     taskbar_widget_enabled: bool,
+    /// Claude quota is the one acquisition path that presents a stored credential to a
+    /// remote endpoint, so it stays off until it is turned on deliberately.
+    #[serde(default)]
+    claude_enabled: bool,
+    /// Set once the explanation of what enabling Claude does has been accepted, so the
+    /// consent card is not shown again on every toggle.
+    #[serde(default)]
+    claude_consent_granted: bool,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
-        Self { taskbar_widget_enabled: default_taskbar_widget_enabled() }
+        Self {
+            taskbar_widget_enabled: default_taskbar_widget_enabled(),
+            claude_enabled: false,
+            claude_consent_granted: false,
+        }
     }
 }
 
@@ -47,6 +59,8 @@ fn load_settings(path: &std::path::Path) -> AppSettings {
 fn save_settings(state: &AppState) -> Result<(), String> {
     let settings = AppSettings {
         taskbar_widget_enabled: state.taskbar_widget_enabled.load(Ordering::Relaxed),
+        claude_enabled: state.claude_enabled.load(Ordering::Relaxed),
+        claude_consent_granted: state.claude_consent_granted.load(Ordering::Relaxed),
     };
     if let Some(parent) = state.settings_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -66,6 +80,8 @@ pub struct AppState {
     watcher_diagnostics: RwLock<WatcherDiagnostics>,
     quick_panel_focus_lost_at: StdMutex<Option<Instant>>,
     taskbar_widget_enabled: AtomicBool,
+    claude_enabled: AtomicBool,
+    claude_consent_granted: AtomicBool,
     settings_path: PathBuf,
 }
 
@@ -81,6 +97,7 @@ impl AppState {
     fn provider_enabled(&self, provider: ProviderKind) -> bool {
         match provider {
             ProviderKind::Codex => true,
+            ProviderKind::Claude => self.claude_enabled.load(Ordering::Relaxed),
         }
     }
 
@@ -190,6 +207,62 @@ fn set_taskbar_widget_columns(app: tauri::AppHandle, columns: usize) -> Result<(
         return Ok(());
     }
     taskbar::set_widget_columns(&app, columns)
+}
+
+/// What the renderer needs to show the Claude opt-in: whether it is on, and whether the
+/// explanation still has to be accepted before it can be.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderSettings {
+    claude_enabled: bool,
+    claude_consent_granted: bool,
+}
+
+#[tauri::command]
+fn get_provider_settings(state: State<'_, Arc<AppState>>) -> ProviderSettings {
+    ProviderSettings {
+        claude_enabled: state.claude_enabled.load(Ordering::Relaxed),
+        claude_consent_granted: state.claude_consent_granted.load(Ordering::Relaxed),
+    }
+}
+
+/// Turning Claude on requires consent, which the renderer collects. Accepting it is what
+/// makes the first enable possible; after that the tray toggle is enough.
+#[tauri::command]
+async fn set_claude_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+    grant_consent: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<ProviderSettings, String> {
+    if grant_consent {
+        state.claude_consent_granted.store(true, Ordering::Relaxed);
+    }
+    if enabled && !state.claude_consent_granted.load(Ordering::Relaxed) {
+        return Err("Claude Code monitoring needs to be confirmed before it can be enabled.".to_string());
+    }
+    let state = state.inner().clone();
+    apply_claude_enabled(&app, &state, enabled);
+    Ok(ProviderSettings {
+        claude_enabled: state.claude_enabled.load(Ordering::Relaxed),
+        claude_consent_granted: state.claude_consent_granted.load(Ordering::Relaxed),
+    })
+}
+
+fn apply_claude_enabled(app: &tauri::AppHandle, state: &Arc<AppState>, enabled: bool) {
+    state.claude_enabled.store(enabled, Ordering::Relaxed);
+    if let Err(error) = save_settings(state) {
+        eprintln!("failed to save application settings: {error}");
+    }
+    let app = app.clone();
+    let state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        if !enabled {
+            // A provider that is off must not keep showing the last thing it reported.
+            state.snapshots.write().await.remove(&ProviderKind::Claude);
+        }
+        refresh::refresh_all(&app, &state).await;
+    });
 }
 
 #[tauri::command]
@@ -354,6 +427,18 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         taskbar_widget_enabled,
         None::<&str>,
     )?;
+    let claude_enabled = app
+        .state::<Arc<AppState>>()
+        .claude_enabled
+        .load(Ordering::Relaxed);
+    let claude_provider = CheckMenuItem::with_id(
+        app,
+        "claude_provider",
+        "Show Claude Code usage",
+        true,
+        claude_enabled,
+        None::<&str>,
+    )?;
     let separator_before_quit = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(
@@ -365,6 +450,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             &autostart,
             &desktop_shortcut,
             &taskbar_widget,
+            &claude_provider,
             &separator_before_quit,
             &quit,
         ],
@@ -372,6 +458,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let icon = app.default_window_icon().cloned().expect("application icon must be configured");
     let autostart_menu_item = autostart.clone();
     let taskbar_widget_menu_item = taskbar_widget.clone();
+    let claude_provider_menu_item = claude_provider.clone();
     TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
@@ -407,6 +494,19 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 set_taskbar_widget_visible(app, enabled);
                 let _ = taskbar_widget_menu_item.set_checked(enabled);
             }
+            "claude_provider" => {
+                let state = app.state::<Arc<AppState>>().inner().clone();
+                let enabled = !state.claude_enabled.load(Ordering::Relaxed);
+                if enabled && !state.claude_consent_granted.load(Ordering::Relaxed) {
+                    // The first enable has to be explained before it takes effect, and
+                    // the dashboard is where that explanation lives.
+                    let _ = claude_provider_menu_item.set_checked(false);
+                    show_main(app);
+                    return;
+                }
+                apply_claude_enabled(app, &state, enabled);
+                let _ = claude_provider_menu_item.set_checked(enabled);
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -440,6 +540,9 @@ pub fn run() {
             }
             let mut snapshots = BTreeMap::new();
             for provider in ProviderKind::ALL {
+                if provider == ProviderKind::Claude && !settings.claude_enabled {
+                    continue;
+                }
                 let snapshot = tauri::async_runtime::block_on(storage.load_snapshot(provider))
                     .unwrap_or_else(|_| ProviderSnapshot::new(provider));
                 snapshots.insert(provider, snapshot);
@@ -452,6 +555,8 @@ pub fn run() {
                 watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
                 quick_panel_focus_lost_at: StdMutex::new(None),
                 taskbar_widget_enabled: AtomicBool::new(settings.taskbar_widget_enabled),
+                claude_enabled: AtomicBool::new(settings.claude_enabled),
+                claude_consent_granted: AtomicBool::new(settings.claude_consent_granted),
                 settings_path,
             });
             app.manage(state.clone());
@@ -509,7 +614,16 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_snapshot, get_usage_range, refresh_now, get_diagnostics, open_dashboard, set_taskbar_widget_columns])
+        .invoke_handler(tauri::generate_handler![
+            get_snapshot,
+            get_usage_range,
+            refresh_now,
+            get_diagnostics,
+            get_provider_settings,
+            set_claude_enabled,
+            open_dashboard,
+            set_taskbar_widget_columns
+        ])
         .on_window_event(|window, event| {
             if window.label() == "quick-panel" && matches!(event, tauri::WindowEvent::Focused(false)) {
                 let state = window.state::<Arc<AppState>>();

@@ -1,3 +1,4 @@
+pub mod claude;
 pub mod codex;
 
 use std::path::PathBuf;
@@ -17,21 +18,32 @@ use crate::{
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Codex,
+    Claude,
 }
 
 impl ProviderKind {
     /// Declaration order is display order on every surface.
-    pub const ALL: [ProviderKind; 1] = [ProviderKind::Codex];
+    pub const ALL: [ProviderKind; 2] = [ProviderKind::Codex, ProviderKind::Claude];
 
     pub fn key(self) -> &'static str {
         match self {
             ProviderKind::Codex => "codex",
+            ProviderKind::Claude => "claude",
         }
     }
 
     pub fn display_name(self) -> &'static str {
         match self {
             ProviderKind::Codex => "Codex",
+            ProviderKind::Claude => "Claude Code",
+        }
+    }
+
+    /// A name short enough for the taskbar slice, where a full name would not fit.
+    pub fn short_name(self) -> &'static str {
+        match self {
+            ProviderKind::Codex => "CDX",
+            ProviderKind::Claude => "CLD",
         }
     }
 
@@ -49,6 +61,8 @@ impl ProviderKind {
         match self {
             ProviderKind::Codex => ccusage_adapter_codex::codex_usage_paths()
                 .map_err(|error| anyhow::anyhow!(error.to_string())),
+            ProviderKind::Claude => ccusage_adapter_claude::claude_usage_paths()
+                .map_err(|error| anyhow::anyhow!(error.to_string())),
         }
     }
 }
@@ -58,22 +72,27 @@ impl ProviderKind {
 pub async fn read_live(kind: ProviderKind) -> Result<LiveSnapshot> {
     match kind {
         ProviderKind::Codex => codex::read_live().await,
+        ProviderKind::Claude => claude::read_live().await,
     }
 }
 
 pub async fn read_history(kind: ProviderKind) -> Result<HistorySnapshot> {
     match kind {
         ProviderKind::Codex => codex::read_history().await,
+        ProviderKind::Claude => claude::read_history().await,
     }
 }
 
 /// Historical rate-limit readings recovered from a provider's own logs. Only providers
-/// that write their server's rate-limit answers locally can offer this.
+/// that write their server's rate-limit answers locally can offer this. Claude Code
+/// records a reset time only in the error it raises once a limit is already reached,
+/// with no usage percentage, which is not enough to recognise a restart.
 pub async fn read_observations(
     kind: ProviderKind,
     since: Option<i64>,
 ) -> Result<Vec<WindowObservation>> {
     match kind {
         ProviderKind::Codex => codex::read_observations(since).await,
+        ProviderKind::Claude => Ok(Vec::new()),
     }
 }
