@@ -18,6 +18,14 @@ concurrency:
 permissions:
   contents: read
 
+# A runner is a clean machine every time, so incremental artifacts are only dead weight in
+# the cache, and nothing here reads a debugger or a backtrace line number.
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_TERM_COLOR: always
+
 jobs:
   # QuotaStation is a Windows desktop application: the core compiles Win32 window
   # management, and the Tauri build script needs the built renderer in dist/, so both
@@ -48,21 +56,25 @@ jobs:
         id: build_renderer
         run: npm run build
 
-      # The vendored ccusage crates and Tauri dominate a cold build, so the registry and
-      # the target directory are restored between runs.
+      # Tauri and the vendored ccusage crates dominate a cold build, so the downloaded
+      # crates and the compiled dependencies are restored between runs. Extracted crate
+      # sources (registry/src) are left out: unpacking them again is cheaper than moving
+      # them through the cache. A run that matches the key restores without re-uploading,
+      # so only a Cargo.lock change pays the save cost.
       - name: Cache Rust build
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
             src-tauri/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Test core
         id: test_core
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
       - name: Write job summary
         if: always()
