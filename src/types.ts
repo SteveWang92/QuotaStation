@@ -1,5 +1,15 @@
 export type Freshness = "fresh" | "stale" | "unavailable";
 
+/** Matches the Rust `ProviderKind`, which is also the database's provider key. */
+export type ProviderKey = "codex";
+
+export interface CompactStatus {
+  level: "healthy" | "warning" | "critical" | "stale" | "unavailable";
+  label: string;
+  message: string;
+  color: string;
+}
+
 export interface LimitWindow {
   kind: "primary" | "secondary";
   label: string;
@@ -37,7 +47,8 @@ export interface TokenUsage {
 }
 
 export interface ProviderSnapshot {
-  provider: "codex";
+  provider: ProviderKey;
+  displayName: string;
   planType: string | null;
   limits: LimitWindow[];
   earnedResetCount: number | null;
@@ -47,18 +58,22 @@ export interface ProviderSnapshot {
   models: ModelUsage[];
   freshness: Freshness;
   staleAgeSeconds: number | null;
-  compactStatus: {
-    level: "healthy" | "warning" | "critical" | "stale" | "unavailable";
-    label: string;
-    message: string;
-    color: string;
-  };
+  compactStatus: CompactStatus;
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
   liveError: string | null;
   historyError: string | null;
   parserRevision: string;
   pricingCatalogRevision: string;
+}
+
+/**
+ * Every provider in one payload. The surfaces show them together, so they are fetched
+ * together and never drawn from two different moments.
+ */
+export interface WorkspaceSnapshot {
+  providers: ProviderSnapshot[];
+  aggregate: CompactStatus;
 }
 
 export interface DailyUsagePoint {
@@ -77,7 +92,8 @@ export interface UsageRangeSnapshot {
 }
 
 export interface AcquisitionDiagnostics {
-  acquisitionPath: "codex_live" | "codex_history";
+  /** `<provider>_live` or `<provider>_history`. */
+  acquisitionPath: string;
   label: string;
   status: "pending" | "succeeded" | "failed";
   lastAttemptAt: string | null;

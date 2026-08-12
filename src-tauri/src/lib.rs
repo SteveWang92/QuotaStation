@@ -7,9 +7,13 @@ mod session_watcher;
 mod storage;
 mod taskbar;
 
-use std::{path::PathBuf, sync::{Arc, Mutex as StdMutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex as StdMutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 
-use domain::{DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot, WatcherDiagnostics};
+use domain::{
+    DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot, WatcherDiagnostics,
+    WorkspaceSnapshot,
+};
+use providers::ProviderKind;
 use storage::Storage;
 use tauri::{
     Manager, PhysicalPosition, State,
@@ -56,7 +60,7 @@ use tauri_plugin_autostart::ManagerExt;
 
 pub struct AppState {
     storage: Storage,
-    snapshot: RwLock<ProviderSnapshot>,
+    snapshots: RwLock<BTreeMap<ProviderKind, ProviderSnapshot>>,
     live_refresh_lock: Mutex<()>,
     history_refresh_lock: Mutex<()>,
     watcher_diagnostics: RwLock<WatcherDiagnostics>,
@@ -65,27 +69,79 @@ pub struct AppState {
     settings_path: PathBuf,
 }
 
+impl AppState {
+    /// The providers currently on display, in the order every surface shows them.
+    fn enabled_providers(&self) -> Vec<ProviderKind> {
+        ProviderKind::ALL
+            .into_iter()
+            .filter(|provider| self.provider_enabled(*provider))
+            .collect()
+    }
+
+    fn provider_enabled(&self, provider: ProviderKind) -> bool {
+        match provider {
+            ProviderKind::Codex => true,
+        }
+    }
+
+    async fn with_snapshot(&self, provider: ProviderKind, edit: impl FnOnce(&mut ProviderSnapshot)) {
+        let mut snapshots = self.snapshots.write().await;
+        edit(snapshots.entry(provider).or_insert_with(|| ProviderSnapshot::new(provider)));
+    }
+
+    async fn read_snapshot<T>(
+        &self,
+        provider: ProviderKind,
+        read: impl FnOnce(&ProviderSnapshot) -> T,
+    ) -> T {
+        let mut snapshots = self.snapshots.write().await;
+        read(snapshots.entry(provider).or_insert_with(|| ProviderSnapshot::new(provider)))
+    }
+
+    /// The payload every surface consumes. Derived state is resolved here so a snapshot
+    /// never reaches the renderer with a status that disagrees with its own errors.
+    async fn workspace_snapshot(&self) -> WorkspaceSnapshot {
+        let snapshots = self.snapshots.read().await;
+        let providers = self
+            .enabled_providers()
+            .into_iter()
+            .map(|provider| {
+                let mut snapshot = snapshots
+                    .get(&provider)
+                    .cloned()
+                    .unwrap_or_else(|| ProviderSnapshot::new(provider));
+                snapshot.resolve_derived_state();
+                snapshot
+            })
+            .collect();
+        WorkspaceSnapshot::new(providers)
+    }
+}
+
 #[tauri::command]
-async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<ProviderSnapshot, String> {
-    let mut snapshot = state.snapshot.read().await.clone();
-    snapshot.update_compact_status();
-    Ok(snapshot)
+async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<WorkspaceSnapshot, String> {
+    Ok(state.workspace_snapshot().await)
 }
 
 #[tauri::command]
 async fn get_usage_range(
+    provider: ProviderKind,
     start_date: String,
     end_date: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<UsageRangeSnapshot, String> {
-    state.storage.load_usage_range(&start_date, &end_date).await.map_err(|error| error.to_string())
+    state
+        .storage
+        .load_usage_range(provider, &start_date, &end_date)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn refresh_now(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
-) -> Result<ProviderSnapshot, String> {
+) -> Result<WorkspaceSnapshot, String> {
     Ok(refresh::refresh_all(&app, state.inner()).await)
 }
 
@@ -138,7 +194,16 @@ fn set_taskbar_widget_columns(app: tauri::AppHandle, columns: usize) -> Result<(
 
 #[tauri::command]
 async fn get_diagnostics(state: State<'_, Arc<AppState>>) -> Result<DiagnosticsSnapshot, String> {
-    let acquisitions = state.storage.load_acquisition_diagnostics().await.map_err(|error| error.to_string())?;
+    let mut acquisitions = Vec::new();
+    for provider in state.enabled_providers() {
+        acquisitions.extend(
+            state
+                .storage
+                .load_acquisition_diagnostics(provider)
+                .await
+                .map_err(|error| error.to_string())?,
+        );
+    }
     let retention = state.storage.load_retention_diagnostics().await.map_err(|error| error.to_string())?;
     Ok(DiagnosticsSnapshot {
         watcher: state.watcher_diagnostics.read().await.clone(),
@@ -154,10 +219,18 @@ async fn get_diagnostics(state: State<'_, Arc<AppState>>) -> Result<DiagnosticsS
 /// closed. Replaying it on startup is what makes the restart history complete rather than
 /// starting from whenever this feature was installed.
 async fn backfill_resets(state: &Arc<AppState>) -> anyhow::Result<()> {
-    let since = state.storage.reset_backfill_start().await?;
-    let observations = providers::codex::read_observations(since).await?;
-    let scanned_at = jiff::Timestamp::now().to_string();
-    state.storage.backfill_resets(&observations, &scanned_at).await?;
+    for provider in state.enabled_providers() {
+        let since = state.storage.reset_backfill_start(provider).await?;
+        let observations = providers::read_observations(provider, since).await?;
+        if observations.is_empty() {
+            continue;
+        }
+        let scanned_at = jiff::Timestamp::now().to_string();
+        state
+            .storage
+            .backfill_resets(provider, &observations, &scanned_at)
+            .await?;
+    }
     Ok(())
 }
 
@@ -365,11 +438,15 @@ pub fn run() {
             if let Err(error) = tauri::async_runtime::block_on(storage.run_retention_if_due()) {
                 eprintln!("normalized data retention failed: {error:#}");
             }
-            let snapshot = tauri::async_runtime::block_on(storage.load_snapshot())
-                .unwrap_or_default();
+            let mut snapshots = BTreeMap::new();
+            for provider in ProviderKind::ALL {
+                let snapshot = tauri::async_runtime::block_on(storage.load_snapshot(provider))
+                    .unwrap_or_else(|_| ProviderSnapshot::new(provider));
+                snapshots.insert(provider, snapshot);
+            }
             let state = Arc::new(AppState {
                 storage,
-                snapshot: RwLock::new(snapshot),
+                snapshots: RwLock::new(snapshots),
                 live_refresh_lock: Mutex::new(()),
                 history_refresh_lock: Mutex::new(()),
                 watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),

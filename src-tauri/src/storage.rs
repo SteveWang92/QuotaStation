@@ -9,6 +9,7 @@ use crate::domain::{
     PRICING_CATALOG_REVISION, ProviderSnapshot, ResetClassification, RetentionDiagnostics,
     TokenUsage, UsageRangeSnapshot,
 };
+use crate::providers::ProviderKind;
 use crate::resets::{ResetTracker, WindowObservation, detect};
 use crate::sanitize::sanitize_error;
 
@@ -40,6 +41,11 @@ fn parse_kind(value: &str) -> Option<LimitKind> {
     }
 }
 
+/// Each provider replays its own logs, so the scan watermarks cannot share a row.
+fn backfill_job_name(provider: ProviderKind) -> String {
+    format!("{}_reset_backfill", provider.key())
+}
+
 fn epoch_seconds(value: &str) -> Option<i64> {
     value.parse::<jiff::Timestamp>().ok().map(|timestamp| timestamp.as_second())
 }
@@ -62,14 +68,22 @@ impl Storage {
         Ok(Self { pool })
     }
 
-    async fn provider_id(&self) -> Result<i64> {
-        Ok(sqlx::query_scalar("SELECT id FROM provider_instances WHERE provider = 'codex'")
-            .fetch_one(&self.pool)
-            .await?)
+    async fn provider_id(&self, provider: ProviderKind) -> Result<i64> {
+        Ok(
+            sqlx::query_scalar("SELECT id FROM provider_instances WHERE provider = ?")
+                .bind(provider.key())
+                .fetch_one(&self.pool)
+                .await?,
+        )
     }
 
-    pub async fn save_live(&self, live: &LiveSnapshot, observed_at: &str) -> Result<()> {
-        let provider_id = self.provider_id().await?;
+    pub async fn save_live(
+        &self,
+        provider: ProviderKind,
+        live: &LiveSnapshot,
+        observed_at: &str,
+    ) -> Result<()> {
+        let provider_id = self.provider_id(provider).await?;
         // The row about to be overwritten is the only record of what the window looked
         // like before this reading, so a restart has to be recognised here.
         let previous = self.load_current_observations(provider_id).await?;
@@ -195,10 +209,11 @@ impl Storage {
 
     /// The instant a rollout scan may start from, leaving enough overlap for a window
     /// that reset either side of the previous scan to still be paired with a reading.
-    pub async fn reset_backfill_start(&self) -> Result<Option<i64>> {
+    pub async fn reset_backfill_start(&self, provider: ProviderKind) -> Result<Option<i64>> {
         let last_completed: Option<String> = sqlx::query_scalar(
-            "SELECT last_completed_at FROM retention_state WHERE job_name = 'codex_reset_backfill'",
+            "SELECT last_completed_at FROM retention_state WHERE job_name = ?",
         )
+        .bind(backfill_job_name(provider))
         .fetch_optional(&self.pool)
         .await?
         .flatten();
@@ -211,8 +226,13 @@ impl Storage {
     /// Replays observations Codex logged itself, merged with the samples this machine
     /// already stored, so restarts that happened while QuotaStation was closed are still
     /// recorded. Storing an event twice is prevented by the table, not by the caller.
-    pub async fn backfill_resets(&self, observations: &[WindowObservation], scanned_at: &str) -> Result<usize> {
-        let provider_id = self.provider_id().await?;
+    pub async fn backfill_resets(
+        &self,
+        provider: ProviderKind,
+        observations: &[WindowObservation],
+        scanned_at: &str,
+    ) -> Result<usize> {
+        let provider_id = self.provider_id(provider).await?;
         let mut merged = observations.to_vec();
         merged.extend(self.load_sample_observations(provider_id).await?);
         merged.sort_by_key(|observation| observation.observed_at);
@@ -231,9 +251,10 @@ impl Storage {
         }
         sqlx::query(
             "INSERT INTO retention_state (job_name, last_completed_at, last_status, last_error) \
-             VALUES ('codex_reset_backfill', ?, 'succeeded', NULL) ON CONFLICT(job_name) DO UPDATE SET \
+             VALUES (?, ?, 'succeeded', NULL) ON CONFLICT(job_name) DO UPDATE SET \
              last_completed_at=excluded.last_completed_at, last_status=excluded.last_status, last_error=NULL",
         )
+        .bind(backfill_job_name(provider))
         .bind(scanned_at)
         .execute(&mut *tx)
         .await?;
@@ -264,8 +285,8 @@ impl Storage {
             .collect())
     }
 
-    pub async fn load_recent_resets(&self) -> Result<Vec<LimitResetEvent>> {
-        let provider_id = self.provider_id().await?;
+    pub async fn load_recent_resets(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
+        let provider_id = self.provider_id(provider).await?;
         let rows = sqlx::query(
             "SELECT window_kind, window_duration_mins, anchored_at, new_resets_at, previous_resets_at, \
              used_percent_before, early_by_seconds, classification FROM limit_resets \
@@ -299,8 +320,13 @@ impl Storage {
             .collect())
     }
 
-    pub async fn save_history(&self, history: &HistorySnapshot, observed_at: &str) -> Result<()> {
-        let provider_id = self.provider_id().await?;
+    pub async fn save_history(
+        &self,
+        provider: ProviderKind,
+        history: &HistorySnapshot,
+        observed_at: &str,
+    ) -> Result<()> {
+        let provider_id = self.provider_id(provider).await?;
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "UPDATE provider_instances SET parser_revision = ?, last_history_success_at = ?, \
@@ -344,12 +370,13 @@ impl Storage {
 
     pub async fn record_refresh(
         &self,
+        provider: ProviderKind,
         acquisition_path: &str,
         started_at: &str,
         completed_at: &str,
         error: Option<&str>,
     ) -> Result<()> {
-        let provider_id = self.provider_id().await?;
+        let provider_id = self.provider_id(provider).await?;
         sqlx::query(
             "INSERT INTO refresh_runs \
              (provider_instance_id, acquisition_path, started_at, completed_at, status, error_code, error_message) \
@@ -488,17 +515,17 @@ impl Storage {
         })
     }
 
-    pub async fn load_snapshot(&self) -> Result<ProviderSnapshot> {
-        let provider_id = self.provider_id().await?;
-        let provider = sqlx::query(
+    pub async fn load_snapshot(&self, provider: ProviderKind) -> Result<ProviderSnapshot> {
+        let provider_id = self.provider_id(provider).await?;
+        let instance = sqlx::query(
             "SELECT plan_type, earned_reset_count, last_live_success_at, last_history_success_at \
              FROM provider_instances WHERE id = ?",
         ).bind(provider_id).fetch_one(&self.pool).await?;
-        let mut snapshot = ProviderSnapshot::default();
-        snapshot.plan_type = provider.try_get("plan_type")?;
-        snapshot.earned_reset_count = provider.try_get::<Option<i64>, _>("earned_reset_count")?.map(|v| v as u64);
-        let live_success: Option<String> = provider.try_get("last_live_success_at")?;
-        let history_success: Option<String> = provider.try_get("last_history_success_at")?;
+        let mut snapshot = ProviderSnapshot::new(provider);
+        snapshot.plan_type = instance.try_get("plan_type")?;
+        snapshot.earned_reset_count = instance.try_get::<Option<i64>, _>("earned_reset_count")?.map(|v| v as u64);
+        let live_success: Option<String> = instance.try_get("last_live_success_at")?;
+        let history_success: Option<String> = instance.try_get("last_history_success_at")?;
         snapshot.last_success_at = [live_success, history_success].into_iter().flatten().max();
 
         let limits = sqlx::query(
@@ -518,9 +545,9 @@ impl Storage {
             })
         }).collect();
 
-        snapshot.recent_resets = self.load_recent_resets().await?;
+        snapshot.recent_resets = self.load_recent_resets(provider).await?;
         let date = jiff::Zoned::now().date().to_string();
-        let today = self.load_usage_range(&date, &date).await?;
+        let today = self.load_usage_range(provider, &date, &date).await?;
         snapshot.today = today.usage;
         snapshot.models = today.models;
         snapshot.api_equivalent_cost_usd = today.api_equivalent_cost_usd;
@@ -530,12 +557,17 @@ impl Storage {
         Ok(snapshot)
     }
 
-    pub async fn load_usage_range(&self, start_date: &str, end_date: &str) -> Result<UsageRangeSnapshot> {
+    pub async fn load_usage_range(
+        &self,
+        provider: ProviderKind,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<UsageRangeSnapshot> {
         let start = jiff::civil::Date::from_str(start_date).context("invalid start date")?;
         let end = jiff::civil::Date::from_str(end_date).context("invalid end date")?;
         anyhow::ensure!(start <= end, "start date must not be after end date");
 
-        let provider_id = self.provider_id().await?;
+        let provider_id = self.provider_id(provider).await?;
         let rows = sqlx::query(
             "SELECT usage_date, model, SUM(input_tokens) AS input_tokens, \
              SUM(cache_read_tokens) AS cache_read_tokens, SUM(output_tokens) AS output_tokens, \
@@ -610,16 +642,19 @@ impl Storage {
         .await?)
     }
 
-    pub async fn load_acquisition_diagnostics(&self) -> Result<Vec<AcquisitionDiagnostics>> {
-        let provider_id = self.provider_id().await?;
-        let provider = sqlx::query(
+    pub async fn load_acquisition_diagnostics(
+        &self,
+        provider: ProviderKind,
+    ) -> Result<Vec<AcquisitionDiagnostics>> {
+        let provider_id = self.provider_id(provider).await?;
+        let instance = sqlx::query(
             "SELECT last_live_success_at, last_history_success_at FROM provider_instances WHERE id = ?",
         )
         .bind(provider_id)
         .fetch_one(&self.pool)
         .await?;
-        let live_success: Option<String> = provider.try_get("last_live_success_at")?;
-        let history_success: Option<String> = provider.try_get("last_history_success_at")?;
+        let live_success: Option<String> = instance.try_get("last_live_success_at")?;
+        let history_success: Option<String> = instance.try_get("last_history_success_at")?;
         let rows = sqlx::query(
             "SELECT acquisition_path, started_at, status, error_message FROM refresh_runs \
              WHERE provider_instance_id = ? AND id IN (\
@@ -643,16 +678,17 @@ impl Storage {
             );
         }
 
+        let name = provider.display_name();
         Ok([
-            ("codex_live", "Live quota", live_success),
-            ("codex_history", "Local history", history_success),
+            (provider.live_path(), format!("{name} live quota"), live_success),
+            (provider.history_path(), format!("{name} local history"), history_success),
         ]
         .into_iter()
         .map(|(path, label, last_success_at)| {
-            let run = latest.get(path);
+            let run = latest.get(&path);
             AcquisitionDiagnostics {
-                acquisition_path: path.to_string(),
-                label: label.to_string(),
+                acquisition_path: path,
+                label,
                 status: run.map(|(_, status, _)| status.clone()).unwrap_or_else(|| "pending".to_string()),
                 last_attempt_at: run.map(|(started_at, _, _)| started_at.clone()),
                 last_success_at,
@@ -668,6 +704,8 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
+
+    const CODEX: ProviderKind = ProviderKind::Codex;
     use crate::domain::{HistoryDay, LimitWindow, LiveSnapshot};
 
     /// Each test owns a database file in the temporary directory and removes it, along
@@ -744,13 +782,13 @@ mod tests {
     async fn a_history_refresh_replaces_only_the_days_it_parsed() {
         let (storage, _database) = open_storage().await;
         let first = HistorySnapshot { days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5", 200)] };
-        storage.save_history(&first, "2026-08-02T00:00:00Z").await.expect("save first history");
+        storage.save_history(CODEX, &first, "2026-08-02T00:00:00Z").await.expect("save first history");
 
         // A later parse no longer sees the rotated-away session that produced 08-01.
         let second = HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 500)] };
-        storage.save_history(&second, "2026-08-02T01:00:00Z").await.expect("save second history");
+        storage.save_history(CODEX, &second, "2026-08-02T01:00:00Z").await.expect("save second history");
 
-        let range = storage.load_usage_range("2026-08-01", "2026-08-02").await.expect("load range");
+        let range = storage.load_usage_range(CODEX, "2026-08-01", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 2, "the day outside the parse must survive");
         assert_eq!(range.days[0].usage.total, 100);
         assert_eq!(range.days[1].usage.total, 500, "the reparsed day must be replaced, not added to");
@@ -763,9 +801,9 @@ mod tests {
         let history = HistorySnapshot {
             days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5-codex", 300)],
         };
-        storage.save_history(&history, "2026-08-02T00:00:00Z").await.expect("save history");
+        storage.save_history(CODEX, &history, "2026-08-02T00:00:00Z").await.expect("save history");
 
-        let range = storage.load_usage_range("2026-08-02", "2026-08-02").await.expect("load range");
+        let range = storage.load_usage_range(CODEX, "2026-08-02", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 1);
         assert_eq!(range.usage.total, 300);
         assert_eq!(range.models.len(), 1);
@@ -788,9 +826,9 @@ mod tests {
                 resets_at: Some(1_800_000_000),
             }],
         };
-        storage.save_live(&live, "2026-08-11T00:00:00Z").await.expect("save live");
+        storage.save_live(CODEX, &live, "2026-08-11T00:00:00Z").await.expect("save live");
 
-        let snapshot = storage.load_snapshot().await.expect("load snapshot");
+        let snapshot = storage.load_snapshot(CODEX).await.expect("load snapshot");
         assert_eq!(snapshot.plan_type.as_deref(), Some("plus"));
         assert_eq!(snapshot.limits.len(), 1);
         assert_eq!(snapshot.limits[0].label, "5-hour window");
@@ -820,15 +858,15 @@ mod tests {
         let (storage, _database) = open_storage().await;
         // Two days of the weekly window were spent and four remained.
         storage
-            .save_live(&weekly_live(52.0, 1_786_800_000), "2026-08-10T15:00:00Z")
+            .save_live(CODEX, &weekly_live(52.0, 1_786_800_000), "2026-08-10T15:00:00Z")
             .await
             .expect("save the reading before the restart");
         storage
-            .save_live(&weekly_live(0.0, 1_787_026_583), "2026-08-11T09:29:00Z")
+            .save_live(CODEX, &weekly_live(0.0, 1_787_026_583), "2026-08-11T09:29:00Z")
             .await
             .expect("save the reading after the restart");
 
-        let snapshot = storage.load_snapshot().await.expect("load snapshot");
+        let snapshot = storage.load_snapshot(CODEX).await.expect("load snapshot");
         assert_eq!(snapshot.recent_resets.len(), 1);
         let event = &snapshot.recent_resets[0];
         assert_eq!(event.classification, ResetClassification::Unplanned);
@@ -841,9 +879,9 @@ mod tests {
     async fn a_window_ageing_out_earlier_requests_is_not_recorded_as_a_restart() {
         let (storage, _database) = open_storage().await;
         let expiry = 1_786_800_000;
-        storage.save_live(&weekly_live(15.0, expiry), "2026-06-04T10:00:00Z").await.expect("save first");
-        storage.save_live(&weekly_live(4.0, expiry + 7_200), "2026-06-04T15:00:00Z").await.expect("save second");
-        assert!(storage.load_recent_resets().await.expect("load resets").is_empty());
+        storage.save_live(CODEX, &weekly_live(15.0, expiry), "2026-06-04T10:00:00Z").await.expect("save first");
+        storage.save_live(CODEX, &weekly_live(4.0, expiry + 7_200), "2026-06-04T15:00:00Z").await.expect("save second");
+        assert!(storage.load_recent_resets(CODEX).await.expect("load resets").is_empty());
     }
 
     #[tokio::test]
@@ -867,16 +905,16 @@ mod tests {
             },
         ];
         let recorded = storage
-            .backfill_resets(&observations, "2026-08-12T00:00:00Z")
+            .backfill_resets(CODEX, &observations, "2026-08-12T00:00:00Z")
             .await
             .expect("run the backfill");
         assert_eq!(recorded, 1);
 
         // A second scan sees the same readings again and must not duplicate the event.
-        storage.backfill_resets(&observations, "2026-08-12T01:00:00Z").await.expect("rerun the backfill");
-        let events = storage.load_recent_resets().await.expect("load resets");
+        storage.backfill_resets(CODEX, &observations, "2026-08-12T01:00:00Z").await.expect("rerun the backfill");
+        let events = storage.load_recent_resets(CODEX).await.expect("load resets");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].classification, ResetClassification::Unplanned);
-        assert!(storage.reset_backfill_start().await.expect("read cursor").is_some());
+        assert!(storage.reset_backfill_start(CODEX).await.expect("read cursor").is_some());
     }
 }

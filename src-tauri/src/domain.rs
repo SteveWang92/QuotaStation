@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::providers::ProviderKind;
+
 pub const CCUSAGE_REVISION: &str = "033c1f7631f603fc939fdc85163e8203f0084f83";
 pub const PRICING_CATALOG_REVISION: &str = env!("QUOTASTATION_PRICING_REVISION");
 
@@ -31,14 +33,41 @@ pub struct CompactStatus {
 }
 
 impl CompactStatus {
-    fn unavailable() -> Self {
+    fn unavailable(provider: &str) -> Self {
         Self {
             level: CompactStatusLevel::Unavailable,
             label: "Provider unavailable".to_string(),
-            message: "No current Codex quota data is available.".to_string(),
+            message: format!("No current {provider} quota data is available."),
             color: "#ff7469".to_string(),
         }
     }
+}
+
+impl CompactStatusLevel {
+    /// How loudly a level asks to be looked at, so one aggregate status can stand in for
+    /// several providers. A provider that cannot be read at all outranks one that is
+    /// merely running low, because only the first needs the user to go and fix something.
+    fn severity(self) -> u8 {
+        match self {
+            CompactStatusLevel::Healthy => 0,
+            CompactStatusLevel::Stale => 1,
+            CompactStatusLevel::Warning => 2,
+            CompactStatusLevel::Unavailable => 3,
+            CompactStatusLevel::Critical => 4,
+        }
+    }
+}
+
+/// The single status the tray icon, the taskbar accent, and the panel header show when
+/// several providers are on screen at once. It is the loudest provider's own status, so
+/// the wording still names which provider raised it.
+pub fn aggregate_status(snapshots: &[ProviderSnapshot]) -> CompactStatus {
+    snapshots
+        .iter()
+        .map(|snapshot| &snapshot.compact_status)
+        .max_by_key(|status| status.level.severity())
+        .cloned()
+        .unwrap_or_else(|| CompactStatus::unavailable("provider"))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -132,7 +161,8 @@ pub struct ModelUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSnapshot {
-    pub provider: String,
+    pub provider: ProviderKind,
+    pub display_name: String,
     pub plan_type: Option<String>,
     pub limits: Vec<LimitWindow>,
     pub earned_reset_count: Option<u64>,
@@ -153,10 +183,11 @@ pub struct ProviderSnapshot {
     pub pricing_catalog_revision: String,
 }
 
-impl Default for ProviderSnapshot {
-    fn default() -> Self {
+impl ProviderSnapshot {
+    pub fn new(provider: ProviderKind) -> Self {
         Self {
-            provider: "codex".to_string(),
+            provider,
+            display_name: provider.display_name().to_string(),
             plan_type: None,
             limits: Vec::new(),
             earned_reset_count: None,
@@ -166,7 +197,7 @@ impl Default for ProviderSnapshot {
             models: Vec::new(),
             freshness: Freshness::Unavailable,
             stale_age_seconds: None,
-            compact_status: CompactStatus::unavailable(),
+            compact_status: CompactStatus::unavailable(provider.display_name()),
             last_attempt_at: None,
             last_success_at: None,
             live_error: None,
@@ -175,20 +206,34 @@ impl Default for ProviderSnapshot {
             pricing_catalog_revision: PRICING_CATALOG_REVISION.to_string(),
         }
     }
-}
 
-impl ProviderSnapshot {
+    /// Freshness follows from the two acquisition paths and the last success, so it is
+    /// derived in one place rather than by whoever last wrote to the snapshot.
+    pub fn resolve_derived_state(&mut self) {
+        self.freshness = match (
+            &self.live_error,
+            &self.history_error,
+            self.last_success_at.is_some(),
+        ) {
+            (None, None, true) => Freshness::Fresh,
+            (_, _, true) => Freshness::Stale,
+            _ => Freshness::Unavailable,
+        };
+        self.update_compact_status();
+    }
+
     pub fn update_compact_status(&mut self) {
+        let provider = self.display_name.clone();
         self.stale_age_seconds = self.last_success_at.as_deref().and_then(age_seconds);
         self.compact_status = if self.freshness == Freshness::Unavailable || self.limits.is_empty() {
-            CompactStatus::unavailable()
+            CompactStatus::unavailable(&provider)
         } else if self.freshness == Freshness::Stale {
             CompactStatus {
                 level: CompactStatusLevel::Stale,
                 label: "Data stale".to_string(),
                 message: match self.stale_age_seconds {
-                    Some(age) => format!("Last successful update was {} ago.", format_age(age)),
-                    None => "The last successful update time is unknown.".to_string(),
+                    Some(age) => format!("{provider}'s last successful update was {} ago.", format_age(age)),
+                    None => format!("{provider}'s last successful update time is unknown."),
                 },
                 color: "#f0b84b".to_string(),
             }
@@ -198,24 +243,41 @@ impl ProviderSnapshot {
                 Some(value) if value <= 10.0 => CompactStatus {
                     level: CompactStatusLevel::Critical,
                     label: "Quota critical".to_string(),
-                    message: "A Codex quota window has 10% or less remaining.".to_string(),
+                    message: format!("A {provider} quota window has 10% or less remaining."),
                     color: "#ff7469".to_string(),
                 },
                 Some(value) if value <= 30.0 => CompactStatus {
                     level: CompactStatusLevel::Warning,
                     label: "Quota running low".to_string(),
-                    message: "A Codex quota window has 30% or less remaining.".to_string(),
+                    message: format!("A {provider} quota window has 30% or less remaining."),
                     color: "#f0b84b".to_string(),
                 },
                 Some(_) => CompactStatus {
                     level: CompactStatusLevel::Healthy,
                     label: "Quota healthy".to_string(),
-                    message: "Codex quota and local history are current.".to_string(),
+                    message: format!("{provider} quota and local history are current."),
                     color: "#b5e835".to_string(),
                 },
-                None => CompactStatus::unavailable(),
+                None => CompactStatus::unavailable(&provider),
             }
         };
+    }
+}
+
+/// Every provider in one payload. The surfaces show them side by side, so asking for
+/// them together keeps a refresh to a single round trip and stops two providers being
+/// drawn from different moments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSnapshot {
+    pub providers: Vec<ProviderSnapshot>,
+    pub aggregate: CompactStatus,
+}
+
+impl WorkspaceSnapshot {
+    pub fn new(providers: Vec<ProviderSnapshot>) -> Self {
+        let aggregate = aggregate_status(&providers);
+        Self { providers, aggregate }
     }
 }
 
@@ -237,6 +299,10 @@ mod tests {
     use super::*;
 
     fn fresh_snapshot(remaining_percent: f64) -> ProviderSnapshot {
+        provider_snapshot(ProviderKind::Codex, remaining_percent)
+    }
+
+    fn provider_snapshot(provider: ProviderKind, remaining_percent: f64) -> ProviderSnapshot {
         let mut snapshot = ProviderSnapshot {
             freshness: Freshness::Fresh,
             limits: vec![LimitWindow {
@@ -247,7 +313,7 @@ mod tests {
                 window_duration_mins: Some(300),
                 resets_at: None,
             }],
-            ..ProviderSnapshot::default()
+            ..ProviderSnapshot::new(provider)
         };
         snapshot.update_compact_status();
         snapshot
@@ -274,6 +340,42 @@ mod tests {
         snapshot.freshness = Freshness::Stale;
         snapshot.update_compact_status();
         assert_eq!(snapshot.compact_status.level, CompactStatusLevel::Stale);
+    }
+
+    #[test]
+    fn compact_status_names_the_provider_that_raised_it() {
+        assert!(fresh_snapshot(5.0).compact_status.message.contains("Codex"));
+    }
+
+    #[test]
+    fn the_aggregate_reports_the_loudest_provider() {
+        let healthy = provider_snapshot(ProviderKind::Codex, 80.0);
+        let critical = provider_snapshot(ProviderKind::Codex, 5.0);
+        let aggregate = aggregate_status(&[healthy.clone(), critical]);
+        assert_eq!(aggregate.level, CompactStatusLevel::Critical);
+
+        // An unreadable provider outranks one that is merely running low.
+        let mut unavailable = provider_snapshot(ProviderKind::Codex, 80.0);
+        unavailable.freshness = Freshness::Unavailable;
+        unavailable.update_compact_status();
+        let warning = provider_snapshot(ProviderKind::Codex, 20.0);
+        assert_eq!(
+            aggregate_status(&[warning, unavailable]).level,
+            CompactStatusLevel::Unavailable
+        );
+
+        assert_eq!(
+            aggregate_status(&[healthy]).level,
+            CompactStatusLevel::Healthy
+        );
+    }
+
+    #[test]
+    fn an_empty_workspace_still_reports_a_status() {
+        assert_eq!(
+            WorkspaceSnapshot::new(Vec::new()).aggregate.level,
+            CompactStatusLevel::Unavailable
+        );
     }
 }
 

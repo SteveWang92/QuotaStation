@@ -3,12 +3,13 @@ import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { useCallback, useState } from "react";
 import { errorMessage } from "../errors";
 import { formatCurrency, formatNumber } from "../format";
-import type { ProviderSnapshot } from "../types";
+import type { WorkspaceSnapshot } from "../types";
 import { useSnapshot } from "../useSnapshot";
 import { QuotaSection } from "./QuotaSection";
 
-export function QuickPanel({ initialSnapshot }: { initialSnapshot: ProviderSnapshot }) {
-  const { snapshot, error } = useSnapshot(initialSnapshot);
+export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSnapshot }) {
+  const { workspace, error } = useSnapshot(initialWorkspace);
+  const snapshot = workspace.providers[0];
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
@@ -30,7 +31,7 @@ export function QuickPanel({ initialSnapshot }: { initialSnapshot: ProviderSnaps
       <header className="quick-panel-header">
         <div>
           <span>QuotaStation</span>
-          <strong style={{ color: snapshot.compactStatus.color }}>{snapshot.compactStatus.label}</strong>
+          <strong style={{ color: workspace.aggregate.color }}>{workspace.aggregate.label}</strong>
         </div>
         <button type="button" aria-label="Refresh quota and usage" onClick={() => void refresh()} disabled={refreshing}>
           <RefreshCw aria-hidden="true" className={refreshing ? "spinning" : ""} />

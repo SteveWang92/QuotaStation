@@ -1,46 +1,59 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use ccusage_adapter_codex::codex_usage_paths;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::AppHandle;
 use tokio::{sync::mpsc, time::Instant};
 
-use crate::{AppState, refresh};
+use crate::{AppState, providers::ProviderKind, refresh};
 
 enum WatcherMessage {
-    HistoryChanged,
+    /// Which provider's session files changed, so only that history is reparsed.
+    HistoryChanged(ProviderKind),
     Failed,
 }
 
 pub fn start(app: AppHandle, state: Arc<AppState>) -> Result<()> {
-    let locations = codex_usage_paths()
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?
-        .into_iter()
-        .filter(|path| path.is_dir())
-        .collect::<Vec<_>>();
-    anyhow::ensure!(!locations.is_empty(), "no Codex session locations are available");
-
     let (sender, receiver) = mpsc::unbounded_channel();
-    let event_sender = sender.clone();
-    let mut watcher = notify::recommended_watcher(move |result: notify::Result<Event>| match result {
-        Ok(event) if is_history_event(&event) => {
-            let _ = event_sender.send(WatcherMessage::HistoryChanged);
-        }
-        Ok(_) => {}
-        Err(_) => {
-            let _ = event_sender.send(WatcherMessage::Failed);
-        }
-    })
-    .context("create Codex session watcher")?;
-
     let mut watched_location_count = 0;
-    for location in &locations {
-        if watcher.watch(location, RecursiveMode::Recursive).is_ok() {
-            watched_location_count += 1;
+    let mut watchers = Vec::new();
+
+    for provider in state.enabled_providers() {
+        let locations = provider
+            .usage_paths()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        if locations.is_empty() {
+            continue;
         }
+
+        let event_sender = sender.clone();
+        let mut watcher =
+            notify::recommended_watcher(move |result: notify::Result<Event>| match result {
+                Ok(event) if is_history_event(&event) => {
+                    let _ = event_sender.send(WatcherMessage::HistoryChanged(provider));
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    let _ = event_sender.send(WatcherMessage::Failed);
+                }
+            })
+            .context("create session watcher")?;
+
+        for location in &locations {
+            if watcher.watch(location, RecursiveMode::Recursive).is_ok() {
+                watched_location_count += 1;
+            }
+        }
+        watchers.push(watcher);
     }
-    anyhow::ensure!(watched_location_count > 0, "Codex session locations could not be watched");
+
+    anyhow::ensure!(
+        watched_location_count > 0,
+        "no provider session locations could be watched"
+    );
 
     tauri::async_runtime::block_on(async {
         let mut diagnostics = state.watcher_diagnostics.write().await;
@@ -50,12 +63,12 @@ pub fn start(app: AppHandle, state: Arc<AppState>) -> Result<()> {
     });
 
     std::thread::Builder::new()
-        .name("codex-session-watcher".to_string())
+        .name("session-watcher".to_string())
         .spawn(move || {
-            let _watcher: RecommendedWatcher = watcher;
+            let _watchers: Vec<RecommendedWatcher> = watchers;
             std::thread::park();
         })
-        .context("start Codex session watcher thread")?;
+        .context("start session watcher thread")?;
 
     tauri::async_runtime::spawn(run_event_loop(app, state, receiver));
     Ok(())
@@ -77,14 +90,18 @@ async fn run_event_loop(
     while let Some(message) = receiver.recv().await {
         match message {
             WatcherMessage::Failed => mark_failed(&state).await,
-            WatcherMessage::HistoryChanged => {
+            WatcherMessage::HistoryChanged(provider) => {
+                // A burst of writes across providers is one settling period, and each
+                // provider that took part is reparsed once when it ends.
+                let mut pending = BTreeSet::from([provider]);
                 mark_event(&state).await;
                 let mut deadline = Instant::now() + Duration::from_secs(2);
                 loop {
                     tokio::select! {
                         _ = tokio::time::sleep_until(deadline) => break,
                         next = receiver.recv() => match next {
-                            Some(WatcherMessage::HistoryChanged) => {
+                            Some(WatcherMessage::HistoryChanged(provider)) => {
+                                pending.insert(provider);
                                 mark_event(&state).await;
                                 deadline = Instant::now() + Duration::from_secs(2);
                             }
@@ -93,7 +110,9 @@ async fn run_event_loop(
                         }
                     }
                 }
-                refresh::refresh_history(&app, &state).await;
+                for provider in pending {
+                    refresh::refresh_history_for_provider(&app, &state, provider).await;
+                }
             }
         }
     }

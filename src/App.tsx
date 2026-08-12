@@ -11,32 +11,8 @@ import { TaskbarWidget } from "./components/TaskbarWidget";
 import { StatusBar } from "./components/StatusBar";
 import { UsageSummary } from "./components/UsageSummary";
 import { createPresetRange, type DateRangeSelection } from "./dateRanges";
-import type { DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot } from "./types";
-
-const EMPTY_SNAPSHOT: ProviderSnapshot = {
-  provider: "codex",
-  planType: null,
-  limits: [],
-  earnedResetCount: null,
-  recentResets: [],
-  today:{ input: 0, cacheRead: 0, output: 0, reasoning: 0, total: 0 },
-  apiEquivalentCostUsd: null,
-  models: [],
-  freshness: "unavailable",
-  staleAgeSeconds: null,
-  compactStatus: {
-    level: "unavailable",
-    label: "Provider unavailable",
-    message: "No current Codex quota data is available.",
-    color: "#ff7469",
-  },
-  lastAttemptAt: null,
-  lastSuccessAt: null,
-  liveError: null,
-  historyError: null,
-  parserRevision: "",
-  pricingCatalogRevision: "",
-};
+import type { DiagnosticsSnapshot, ProviderKey, UsageRangeSnapshot } from "./types";
+import { EMPTY_WORKSPACE } from "./workspace";
 
 const INITIAL_RANGE = createPresetRange("today");
 const EMPTY_USAGE_RANGE: UsageRangeSnapshot = {
@@ -52,8 +28,8 @@ const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
   watcher: { status: "starting", watchedLocationCount: 0, lastEventAt: null, error: null },
   acquisitions: [],
   retention: { status: "pending", lastCompletedAt: null, error: null },
-  parserRevision: EMPTY_SNAPSHOT.parserRevision,
-  pricingCatalogRevision: EMPTY_SNAPSHOT.pricingCatalogRevision,
+  parserRevision: "",
+  pricingCatalogRevision: "",
 };
 
 const CURRENT_WINDOW_LABEL = getCurrentWindow().label;
@@ -69,15 +45,17 @@ function Dashboard() {
   const [commandError, setCommandError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
   const activeRangeRef = useRef(INITIAL_RANGE);
+  const providerRef = useRef<ProviderKey>("codex");
   const rangeRequestId = useRef(0);
   const rangeRequested = useRef(false);
 
-  const loadUsageRange = useCallback(async (range: DateRangeSelection) => {
+  const loadUsageRange = useCallback(async (range: DateRangeSelection, rangeProvider: ProviderKey) => {
     const requestId = ++rangeRequestId.current;
     setRangeLoading(true);
     setRangeError(null);
     try {
       const next = await invoke<UsageRangeSnapshot>("get_usage_range", {
+        provider: rangeProvider,
         startDate: range.startDate,
         endDate: range.endDate,
       });
@@ -104,16 +82,17 @@ function Dashboard() {
     void loadDiagnostics();
     if (!rangeRequested.current) {
       rangeRequested.current = true;
-      void loadUsageRange(activeRangeRef.current);
+      void loadUsageRange(activeRangeRef.current, providerRef.current);
     }
   }, [loadDiagnostics, loadUsageRange]);
 
-  const { snapshot, error: snapshotError } = useSnapshot(EMPTY_SNAPSHOT, onSnapshot);
+  const { workspace, error: snapshotError } = useSnapshot(EMPTY_WORKSPACE, onSnapshot);
+  const snapshot = workspace.providers[0];
 
   const selectRange = useCallback((range: DateRangeSelection) => {
     activeRangeRef.current = range;
     setActiveRange(range);
-    void loadUsageRange(range);
+    void loadUsageRange(range, providerRef.current);
   }, [loadUsageRange]);
 
   const refresh = useCallback(async () => {
@@ -122,7 +101,7 @@ function Dashboard() {
       // refresh_now publishes the new snapshot through the shared subscription.
       await invoke("refresh_now");
       setCommandError(null);
-      await Promise.all([loadUsageRange(activeRangeRef.current), loadDiagnostics()]);
+      await Promise.all([loadUsageRange(activeRangeRef.current, providerRef.current), loadDiagnostics()]);
     } catch (error) {
       setCommandError(errorMessage(error));
     } finally {
@@ -135,7 +114,7 @@ function Dashboard() {
     let stopListening = () => {};
     void listen("history-updated", () => {
       rangeRequested.current = true;
-      void loadUsageRange(activeRangeRef.current);
+      void loadUsageRange(activeRangeRef.current, providerRef.current);
     })
       .then((unlisten) => {
         if (disposed) unlisten();
@@ -145,7 +124,7 @@ function Dashboard() {
         if (!disposed) setCommandError(errorMessage(error));
       });
     const timer = window.setInterval(() => {
-      if (rangeRequested.current) void loadUsageRange(activeRangeRef.current);
+      if (rangeRequested.current) void loadUsageRange(activeRangeRef.current, providerRef.current);
     }, 30_000);
     return () => {
       disposed = true;
@@ -159,8 +138,8 @@ function Dashboard() {
       <header className="app-header">
         <div className="identity">
           <h1>QuotaStation</h1>
-          <span className="provider-name">Codex</span>
-          <p>Local quota and usage data from the installed Codex client.</p>
+          <span className="provider-name">{snapshot.displayName}</span>
+          <p>Local quota and usage data from the installed provider clients.</p>
         </div>
         <div className="header-actions">
           <button type="button" onClick={() => void refresh()} disabled={refreshing}>
@@ -189,7 +168,7 @@ function Dashboard() {
 }
 
 export default function App() {
-  if (CURRENT_WINDOW_LABEL === "quick-panel") return <QuickPanel initialSnapshot={EMPTY_SNAPSHOT} />;
-  if (CURRENT_WINDOW_LABEL === "taskbar-widget") return <TaskbarWidget initialSnapshot={EMPTY_SNAPSHOT} />;
+  if (CURRENT_WINDOW_LABEL === "quick-panel") return <QuickPanel initialWorkspace={EMPTY_WORKSPACE} />;
+  if (CURRENT_WINDOW_LABEL === "taskbar-widget") return <TaskbarWidget initialWorkspace={EMPTY_WORKSPACE} />;
   return <Dashboard />;
 }
