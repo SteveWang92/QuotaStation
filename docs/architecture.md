@@ -25,8 +25,10 @@ QuotaStation is a local Windows application with three responsibilities:
 3. Present current state and history through a shared application core used by the system
    tray, compact monitor, and full dashboard.
 
-Codex was the first release target. Claude Code is now a second adapter, off by default.
-Gemini and other providers remain future adapters and do not block a release.
+Codex was the first release target. Claude Code is now a second adapter. Both are shown
+whenever their client has left usage records on this machine, and a provider that has left
+none is not shown at all. Gemini and other providers remain future adapters and do not
+block a release.
 
 ## Logical components
 
@@ -49,21 +51,31 @@ and usage read operations. It listens for rate-limit updates but never logs user
 out, changes configuration, consumes reset credits, or calls other mutation operations.
 
 Claude Code publishes no comparable local interface: it has no usage subcommand, and no
-file it writes records remaining quota or a forward-looking reset. Its only authoritative
-source is Anthropic's own OAuth usage endpoint. The Claude adapter therefore reads the
-access token Claude Code already stored and presents it to that endpoint, which is the
-single acquisition path in the application that leaves the machine and the only one that
-touches a credential. Because of that it is disabled by default and requires an explicit
-in-application confirmation before it can be enabled.
+file it writes records remaining quota or a forward-looking reset. What it does write is a
+record of every request, and its session window is a rolling five hours opened by the first
+request after the previous window closed. The default Claude adapter therefore recovers
+that window from the session logs alone: it needs no credential, cannot be rate limited,
+and reports when the window ends. A limit the account actually reached is stated exactly in
+the error Claude raises, and that stated restart outranks the inferred one.
+
+What the logs never carry is the allowance, so the percentage consumed stays unknown on
+that path. Anthropic's OAuth usage endpoint is the only source for it, and reading it costs
+the stored access token and a share of a rate limit Claude Code's own usage display is
+already spending. It is therefore an optional cross-check, off by default and gated behind
+an explicit in-application confirmation, and it is only ever a correction: when it answers,
+its windows and percentages replace the derived window; when it does not, the derived
+window stands and the reason is recorded against its own diagnostics path rather than
+becoming the provider's state. The adapter waits out any `Retry-After` and never reads the
+endpoint more often than every fifteen minutes.
 
 The token is read in the adapter alone. It is never persisted, logged, exported in
 diagnostics, or passed to the renderer. The adapter never refreshes the token itself and
 never sends a chat request to read rate-limit response headers; both would write to
-account state. An expired sign-in and a rate-limited read are reported as themselves, and
-the endpoint's `Retry-After` is honoured so a scheduled refresh cannot hammer it.
+account state.
 
-Claude reports no reset-credit inventory, and its five-hour and seven-day windows map onto
-the shared primary and secondary quota windows.
+Claude reports no reset-credit inventory. Its five-hour and seven-day windows map onto the
+shared primary and secondary quota windows; the log-derived path fills the primary one
+only.
 
 ### Usage parsers
 
@@ -138,7 +150,7 @@ telemetry, mutation calls, and raw-data upload behavior are excluded.
 - Raw prompts, source code, and complete file paths are not collected.
 - Diagnostic export must be explicit and redact account and machine identifiers.
 - Network access must be attributable to a provider refresh or pricing update, and the
-  Claude usage read is the only refresh that makes one.
+  optional Claude usage cross-check is the only refresh that makes one.
 
 ## Deferred decisions
 

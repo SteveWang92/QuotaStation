@@ -134,8 +134,13 @@ newest result for each acquisition path is always preserved.
 QuotaStation keeps live quota and local history acquisition independent:
 
 - Live quota refreshes at startup, on manual refresh, and on a schedule of its own for each
-  provider: every five minutes for Codex, which answers from a local process, and every
-  fifteen minutes for Claude Code, whose remote usage endpoint rate-limits reads.
+  provider: every five minutes for Codex, which answers from a local process, and every ten
+  minutes for Claude Code, whose window is recovered by parsing its session logs. A change
+  to those logs also refreshes Claude's window immediately, alongside its history.
+- Claude Code's optional online cross-check is off by default. When it is on it runs with
+  the live refresh, never more than once every fifteen minutes, and it always yields to a
+  `Retry-After`. Its failures are recorded against their own acquisition path and leave the
+  log-derived window on display.
 - History refreshes at startup and on manual refresh. A recursive watcher reuses ccusage's
   resolved Codex session locations and debounces `.jsonl` changes for two seconds.
 - A full history reconciliation runs every fifteen minutes to recover missed filesystem
