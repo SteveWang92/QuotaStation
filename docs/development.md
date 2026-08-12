@@ -43,9 +43,9 @@ data.
 
 ## Build and verify
 
-Run the renderer tests. They cover the shared formatting, date-range, and error helpers,
-and they avoid asserting locale-specific output because every surface formats with the
-locale the machine reports:
+Run the renderer tests. They cover the shared formatting, date-range, and error helpers.
+They assert structure rather than exact formatted text, so the single locale constant in
+`src/format.ts` can change when the interface gains a language choice:
 
 ```powershell
 npm test

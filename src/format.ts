@@ -1,9 +1,9 @@
 /**
- * QuotaStation reads local data for one machine, so numbers and dates follow the locale
- * that machine reports. Leaving the locale undefined asks Intl for exactly that, and
- * every surface shares this one decision instead of naming a region of its own.
+ * The interface is English-only, so every surface formats numbers and dates the same way
+ * instead of following whatever locale the machine reports. This single constant is the
+ * place to revisit once the interface offers a language choice of its own.
  */
-export const LOCALE: string | undefined = undefined;
+export const LOCALE = "en-AU";
 
 export function formatNumber(value: number): string {
   return new Intl.NumberFormat(LOCALE).format(value);
