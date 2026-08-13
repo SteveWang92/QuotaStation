@@ -311,7 +311,7 @@ fn show_main(app: &tauri::AppHandle) {
 /// The panel shows one column per provider, so its width follows how many are enabled.
 /// Sizing it as it opens keeps the edge anchoring below working from the real size.
 const QUICK_PANEL_COLUMN_WIDTH: u32 = 390;
-const QUICK_PANEL_HEIGHT: u32 = 640;
+const QUICK_PANEL_HEIGHT: u32 = 730;
 
 fn quick_panel_size(providers: usize) -> tauri::PhysicalSize<u32> {
     tauri::PhysicalSize::new(

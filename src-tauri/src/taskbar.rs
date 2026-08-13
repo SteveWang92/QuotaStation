@@ -51,7 +51,11 @@ fn dock_widget(app: &tauri::AppHandle) -> Result<(), String> {
     let tray_left = tray.and_then(window_rect).map(|rect| rect.left).unwrap_or(taskbar_rect.right);
     let requested_width = widget.outer_size().map_err(|error| error.to_string())?.width as i32;
     let width = requested_width.min((tray_left - taskbar_rect.left - 16).max(140));
-    let height = (taskbar_height - 8).clamp(30, 44);
+    // The widget is a child of the taskbar, so anything taller than the taskbar is simply
+    // cropped by it — and the crop takes the bottom row of a two-window reading with it.
+    // The height therefore follows the taskbar down instead of holding a minimum it may not
+    // have room for; the interface is laid out to survive the short end of this range.
+    let height = (taskbar_height - 6).clamp(20, 44);
     let x = (tray_left - taskbar_rect.left - width - 8).max(8);
     let y = ((taskbar_height - height) / 2).max(0);
     let hwnd = widget.hwnd().map_err(|error| error.to_string())?;
