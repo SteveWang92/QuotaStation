@@ -106,6 +106,10 @@ async fn apply_live(
     match result {
         Ok(live) => {
             record_cross_check(state, provider, started_at, &completed_at, &live.cross_check).await;
+            let cross_check_error = match &live.cross_check {
+                CrossCheck::Failed(message) => Some(sanitize_error(message, PROVIDER_FALLBACK)),
+                _ => None,
+            };
             let save_error = state
                 .storage
                 .save_live(provider, &live, &completed_at)
@@ -125,6 +129,7 @@ async fn apply_live(
                     snapshot.limits = live.limits;
                     snapshot.earned_reset_count = live.earned_reset_count;
                     snapshot.recent_resets = recent_resets;
+                    snapshot.cross_check_error = cross_check_error;
                     snapshot.live_error = save_error;
                     if snapshot.live_error.is_none() {
                         snapshot.last_success_at = Some(completed_at.clone());

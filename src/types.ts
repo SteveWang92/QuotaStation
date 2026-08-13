@@ -63,6 +63,8 @@ export interface ProviderSnapshot {
   lastSuccessAt: string | null;
   liveError: string | null;
   historyError: string | null;
+  /** Why an optional second quota source could not confirm the reading on display. */
+  crossCheckError: string | null;
   parserRevision: string;
   pricingCatalogRevision: string;
 }
@@ -74,6 +76,19 @@ export interface ProviderSnapshot {
 export interface WorkspaceSnapshot {
   providers: ProviderSnapshot[];
   aggregate: CompactStatus;
+}
+
+/**
+ * Whether Claude Code hands its own quota windows to QuotaStation. Claude Code passes them
+ * to the command configured as its status line and to nothing else, so this describes what
+ * that setting currently holds.
+ */
+export interface ClaudeStatusLineStatus {
+  installed: boolean;
+  /** A status line belonging to something else, which QuotaStation never replaces. */
+  foreignCommand: string | null;
+  /** Epoch seconds of the last reading Claude Code handed over. */
+  lastReadingAt: number | null;
 }
 
 export interface DailyUsagePoint {

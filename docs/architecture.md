@@ -51,22 +51,40 @@ and usage read operations. It listens for rate-limit updates but never logs user
 out, changes configuration, consumes reset credits, or calls other mutation operations.
 
 Claude Code publishes no comparable local interface: it has no usage subcommand, and no
-file it writes records remaining quota or a forward-looking reset. What it does write is a
-record of every request, and its session window is a rolling five hours opened by the first
-request after the previous window closed. The default Claude adapter therefore recovers
-that window from the session logs alone: it needs no credential, cannot be rate limited,
-and reports when the window ends. A limit the account actually reached is stated exactly in
-the error Claude raises, and that stated restart outranks the inferred one.
+file it writes on its own records remaining quota or a forward-looking reset. It does,
+however, report its quota to one place. Since Claude Code 2.1.80 the JSON it hands the
+command configured as its status line carries `rate_limits.five_hour` and
+`rate_limits.seven_day`, each with the percentage consumed and the epoch second the window
+restarts — the same pair of windows Anthropic's usage endpoint reports, delivered locally.
+QuotaStation therefore offers to register itself as that command. The registered process is
+this same executable started with `--claude-statusline`: it reads the payload, stores the
+two windows in the application data directory, prints a status line, and exits without ever
+reaching the interface. No credential is read, nothing leaves the machine, and no rate limit
+is shared with Claude Code's own usage display.
 
-What the logs never carry is the allowance, so the percentage consumed stays unknown on
-that path. Anthropic's OAuth usage endpoint is the only source for it, and reading it costs
-the stored access token and a share of a rate limit Claude Code's own usage display is
-already spending. It is therefore an optional cross-check, off by default and gated behind
-an explicit in-application confirmation, and it is only ever a correction: when it answers,
-its windows and percentages replace the derived window; when it does not, the derived
-window stands and the reason is recorded against its own diagnostics path rather than
-becoming the provider's state. The adapter waits out any `Retry-After` and never reads the
-endpoint more often than every fifteen minutes.
+That bridge changes a setting inside Claude Code's own configuration, so it is only ever
+installed from an explicit action in the dashboard, a status line belonging to something
+else is reported rather than replaced, and removing it takes out only the entry
+QuotaStation wrote. Its readings arrive while Claude Code is running, which is why the
+session logs stay underneath it: they are written whatever else is configured. Claude Code's
+session window is a rolling five hours opened by the first request after the previous window
+closed, so the log adapter recovers that window's timing from request times alone, and a
+limit the account actually reached is stated exactly in the error Claude raises, which
+outranks the inferred one. What the logs never carry is the allowance, so on that path alone
+the percentage consumed stays unknown and the seven-day window is not visible at all.
+
+Anthropic's OAuth usage endpoint remains available as a third source for installations
+without the bridge. Reading it costs the stored access token and a share of a rate limit
+Claude Code's own usage display is already spending, and that endpoint answers `429` often
+enough that it cannot be the primary source. It is therefore an optional cross-check, off by
+default and gated behind an explicit in-application confirmation. The adapter waits out any
+`Retry-After` and never reads the endpoint more often than every fifteen minutes.
+
+The three sources are combined by window rather than by precedence over the whole reading:
+the better-informed source owns a window both describe, and a window only one of them knows
+about is kept. A source that cannot answer therefore never blanks a window another one
+already filled, and a cross-check that failed is carried on the provider snapshot so a
+source that was deliberately switched on cannot look as though it did nothing.
 
 The token is read in the adapter alone. It is never persisted, logged, exported in
 diagnostics, or passed to the renderer. The adapter never refreshes the token itself and

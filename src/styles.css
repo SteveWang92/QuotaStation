@@ -137,6 +137,7 @@ button { font: inherit; }
 .provider-consent h2 { margin: 0 0 5px; font-size: 14px; font-weight: 650; }
 .provider-consent p { margin: 0; max-width: 78ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .provider-consent-error { margin-top: 6px !important; color: #ffaaa3 !important; }
+.provider-note { margin: 0; padding: 9px 12px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: rgba(16, 23, 29, 0.62); font-size: 11px; line-height: 1.5; }
 .provider-consent button { flex: none; height: 36px; padding: 0 16px; border: 1px solid #6f7d87; border-radius: 5px; color: var(--text); background: #172129; cursor: pointer; font-weight: 650; }
 .provider-consent button:hover:not(:disabled) { background: #202c35; }
 .provider-consent button:disabled { opacity: 0.55; cursor: wait; }

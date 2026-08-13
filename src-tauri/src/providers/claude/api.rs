@@ -10,11 +10,7 @@
 //! refreshes the token itself and never sends a chat request to infer limits from
 //! response headers, because both would mutate account state that QuotaStation only reads.
 
-use std::{
-    env,
-    path::PathBuf,
-    sync::atomic::{AtomicI64, Ordering},
-};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
@@ -22,14 +18,11 @@ use tokio::time::{Duration, timeout};
 
 use crate::domain::{LimitKind, LimitWindow};
 
+use super::{FIVE_HOUR_WINDOW_MINS, SEVEN_DAY_WINDOW_MINS, claude_home};
+
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
-
-/// Claude's rolling session window, in minutes.
-const FIVE_HOUR_WINDOW_MINS: i64 = 300;
-/// Claude's long window is seven days, which `LimitKind::window_label` names "Weekly".
-const SEVEN_DAY_WINDOW_MINS: i64 = 10_080;
 
 const SIGN_IN_REQUIRED: &str =
     "Claude Code is not signed in. Run `claude auth login`, then refresh.";
@@ -216,21 +209,6 @@ impl Credentials {
             expires_at > 0 && expires_at <= jiff::Timestamp::now().as_millisecond()
         })
     }
-}
-
-fn claude_home() -> Option<PathBuf> {
-    // `CLAUDE_CONFIG_DIR` may list several directories; the credentials live with the
-    // first one, matching how the log parser resolves its own paths.
-    if let Some(configured) = env::var_os("CLAUDE_CONFIG_DIR") {
-        let configured = configured.to_string_lossy().into_owned();
-        if let Some(first) = configured.split(',').map(str::trim).find(|v| !v.is_empty()) {
-            return Some(PathBuf::from(first));
-        }
-    }
-    let home = env::var_os("USERPROFILE")
-        .or_else(|| env::var_os("HOME"))
-        .map(PathBuf::from)?;
-    Some(home.join(".claude"))
 }
 
 fn read_credentials() -> Result<Credentials> {

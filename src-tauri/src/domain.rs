@@ -179,6 +179,10 @@ pub struct ProviderSnapshot {
     pub last_success_at: Option<String>,
     pub live_error: Option<String>,
     pub history_error: Option<String>,
+    /// Why an optional second quota source could not confirm this reading. It never makes
+    /// the provider a failure, but leaving it only in the diagnostics table makes a source
+    /// that was deliberately switched on look like it did nothing at all.
+    pub cross_check_error: Option<String>,
     pub parser_revision: String,
     pub pricing_catalog_revision: String,
 }
@@ -202,6 +206,7 @@ impl ProviderSnapshot {
             last_success_at: None,
             live_error: None,
             history_error: None,
+            cross_check_error: None,
             parser_revision: CCUSAGE_REVISION.to_string(),
             pricing_catalog_revision: PRICING_CATALOG_REVISION.to_string(),
         }

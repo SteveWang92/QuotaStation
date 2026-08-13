@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "./errors";
 import { useSnapshot } from "./useSnapshot";
 import { ClaudeCrossCheck } from "./components/ClaudeCrossCheck";
+import { ClaudeStatusLine } from "./components/ClaudeStatusLine";
 import { ProviderSetup } from "./components/ProviderSetup";
 import { QuotaSection } from "./components/QuotaSection";
 import { QuickPanel } from "./components/QuickPanel";
@@ -161,7 +162,7 @@ function Dashboard() {
     };
   }, [loadUsageRange]);
 
-  const showCrossCheckCard = workspace.providers.some((provider) => provider.provider === "claude");
+  const showClaudeCards = workspace.providers.some((provider) => provider.provider === "claude");
 
   return (
     <main className="app-shell">
@@ -180,7 +181,8 @@ function Dashboard() {
           </button>
         </div>
       </header>
-      {showCrossCheckCard ? <ClaudeCrossCheck /> : null}
+      {showClaudeCards ? <ClaudeStatusLine /> : null}
+      {showClaudeCards ? <ClaudeCrossCheck /> : null}
       {loaded && workspace.providers.length === 0 ? <ProviderSetup /> : null}
       <div className={`provider-grid${workspace.providers.length <= 1 ? " single" : ""}`}>
         {workspace.providers.map((provider) => (
@@ -196,6 +198,11 @@ function Dashboard() {
               resets={provider.recentResets}
               statusColor={provider.compactStatus.color}
             />
+            {/* A second source that was deliberately switched on and then answered nothing
+                has to say so here; the provider itself is still reporting. */}
+            {provider.crossCheckError ? (
+              <p className="provider-note">{provider.crossCheckError}</p>
+            ) : null}
           </section>
         ))}
       </div>

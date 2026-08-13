@@ -28,6 +28,9 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
         <div><span>API equivalent</span><strong>{formatCurrency(snapshot.apiEquivalentCostUsd)}</strong><small>estimated cost</small></div>
       </section>
       <p className="quick-freshness">{snapshot.compactStatus.message}</p>
+      {snapshot.crossCheckError ? (
+        <p className="quick-freshness failed">{snapshot.crossCheckError}</p>
+      ) : null}
     </section>
   );
 }

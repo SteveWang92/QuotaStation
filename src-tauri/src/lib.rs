@@ -13,8 +13,14 @@ use domain::{
     DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot, WatcherDiagnostics,
     WorkspaceSnapshot,
 };
-use providers::ProviderKind;
+use providers::{ProviderKind, claude::statusline};
 use storage::Storage;
+
+/// Runs Claude Code's status-line command when this process was started as one, and reports
+/// whether it did. Exposed so `main` can return before any window exists.
+pub fn run_claude_status_line() -> bool {
+    statusline::run_bridge_if_requested()
+}
 use tauri::{
     Emitter, Manager, PhysicalPosition, State,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
@@ -85,6 +91,10 @@ pub struct AppState {
     detected_providers: StdMutex<Vec<ProviderKind>>,
     claude_cross_check_enabled: AtomicBool,
     claude_consent_granted: AtomicBool,
+    /// The tray's own tick for the cross-check. The dashboard can turn the cross-check on
+    /// as well, and a tick that only follows the tray's clicks would then describe a
+    /// setting the tray no longer owns.
+    claude_cross_check_item: StdMutex<Option<CheckMenuItem<tauri::Wry>>>,
     settings_path: PathBuf,
 }
 
@@ -271,6 +281,13 @@ fn apply_claude_cross_check(app: &tauri::AppHandle, state: &Arc<AppState>, enabl
     if let Err(error) = save_settings(state) {
         eprintln!("failed to save application settings: {error}");
     }
+    // Whoever changed the setting, the tray has to describe it: the dashboard is the only
+    // way to grant consent, so the first enable never comes from the tray itself.
+    if let Ok(item) = state.claude_cross_check_item.lock()
+        && let Some(item) = item.as_ref()
+    {
+        let _ = item.set_checked(enabled);
+    }
     let app = app.clone();
     let state = state.clone();
     // Claude keeps reporting either way; this only changes where its percentages come
@@ -278,6 +295,30 @@ fn apply_claude_cross_check(app: &tauri::AppHandle, state: &Arc<AppState>, enabl
     tauri::async_runtime::spawn(async move {
         refresh::refresh_all(&app, &state).await;
     });
+}
+
+/// Whether Claude Code hands its quota to QuotaStation, for the card that offers to set
+/// that up. Reading it touches only Claude Code's settings file, so it needs no refresh.
+#[tauri::command]
+fn get_claude_status_line() -> statusline::BridgeStatus {
+    statusline::bridge_status()
+}
+
+/// Registers or removes QuotaStation as Claude Code's status-line command. Claude Code
+/// hands the two quota windows to that command and to nothing else, so this is what turns
+/// the seven-day window and both percentages on, without a credential or a network call.
+#[tauri::command]
+async fn set_claude_status_line(
+    app: tauri::AppHandle,
+    installed: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<statusline::BridgeStatus, String> {
+    let result = if installed { statusline::install() } else { statusline::remove() };
+    result.map_err(|error| error.to_string())?;
+    // Claude Code writes the first reading on its next turn, so this refresh only picks up
+    // one that is already there; the session watcher and the poll carry the rest.
+    refresh::refresh_live_for_provider(&app, state.inner(), ProviderKind::Claude).await;
+    Ok(statusline::bridge_status())
 }
 
 #[tauri::command]
@@ -494,7 +535,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let icon = app.default_window_icon().cloned().expect("application icon must be configured");
     let autostart_menu_item = autostart.clone();
     let taskbar_widget_menu_item = taskbar_widget.clone();
-    let claude_cross_check_menu_item = claude_cross_check.clone();
+    if let Ok(mut item) = app.state::<Arc<AppState>>().claude_cross_check_item.lock() {
+        *item = Some(claude_cross_check.clone());
+    }
     TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
@@ -537,13 +580,18 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     // The first enable has to be explained before it takes effect, and
                     // the dashboard is where that explanation lives. Saying so is what
                     // keeps the unchanged tick from reading as a broken menu item.
-                    let _ = claude_cross_check_menu_item.set_checked(false);
+                    if let Ok(item) = state.claude_cross_check_item.lock()
+                        && let Some(item) = item.as_ref()
+                    {
+                        let _ = item.set_checked(false);
+                    }
                     show_main(app);
                     let _ = app.emit_to("main", "claude-consent-requested", ());
                     return;
                 }
+                // `apply_claude_cross_check` owns the tick, so the tray and the dashboard
+                // cannot leave it describing different settings.
                 apply_claude_cross_check(app, &state, enabled);
-                let _ = claude_cross_check_menu_item.set_checked(enabled);
             }
             "quit" => app.exit(0),
             _ => {}
@@ -596,6 +644,7 @@ pub fn run() {
                 detected_providers: StdMutex::new(Vec::new()),
                 claude_cross_check_enabled: AtomicBool::new(settings.claude_cross_check_enabled),
                 claude_consent_granted: AtomicBool::new(settings.claude_consent_granted),
+                claude_cross_check_item: StdMutex::new(None),
                 settings_path,
             });
             state.detect_providers();
@@ -665,6 +714,8 @@ pub fn run() {
             get_diagnostics,
             get_provider_settings,
             set_claude_cross_check,
+            get_claude_status_line,
+            set_claude_status_line,
             open_dashboard,
             set_taskbar_widget_size
         ])

@@ -13,8 +13,8 @@ use ccusage_core::cli::SharedArgs;
 
 use crate::domain::{CrossCheck, LimitKind, LimitWindow, LiveSnapshot};
 
-/// Claude's session window, in minutes and in milliseconds.
-pub const WINDOW_MINS: i64 = 300;
+use super::FIVE_HOUR_WINDOW_MINS as WINDOW_MINS;
+
 const WINDOW_MS: i64 = WINDOW_MINS * 60 * 1_000;
 const HOUR_MS: i64 = 60 * 60 * 1_000;
 
