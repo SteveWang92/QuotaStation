@@ -63,10 +63,14 @@ reaching the interface. No credential is read, nothing leaves the machine, and n
 is shared with Claude Code's own usage display.
 
 That bridge changes a setting inside Claude Code's own configuration, so it is only ever
-installed from an explicit action in the dashboard's settings dialog, a status line belonging to something
-else is reported rather than replaced, and removing it takes out only the entry
-QuotaStation wrote. Its readings arrive while Claude Code is running, which is why the
-session logs stay underneath it: they are written whatever else is configured. Claude Code's
+installed from an explicit action in the dashboard's settings dialog, a status line belonging
+to something else is reported rather than replaced, and removing it takes out only the entry
+QuotaStation wrote. Its readings arrive only from terminal sessions: a status line is
+something a terminal renders, and Claude Code hosted inside the desktop application draws its
+own interface and never runs the configured command. QuotaStation therefore reads the entry
+point of each live session Claude Code records, so an installation whose sessions are all
+desktop-hosted can say why no reading arrives instead of looking broken. That limit is also
+why the session logs stay underneath the bridge: they are written whatever the host. Claude Code's
 session window is a rolling five hours opened by the first request after the previous window
 closed, so the log adapter recovers that window's timing from request times alone, and a
 limit the account actually reached is stated exactly in the error Claude raises, which

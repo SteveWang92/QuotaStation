@@ -149,9 +149,12 @@ QuotaStation keeps live quota and local history acquisition independent:
   to those logs also refreshes Claude's window immediately, alongside its history.
 - Claude Code hands its own five-hour and seven-day windows, with percentages and exact
   restarts, to the command configured as its status line. Installing that bridge from the
-  dashboard's settings dialog registers `quotastation.exe --claude-statusline` as the command; every Claude
-  Code turn then leaves a reading in the application data directory, which the same log
-  change that refreshes Claude's window picks up. Removing it takes out only that entry.
+  dashboard's settings dialog registers `quotastation.exe --claude-statusline` as the command;
+  every Claude Code turn **in a terminal** then leaves a reading in the application data
+  directory, which the same log change that refreshes Claude's window picks up. Sessions
+  hosted by the Claude Code desktop application render no status line and so never run the
+  command; the settings card says so when those are the only sessions running. Removing the
+  bridge takes out only that entry.
 - History refreshes at startup and on manual refresh. A recursive watcher reuses ccusage's
   resolved Codex session locations and debounces `.jsonl` changes for two seconds.
 - A full history reconciliation runs every fifteen minutes to recover missed filesystem

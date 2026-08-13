@@ -250,6 +250,10 @@ pub struct BridgeStatus {
     /// reported rather than overwritten.
     pub foreign_command: Option<String>,
     pub last_reading_at: Option<i64>,
+    /// Claude Code is running, but only in hosts that render their own interface instead of
+    /// a status line. Nothing the bridge does can produce a reading from those sessions, so
+    /// an installation that looks inert has to be able to say that is why.
+    pub desktop_only_sessions: bool,
 }
 
 pub fn bridge_status() -> BridgeStatus {
@@ -259,6 +263,7 @@ pub fn bridge_status() -> BridgeStatus {
         installed: ours,
         foreign_command: configured.filter(|_| !ours),
         last_reading_at: last_reading_at(),
+        desktop_only_sessions: super::sessions::live_sessions().desktop_only(),
     }
 }
 

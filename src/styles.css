@@ -135,6 +135,8 @@ button { font: inherit; }
 .provider-setup.compact p { font-size: 11px; }
 .provider-consent h2 { margin: 0 0 5px; font-size: 14px; font-weight: 650; }
 .provider-consent p { margin: 0; max-width: 78ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.provider-consent p + p { margin-top: 8px; }
+.provider-consent code { padding: 0 3px; border-radius: 3px; background: #1c2730; color: #cbd2d6; font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; }
 .provider-consent-error { margin-top: 6px !important; color: #ffaaa3 !important; }
 .provider-consent button { flex: none; height: 36px; padding: 0 16px; border: 1px solid #6f7d87; border-radius: 5px; color: var(--text); background: #172129; cursor: pointer; font-weight: 650; }
 .provider-consent button:hover:not(:disabled) { background: #202c35; }
@@ -298,7 +300,7 @@ button { font: inherit; }
 .quick-provider-header h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .quick-provider-header span { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .quick-provider .quick-freshness { margin-top: auto; }
-.quota-section.compact { border-color: var(--line); }
+.quota-section.compact { flex: none; border-color: var(--line); }
 .quota-section.compact .quota-row { min-height: 120px; grid-template-columns: minmax(0, 1fr) 86px; grid-template-areas: "label percent" "meter meter" "reset reset"; gap: 8px 14px; padding: 13px 15px; }
 .quota-section.compact .quota-label { grid-area: label; }
 .quota-section.compact .quota-label h2 { margin-bottom: 3px; font-size: 14px; }
@@ -328,14 +330,19 @@ button { font: inherit; }
 
 /* The taskbar clamps this window to 30-44px tall, so providers sit side by side and only
    their quota windows stack. */
-.taskbar-widget-shell { width: 100vw; height: 100vh; padding: 3px 6px; display: flex; flex-direction: row; align-items: center; gap: 10px; overflow: hidden; background: transparent; }
-.taskbar-provider { min-width: 0; flex: 1 1 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
-.taskbar-widget-shell:not(.single) .taskbar-provider + .taskbar-provider { padding-left: 10px; border-left: 1px solid rgba(138, 149, 157, 0.32); }
-.taskbar-quota { min-width: 0; display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 2px 5px; }
-.taskbar-quota span { color: #aeb7bd; font-size: 10px; font-weight: 700; text-transform: lowercase; }
+/* The window is one fixed slot wide, so the columns hug the notification area and a
+   provider that has not answered yet leaves transparent space instead of resizing the
+   window and pushing the taskbar icons sideways. */
+.taskbar-widget-shell { width: 100vw; height: 100vh; padding: 2px 6px; display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 12px; overflow: hidden; background: transparent; }
+.taskbar-provider { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; flex: 0 1 210px; }
+.taskbar-provider + .taskbar-provider { padding-left: 12px; border-left: 1px solid rgba(138, 149, 157, 0.32); }
+.taskbar-name { color: var(--taskbar-status-color); font-size: 11px; font-weight: 750; letter-spacing: 0.04em; }
+.taskbar-windows { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+.taskbar-quota { min-width: 0; display: grid; grid-template-columns: 17px minmax(24px, 1fr) 33px auto; align-items: center; gap: 6px; }
+.taskbar-quota span { grid-column: 1; color: #aeb7bd; font-size: 10px; font-weight: 700; text-transform: lowercase; }
 .taskbar-quota strong { grid-column: 3; color: var(--taskbar-status-color); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
 .taskbar-quota time { grid-column: 4; color: #aeb7bd; font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
-.taskbar-quota i { grid-column: 1 / -1; height: 3px; overflow: hidden; border-radius: 2px; background: rgba(138, 149, 157, 0.32); }
+.taskbar-quota i { grid-column: 2; height: 4px; overflow: hidden; border-radius: 2px; background: rgba(138, 149, 157, 0.32); }
 .taskbar-quota i.unknown { background: repeating-linear-gradient(90deg, rgba(138, 149, 157, 0.18) 0 5px, rgba(138, 149, 157, 0.42) 5px 9px); }
 .taskbar-quota b { display: block; height: 100%; border-radius: inherit; background: var(--taskbar-status-color); }
-.taskbar-unavailable { grid-column: 1 / -1; color: var(--taskbar-status-color); font-size: 11px; text-align: center; }
+.taskbar-unavailable { color: var(--taskbar-status-color); font-size: 11px; white-space: nowrap; }

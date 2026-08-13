@@ -1,6 +1,7 @@
 mod history;
 mod plan;
 mod session;
+mod sessions;
 pub mod statusline;
 
 use std::{env, path::PathBuf};

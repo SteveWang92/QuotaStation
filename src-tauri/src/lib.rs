@@ -196,17 +196,15 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     }
 }
 
+/// Restores the widget to its own size and place after the renderer mounts. The size is a
+/// constant now, so this exists to re-dock the window rather than to follow the content.
 #[tauri::command]
-fn set_taskbar_widget_size(
-    app: tauri::AppHandle,
-    providers: usize,
-    windows: usize,
-) -> Result<(), String> {
+fn set_taskbar_widget_size(app: tauri::AppHandle) -> Result<(), String> {
     // A hidden widget still runs its renderer; resizing it must not bring it back.
     if !app.state::<Arc<AppState>>().taskbar_widget_enabled.load(Ordering::Relaxed) {
         return Ok(());
     }
-    taskbar::set_widget_size(&app, providers, windows)
+    taskbar::set_widget_size(&app)
 }
 
 /// Where the activity log is, and a way to open the folder holding it.
@@ -313,7 +311,7 @@ fn show_main(app: &tauri::AppHandle) {
 /// The panel shows one column per provider, so its width follows how many are enabled.
 /// Sizing it as it opens keeps the edge anchoring below working from the real size.
 const QUICK_PANEL_COLUMN_WIDTH: u32 = 390;
-const QUICK_PANEL_HEIGHT: u32 = 600;
+const QUICK_PANEL_HEIGHT: u32 = 640;
 
 fn quick_panel_size(providers: usize) -> tauri::PhysicalSize<u32> {
     tauri::PhysicalSize::new(

@@ -16,14 +16,17 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
   const statusColor = snapshot.compactStatus.color;
   return (
     <div className="taskbar-provider">
+      {/* One name for the whole column rather than one per row: a provider showing both of
+          its windows was repeating its own name, which is the widest thing in a slot that
+          has 40px of taskbar to work with. */}
+      <span className="taskbar-name" style={{ color: statusColor }}>
+        {badge}
+      </span>
+      <div className="taskbar-windows">
       {snapshot.limits.length > 0 ? (
         snapshot.limits.map((limit) => (
           <div className="taskbar-quota" key={limit.kind}>
-            {/* Every row names its provider: a column header would not fit in the 30-44px
-                the taskbar allows, and either provider can be missing entirely. */}
-            <span>
-              {badge}·{formatWindowBadge(limit.windowDurationMins, limit.label)}
-            </span>
+            <span>{formatWindowBadge(limit.windowDurationMins, limit.label)}</span>
             <strong
               style={{ color: statusColor }}
               aria-label={
@@ -56,9 +59,10 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
         ))
       ) : (
         <span className="taskbar-unavailable" style={{ color: statusColor }}>
-          {badge} unavailable
+          unavailable
         </span>
       )}
+      </div>
     </div>
   );
 }
@@ -66,20 +70,17 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
 export function TaskbarWidget({ initialWorkspace }: { initialWorkspace: WorkspaceSnapshot }) {
   const { workspace } = useSnapshot(initialWorkspace);
   const providers = workspace.providers;
-  const windowCount = Math.max(1, ...providers.map((provider) => provider.limits.length));
 
   useEffect(() => {
-    // The taskbar slice has no room for an error surface; the tray icon and the
-    // dashboard remain the recovery surfaces for a failed resize.
-    void invoke("set_taskbar_widget_size", {
-      providers: Math.max(1, providers.length),
-      windows: windowCount,
-    }).catch(() => {});
-  }, [providers.length, windowCount]);
+    // The widget holds one size whatever it is showing, so this only re-docks the window
+    // after the renderer mounts. The taskbar slice has no room for an error surface; the
+    // tray icon and the dashboard remain the recovery surfaces for a failed placement.
+    void invoke("set_taskbar_widget_size").catch(() => {});
+  }, []);
 
   return (
     <main
-      className={`taskbar-widget-shell${providers.length <= 1 ? " single" : ""}`}
+      className="taskbar-widget-shell"
       style={{ "--taskbar-status-color": workspace.aggregate.color } as React.CSSProperties}
     >
       {providers.length > 0 ? (

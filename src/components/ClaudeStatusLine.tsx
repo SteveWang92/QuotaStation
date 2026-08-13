@@ -52,13 +52,26 @@ export function ClaudeStatusLine() {
       <div>
         <h2>Read Claude quota from Claude Code</h2>
         {status.installed ? (
-          <p>
-            QuotaStation is registered as Claude Code's status line, which is how Claude Code
-            hands over its five-hour and seven-day windows.{" "}
-            {status.lastReadingAt === null
-              ? "No reading has arrived yet — the first one comes with the next Claude Code turn."
-              : `Last reading ${formatResetTimestamp(status.lastReadingAt)}.`}
-          </p>
+          <>
+            <p>
+              QuotaStation is registered as Claude Code's status line, which is how Claude
+              Code hands over its five-hour and seven-day windows.{" "}
+              {status.lastReadingAt === null
+                ? "No reading has arrived yet — the first one comes with the next Claude Code turn in a terminal."
+                : `Last reading ${formatResetTimestamp(status.lastReadingAt)}.`}
+            </p>
+            {/* Claude Code renders a status line in a terminal and nowhere else, so a
+                desktop-hosted session never runs this command however it is configured.
+                Without saying so, a correct installation looks like a broken one. */}
+            {status.desktopOnlySessions ? (
+              <p>
+                The Claude Code sessions running now are hosted by the desktop application,
+                which draws its own interface and renders no status line, so none of them
+                will hand a reading over. Run <code>claude</code> in a terminal to bring the
+                percentages up to date; the windows below stay as last reported until then.
+              </p>
+            ) : null}
+          </>
         ) : (
           <p>
             Claude Code's session logs give the five-hour window's timing but never an
@@ -66,8 +79,10 @@ export function ClaudeStatusLine() {
             does report both, with the percentage consumed and the exact restart, to whatever
             command is set as its status line. Installing this registers QuotaStation as that
             command: no credential is read, nothing leaves this machine, and Claude Code
-            shows the same two windows in its own status line. The readings arrive while
-            Claude Code is running; between sessions the windows above stay as last reported.
+            shows the same two windows in its own status line. Only terminal sessions render
+            a status line — the desktop application draws its own interface and runs no such
+            command — so the readings arrive while <code>claude</code> is running in a
+            terminal, and between those the windows above stay as last reported.
           </p>
         )}
         {status.foreignCommand ? (

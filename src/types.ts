@@ -88,6 +88,8 @@ export interface ClaudeStatusLineStatus {
   foreignCommand: string | null;
   /** Epoch seconds of the last reading Claude Code handed over. */
   lastReadingAt: number | null;
+  /** Claude Code is running, but only in hosts that render no status line. */
+  desktopOnlySessions: boolean;
 }
 
 export interface DailyUsagePoint {

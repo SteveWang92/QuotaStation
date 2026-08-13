@@ -78,20 +78,21 @@ fn dock_widget(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// The widget grows sideways only: the taskbar clamps its height, so a second provider
-/// has to become a second column. A provider showing one window needs less room than one
-/// showing both, and `place_widget` narrows the result again when the taskbar is short of
-/// space beside the notification area.
-pub fn widget_width(providers: usize, windows: usize) -> u32 {
-    let column = if windows <= 1 { 148 } else { 270 };
-    column * providers.clamp(1, 3) as u32
-}
+/// The widget keeps one size whatever it is showing. Its width used to follow the provider
+/// count and the number of windows each was reporting, which meant it grew sideways as
+/// providers finished loading and shrank again when one stopped answering: the neighbouring
+/// taskbar icons moved every time. A fixed slot fits the widest case — two providers, two
+/// windows each — and the content is right-aligned inside it, so a narrower reading simply
+/// leaves transparent space where the taskbar shows through. `place_widget` still narrows
+/// the window when the taskbar is short of room beside the notification area.
+pub const WIDGET_WIDTH: u32 = 460;
+pub const WIDGET_HEIGHT: u32 = 40;
 
 #[cfg(windows)]
-pub fn set_widget_size(app: &tauri::AppHandle, providers: usize, windows: usize) -> Result<(), String> {
+pub fn set_widget_size(app: &tauri::AppHandle) -> Result<(), String> {
     let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
     widget
-        .set_size(PhysicalSize::new(widget_width(providers, windows), 40))
+        .set_size(PhysicalSize::new(WIDGET_WIDTH, WIDGET_HEIGHT))
         .map_err(|error| error.to_string())?;
     place_widget(app)
 }
@@ -139,22 +140,19 @@ pub fn place_widget(_app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-pub fn set_widget_size(_app: &tauri::AppHandle, _providers: usize, _windows: usize) -> Result<(), String> {
+pub fn set_widget_size(_app: &tauri::AppHandle) -> Result<(), String> {
     Err("taskbar status is supported on Windows only".to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::widget_width;
+    use super::{WIDGET_HEIGHT, WIDGET_WIDTH};
 
     #[test]
-    fn a_second_provider_widens_the_widget_instead_of_stacking_it() {
-        assert_eq!(widget_width(1, 2), 270);
-        assert_eq!(widget_width(2, 2), 540);
-        // A provider reporting a single window needs a narrower column.
-        assert_eq!(widget_width(1, 1), 148);
-        assert_eq!(widget_width(2, 1), 296);
-        // A provider count of zero still has to produce a usable window.
-        assert_eq!(widget_width(0, 2), 270);
+    fn the_widget_reserves_one_slot_for_every_reading_it_can_show() {
+        // Two providers showing two windows each is the widest the interface goes, and the
+        // taskbar clamps anything taller than this.
+        assert!(WIDGET_WIDTH >= 2 * 200, "two provider columns must fit");
+        assert!((30..=44).contains(&WIDGET_HEIGHT), "the taskbar clamps its own height");
     }
 }
