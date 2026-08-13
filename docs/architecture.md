@@ -63,7 +63,7 @@ reaching the interface. No credential is read, nothing leaves the machine, and n
 is shared with Claude Code's own usage display.
 
 That bridge changes a setting inside Claude Code's own configuration, so it is only ever
-installed from an explicit action in the dashboard, a status line belonging to something
+installed from an explicit action in the dashboard's settings dialog, a status line belonging to something
 else is reported rather than replaced, and removing it takes out only the entry
 QuotaStation wrote. Its readings arrive while Claude Code is running, which is why the
 session logs stay underneath it: they are written whatever else is configured. Claude Code's

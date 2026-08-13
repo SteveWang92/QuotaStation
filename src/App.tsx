@@ -5,9 +5,8 @@ import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "./errors";
 import { useSnapshot } from "./useSnapshot";
-import { ClaudeCrossCheck } from "./components/ClaudeCrossCheck";
-import { ClaudeStatusLine } from "./components/ClaudeStatusLine";
 import { ProviderSetup } from "./components/ProviderSetup";
+import { SettingsDialog, type SettingsTab } from "./components/SettingsDialog";
 import { QuotaSection } from "./components/QuotaSection";
 import { QuickPanel } from "./components/QuickPanel";
 import { TaskbarWidget } from "./components/TaskbarWidget";
@@ -52,6 +51,8 @@ function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("settings");
   const activeRangeRef = useRef(INITIAL_RANGE);
   // The usage history is long, so it shows one provider at a time while the quota
   // sections above show them all.
@@ -138,6 +139,24 @@ function Dashboard() {
     }
   }, [loadDiagnostics, loadUsageRange]);
 
+  // The tray toggle cannot turn the cross-check on by itself the first time, because the
+  // trade has to be explained before it is taken. It sends the user here instead.
+  useEffect(() => {
+    let disposed = false;
+    let stopListening = () => {};
+    void listen("claude-consent-requested", () => {
+      setSettingsTab("settings");
+      setSettingsOpen(true);
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else stopListening = unlisten;
+    });
+    return () => {
+      disposed = true;
+      stopListening();
+    };
+  }, []);
+
   useEffect(() => {
     let disposed = false;
     let stopListening = () => {};
@@ -162,7 +181,14 @@ function Dashboard() {
     };
   }, [loadUsageRange]);
 
-  const showClaudeCards = workspace.providers.some((provider) => provider.provider === "claude");
+  const showClaudeSettings = workspace.providers.some((provider) => provider.provider === "claude");
+  const interfaceError = snapshotError ?? commandError;
+  // The panel is behind a control now, so anything wrong inside it has to be visible from
+  // outside it; otherwise a failed acquisition path is only found by looking for it.
+  const diagnosticsAttention =
+    interfaceError !== null ||
+    diagnostics.watcher.status !== "active" ||
+    diagnostics.acquisitions.some((acquisition) => acquisition.status === "failed");
 
   return (
     <main className="app-shell">
@@ -181,8 +207,6 @@ function Dashboard() {
           </button>
         </div>
       </header>
-      {showClaudeCards ? <ClaudeStatusLine /> : null}
-      {showClaudeCards ? <ClaudeCrossCheck /> : null}
       {loaded && workspace.providers.length === 0 ? <ProviderSetup /> : null}
       <div className={`provider-grid${workspace.providers.length <= 1 ? " single" : ""}`}>
         {workspace.providers.map((provider) => (
@@ -221,8 +245,17 @@ function Dashboard() {
       ) : null}
       <StatusBar
         status={workspace.aggregate}
+        attention={diagnosticsAttention}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
+      <SettingsDialog
+        open={settingsOpen}
+        tab={settingsTab}
+        onSelectTab={setSettingsTab}
+        onClose={() => setSettingsOpen(false)}
+        showClaude={showClaudeSettings}
         diagnostics={diagnostics}
-        interfaceError={snapshotError ?? commandError}
+        interfaceError={interfaceError}
       />
     </main>
   );

@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { errorMessage } from "../errors";
 
 interface ProviderSettings {
@@ -9,49 +8,27 @@ interface ProviderSettings {
 }
 
 /**
- * Claude Code's session logs give the window that is running and when it ends, but never
- * how much of it is left. Anthropic's usage endpoint is the only source for that, and
- * asking it costs a stored credential and a share of a rate limit Claude Code itself is
- * already using. That trade is explained before it can be taken for the first time; once
- * accepted, the tray toggle is enough and this card stays out of the way.
+ * The third quota source, and the only one that leaves the machine. Asking Anthropic's
+ * usage endpoint costs a stored credential and a share of a rate limit Claude Code itself
+ * is already spending, so the trade is explained before it can be taken for the first
+ * time. The tray toggle is enough afterwards, but the setting is stated here either way:
+ * the tray cannot say why it is off.
  */
 export function ClaudeCrossCheck() {
   const [settings, setSettings] = useState<ProviderSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [requested, setRequested] = useState(false);
-  const card = useRef<HTMLElement | null>(null);
 
   const load = useCallback(async () => {
     try {
       setSettings(await invoke<ProviderSettings>("get_provider_settings"));
     } catch {
-      // The dashboard works without this card; the tray toggle remains available.
+      // The dashboard works without this row; the tray toggle remains available.
     }
   }, []);
 
   useEffect(() => {
     void load();
-  }, [load]);
-
-  // The tray toggle cannot turn the cross-check on by itself the first time, so it sends
-  // the user here instead. Without this the dashboard simply appears and the card is easy
-  // to miss.
-  useEffect(() => {
-    let disposed = false;
-    let stopListening = () => {};
-    void listen("claude-consent-requested", () => {
-      setRequested(true);
-      void load();
-      card.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }).then((unlisten) => {
-      if (disposed) unlisten();
-      else stopListening = unlisten;
-    });
-    return () => {
-      disposed = true;
-      stopListening();
-    };
   }, [load]);
 
   const setEnabled = useCallback(
@@ -71,20 +48,26 @@ export function ClaudeCrossCheck() {
     [],
   );
 
-  if (!settings || settings.claudeCrossCheckEnabled) return null;
+  if (!settings) return null;
+
+  const { claudeCrossCheckEnabled: enabled, claudeConsentGranted: consented } = settings;
 
   return (
-    <section
-      ref={card}
-      className={`provider-consent${requested ? " requested" : ""}`}
-      aria-label="Claude Code online quota cross-check"
-    >
+    <section className="provider-consent" aria-label="Claude Code online quota cross-check">
       <div>
         <h2>Check Claude quota online</h2>
-        {settings.claudeConsentGranted ? (
+        {enabled ? (
           <p>
-            The online cross-check is off. Claude Code's windows still come from its session
-            logs; turning this back on adds the remaining percentage to them.
+            QuotaStation also asks Anthropic's usage endpoint for the remaining percentage.
+            This is only needed where the status line above is not installed, and it shares a
+            rate limit with Claude Code's own usage display, so a reading that fails changes
+            nothing and the known windows stay on display.
+          </p>
+        ) : consented ? (
+          <p>
+            The online cross-check is off. Claude Code's windows still come from its status
+            line and its session logs; turning this back on adds a second opinion on the
+            remaining percentage.
           </p>
         ) : (
           <p>
@@ -103,10 +86,10 @@ export function ClaudeCrossCheck() {
       </div>
       <button
         type="button"
-        onClick={() => void setEnabled(true, !settings.claudeConsentGranted)}
+        onClick={() => void setEnabled(!enabled, !enabled && !consented)}
         disabled={busy}
       >
-        {settings.claudeConsentGranted ? "Turn on" : "Enable cross-check"}
+        {enabled ? "Turn off" : consented ? "Turn on" : "Enable cross-check"}
       </button>
     </section>
   );

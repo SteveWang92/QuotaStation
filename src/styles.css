@@ -215,13 +215,29 @@ button { font: inherit; }
 .status-bar { border-color: color-mix(in srgb, var(--status-color) 48%, var(--line)); }
 .status-bar .status-summary > svg, .status-bar .status-summary > strong { color: var(--status-color); }
 .status-message { color: #c8cdd0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.diagnostics-toggle { height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #4b5861; border-radius: 4px; color: #d4d8da; background: transparent; cursor: pointer; font-size: 12px; }
-.diagnostics-toggle:hover { border-color: #76838d; background: #182129; }
-.diagnostics-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-.diagnostics-toggle svg { width: 15px; height: 15px; transition: transform 160ms ease; }
-.diagnostics-toggle svg.expanded { transform: rotate(180deg); }
-.diagnostics-panel { padding: 0 20px 13px; border-top: 1px solid var(--line-soft); }
-.diagnostics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; padding-top: 12px; }
+.settings-toggle { height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #4b5861; border-radius: 4px; color: #d4d8da; background: transparent; cursor: pointer; font-size: 12px; }
+.settings-toggle:hover { border-color: #76838d; background: #182129; }
+.settings-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.settings-toggle svg { width: 15px; height: 15px; }
+.settings-toggle.attention { border-color: color-mix(in srgb, var(--danger) 60%, var(--line)); color: #ffbdb6; }
+
+.settings-overlay { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 32px; background: rgba(6, 10, 13, 0.66); backdrop-filter: blur(2px); }
+.settings-dialog { width: min(880px, 100%); max-height: min(720px, 100%); display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
+.settings-dialog:focus { outline: none; }
+.settings-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px 0 18px; border-bottom: 1px solid var(--line-soft); }
+.settings-tabs { display: flex; gap: 4px; }
+.settings-tabs button { height: 38px; padding: 0 14px; border: none; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; cursor: pointer; font-size: 13px; font-weight: 620; }
+.settings-tabs button:hover { color: var(--text); }
+.settings-tabs button.active { color: var(--text); border-bottom-color: var(--lime); }
+.settings-tabs button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.settings-close { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 6px; border: 1px solid transparent; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; }
+.settings-close:hover { border-color: var(--line); color: var(--text); background: #182129; }
+.settings-close svg { width: 17px; height: 17px; }
+.settings-body { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px 18px; overflow-y: auto; }
+.settings-empty { margin: 0; max-width: 78ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.diagnostics-panel { display: flex; flex-direction: column; gap: 8px; }
+.diagnostics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
 .diagnostic-item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; padding: 9px 12px; border: 1px solid var(--line-soft); border-radius: 4px; background: #0d1419; }
 .diagnostic-item > span { color: var(--text); font-weight: 620; }
 .diagnostic-item > strong { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }

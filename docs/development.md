@@ -139,7 +139,7 @@ QuotaStation keeps live quota and local history acquisition independent:
   to those logs also refreshes Claude's window immediately, alongside its history.
 - Claude Code hands its own five-hour and seven-day windows, with percentages and exact
   restarts, to the command configured as its status line. Installing that bridge from the
-  dashboard registers `quotastation.exe --claude-statusline` as the command; every Claude
+  dashboard's settings dialog registers `quotastation.exe --claude-statusline` as the command; every Claude
   Code turn then leaves a reading in the application data directory, which the same log
   change that refreshes Claude's window picks up. Removing it takes out only that entry.
 - Claude Code's optional online cross-check is off by default and is only needed where the
@@ -154,9 +154,14 @@ QuotaStation keeps live quota and local history acquisition independent:
 - Renderer range changes continue to query SQLite. A successful history refresh emits an
   application event so the active range updates without waiting for the UI polling fallback.
 
-The status bar's Diagnostics panel reads normalized refresh records and in-memory watcher
-health. It exposes acquisition status, timestamps, redacted errors, watched-location count,
-and embedded source revisions. It never exposes full paths or raw session records.
+The status bar opens one dialog for both of the dashboard's occasional surfaces. Its
+Settings tab holds the provider quota-source choices — the Claude Code status-line bridge
+and the optional online cross-check — so the dashboard itself stays given over to the quota
+panels. Its Diagnostics tab reads normalized refresh records and in-memory watcher health,
+exposing acquisition status, timestamps, redacted errors, watched-location count, and
+embedded source revisions, and never full paths or raw session records. The status bar's own
+control is marked whenever an acquisition path, the watcher, or the command channel has
+failed, so nothing wrong stays hidden behind a closed dialog.
 
 ## Pricing catalog lifecycle
 
