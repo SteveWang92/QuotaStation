@@ -1,5 +1,5 @@
-mod api;
 mod history;
+mod plan;
 mod session;
 pub mod statusline;
 
@@ -7,7 +7,7 @@ use std::{env, path::PathBuf};
 
 use anyhow::Result;
 
-use crate::domain::{CrossCheck, LimitKind, LimitWindow, LiveSnapshot};
+use crate::domain::{LimitKind, LimitWindow, LiveSnapshot};
 
 pub use history::read_history;
 
@@ -31,44 +31,38 @@ pub fn claude_home() -> Option<PathBuf> {
     Some(home.join(".claude"))
 }
 
-/// Claude quota, from the three sources this machine can offer, in order of what each one
+/// Claude quota, from the two sources this machine can offer, in order of what each one
 /// actually knows.
 ///
-/// Claude Code's own status line is the best of them: when the bridge is installed it hands
-/// over both windows with the percentage consumed and the exact restart, needs no
-/// credential, and shares no rate limit. It only speaks while Claude Code is running, so
-/// the session logs remain underneath it — they are written whatever else is configured,
-/// and they give the five-hour window's timing. Anthropic's usage endpoint stays available
-/// as an opt-in correction for installations without the bridge.
-pub async fn read_live(cross_check: bool) -> Result<LiveSnapshot> {
-    let plan_type = api::plan_type();
+/// Claude Code's own status line is the better of them: when the bridge is installed it
+/// hands over both windows with the percentage consumed and the exact restart, needs no
+/// credential, and shares no rate limit. It only speaks while Claude Code is running, so the
+/// session logs remain underneath it — they are written whatever else is configured, and
+/// they give the five-hour window's timing, though never an allowance.
+pub async fn read_live() -> Result<LiveSnapshot> {
+    let plan_type = plan::plan_type();
     let reported = statusline::read_windows();
+    crate::log::write(format!(
+        "claude live read: status line reported {} window(s), plan {:?}",
+        reported.len(),
+        plan_type
+    ));
     let mut snapshot = match session::read_live(plan_type.clone()).await {
         Ok(snapshot) => snapshot,
         // The session logs are the fallback, so their absence only ends the read when
         // nothing else answered either.
         Err(error) if reported.is_empty() => return Err(error),
-        Err(_) => LiveSnapshot {
-            plan_type,
-            limits: Vec::new(),
-            earned_reset_count: None,
-            cross_check: CrossCheck::NotAttempted,
-        },
+        Err(error) => {
+            crate::log::write(format!("claude session logs unreadable: {error}"));
+            LiveSnapshot { plan_type, limits: Vec::new(), earned_reset_count: None }
+        }
     };
     snapshot.limits = merge_windows(reported, snapshot.limits);
-    if !cross_check {
-        return Ok(snapshot);
-    }
-    match api::read_windows().await {
-        Ok(limits) if !limits.is_empty() => {
-            snapshot.limits = merge_windows(limits, snapshot.limits);
-            snapshot.cross_check = CrossCheck::Confirmed;
-        }
-        Ok(_) => {
-            snapshot.cross_check =
-                CrossCheck::Failed("The usage endpoint reported no quota windows.".to_string());
-        }
-        Err(error) => snapshot.cross_check = CrossCheck::Failed(error.to_string()),
+    for limit in &snapshot.limits {
+        crate::log::write(format!(
+            "claude window {}: used {:?}% resets_at {:?}",
+            limit.label, limit.used_percent, limit.resets_at
+        ));
     }
     Ok(snapshot)
 }

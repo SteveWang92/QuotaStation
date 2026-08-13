@@ -134,7 +134,7 @@ fn cache_path() -> Option<PathBuf> {
 /// QuotaStation's application data directory, resolved the same way Tauri resolves it, so
 /// the short-lived bridge process and the running application agree on one file without the
 /// bridge having to start Tauri to ask.
-fn app_data_dir() -> Option<PathBuf> {
+pub fn app_data_dir() -> Option<PathBuf> {
     const IDENTIFIER: &str = "me.stevewang.quotastation";
     #[cfg(windows)]
     {
@@ -162,12 +162,31 @@ pub fn run_bridge_if_requested() -> bool {
     let _ = std::io::stdin().read_to_string(&mut payload);
     let input = serde_json::from_str::<StatusLineInput>(&payload).ok();
     let limits = input.as_ref().and_then(|input| input.rate_limits.as_ref());
+    // This process has no console and no window, so the log is the only place it can say
+    // whether Claude Code ran it and what the payload contained. Sizes and field presence
+    // only: the payload also carries the session's own working context.
+    crate::log::write(format!(
+        "status line bridge ran: {} bytes of input, parsed {}, rate_limits {}",
+        payload.len(),
+        if input.is_some() { "yes" } else { "no" },
+        match limits {
+            None => "absent".to_string(),
+            Some(limits) => format!(
+                "five_hour {} seven_day {}",
+                if limits.five_hour.is_some() { "present" } else { "absent" },
+                if limits.seven_day.is_some() { "present" } else { "absent" },
+            ),
+        }
+    ));
     if let Some(limits) = limits {
-        let _ = store_reading(&Reading {
+        match store_reading(&Reading {
             observed_at: jiff::Timestamp::now().as_second(),
             five_hour: limits.five_hour,
             seven_day: limits.seven_day,
-        });
+        }) {
+            Ok(()) => crate::log::write("status line reading stored"),
+            Err(error) => crate::log::write(format!("status line reading not stored: {error}")),
+        }
     }
     let model = input
         .as_ref()

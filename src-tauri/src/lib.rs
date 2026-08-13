@@ -1,4 +1,5 @@
 mod domain;
+mod log;
 mod providers;
 mod refresh;
 mod resets;
@@ -22,7 +23,7 @@ pub fn run_claude_status_line() -> bool {
     statusline::run_bridge_if_requested()
 }
 use tauri::{
-    Emitter, Manager, PhysicalPosition, State,
+    Manager, PhysicalPosition, State,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -33,24 +34,12 @@ use tokio::sync::{Mutex, RwLock};
 struct AppSettings {
     #[serde(default = "default_taskbar_widget_enabled")]
     taskbar_widget_enabled: bool,
-    /// Claude's windows come from its session logs by default. Asking Anthropic's usage
-    /// endpoint for the remaining percentage as well presents a stored credential to a
-    /// remote service and competes with Claude Code's own reads, so it stays off until it
-    /// is turned on deliberately.
-    #[serde(default)]
-    claude_cross_check_enabled: bool,
-    /// Set once the explanation of what that cross-check does has been accepted, so the
-    /// consent card is not shown again on every toggle.
-    #[serde(default)]
-    claude_consent_granted: bool,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             taskbar_widget_enabled: default_taskbar_widget_enabled(),
-            claude_cross_check_enabled: false,
-            claude_consent_granted: false,
         }
     }
 }
@@ -67,8 +56,6 @@ fn load_settings(path: &std::path::Path) -> AppSettings {
 fn save_settings(state: &AppState) -> Result<(), String> {
     let settings = AppSettings {
         taskbar_widget_enabled: state.taskbar_widget_enabled.load(Ordering::Relaxed),
-        claude_cross_check_enabled: state.claude_cross_check_enabled.load(Ordering::Relaxed),
-        claude_consent_granted: state.claude_consent_granted.load(Ordering::Relaxed),
     };
     if let Some(parent) = state.settings_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -89,12 +76,6 @@ pub struct AppState {
     quick_panel_focus_lost_at: StdMutex<Option<Instant>>,
     taskbar_widget_enabled: AtomicBool,
     detected_providers: StdMutex<Vec<ProviderKind>>,
-    claude_cross_check_enabled: AtomicBool,
-    claude_consent_granted: AtomicBool,
-    /// The tray's own tick for the cross-check. The dashboard can turn the cross-check on
-    /// as well, and a tick that only follows the tray's clicks would then describe a
-    /// setting the tray no longer owns.
-    claude_cross_check_item: StdMutex<Option<CheckMenuItem<tauri::Wry>>>,
     settings_path: PathBuf,
 }
 
@@ -114,14 +95,6 @@ impl AppState {
             providers.clone_from(&detected);
         }
         detected
-    }
-
-    /// Whether a provider's optional second quota source may be used this refresh.
-    fn cross_check_enabled(&self, provider: ProviderKind) -> bool {
-        match provider {
-            ProviderKind::Codex => false,
-            ProviderKind::Claude => self.claude_cross_check_enabled.load(Ordering::Relaxed),
-        }
     }
 
     async fn with_snapshot(&self, provider: ProviderKind, edit: impl FnOnce(&mut ProviderSnapshot)) {
@@ -236,65 +209,26 @@ fn set_taskbar_widget_size(
     taskbar::set_widget_size(&app, providers, windows)
 }
 
-/// What the renderer needs to show the Claude cross-check opt-in: whether it is on, and
-/// whether the explanation still has to be accepted before it can be.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderSettings {
-    claude_cross_check_enabled: bool,
-    claude_consent_granted: bool,
+/// Where the activity log is, and a way to open the folder holding it.
+///
+/// A built executable has no console: neither the application nor the status-line bridge
+/// can report what it did anywhere a person could see, so both write to this file and the
+/// diagnostics panel points at it.
+#[tauri::command]
+fn get_log_path() -> Option<String> {
+    log::log_path().map(|path| path.display().to_string())
 }
 
 #[tauri::command]
-fn get_provider_settings(state: State<'_, Arc<AppState>>) -> ProviderSettings {
-    ProviderSettings {
-        claude_cross_check_enabled: state.claude_cross_check_enabled.load(Ordering::Relaxed),
-        claude_consent_granted: state.claude_consent_granted.load(Ordering::Relaxed),
-    }
-}
-
-/// Turning the cross-check on requires consent, which the renderer collects. Accepting it
-/// is what makes the first enable possible; after that the tray toggle is enough.
-#[tauri::command]
-async fn set_claude_cross_check(
-    app: tauri::AppHandle,
-    enabled: bool,
-    grant_consent: bool,
-    state: State<'_, Arc<AppState>>,
-) -> Result<ProviderSettings, String> {
-    if grant_consent {
-        state.claude_consent_granted.store(true, Ordering::Relaxed);
-    }
-    if enabled && !state.claude_consent_granted.load(Ordering::Relaxed) {
-        return Err("The online quota cross-check needs to be confirmed before it can be enabled.".to_string());
-    }
-    let state = state.inner().clone();
-    apply_claude_cross_check(&app, &state, enabled);
-    Ok(ProviderSettings {
-        claude_cross_check_enabled: state.claude_cross_check_enabled.load(Ordering::Relaxed),
-        claude_consent_granted: state.claude_consent_granted.load(Ordering::Relaxed),
-    })
-}
-
-fn apply_claude_cross_check(app: &tauri::AppHandle, state: &Arc<AppState>, enabled: bool) {
-    state.claude_cross_check_enabled.store(enabled, Ordering::Relaxed);
-    if let Err(error) = save_settings(state) {
-        eprintln!("failed to save application settings: {error}");
-    }
-    // Whoever changed the setting, the tray has to describe it: the dashboard is the only
-    // way to grant consent, so the first enable never comes from the tray itself.
-    if let Ok(item) = state.claude_cross_check_item.lock()
-        && let Some(item) = item.as_ref()
-    {
-        let _ = item.set_checked(enabled);
-    }
-    let app = app.clone();
-    let state = state.clone();
-    // Claude keeps reporting either way; this only changes where its percentages come
-    // from, so the next refresh is enough to show the change.
-    tauri::async_runtime::spawn(async move {
-        refresh::refresh_all(&app, &state).await;
-    });
+fn reveal_log_file() -> Result<(), String> {
+    let path = log::log_path().ok_or_else(|| "No application data directory.".to_string())?;
+    // Selecting the file rather than opening it: the log is read with whatever the user
+    // prefers, and a missing file still lands them in the right folder.
+    std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{}", path.display()))
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// Whether Claude Code hands its quota to QuotaStation, for the card that offers to set
@@ -504,18 +438,6 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         taskbar_widget_enabled,
         None::<&str>,
     )?;
-    let claude_cross_check_enabled = app
-        .state::<Arc<AppState>>()
-        .claude_cross_check_enabled
-        .load(Ordering::Relaxed);
-    let claude_cross_check = CheckMenuItem::with_id(
-        app,
-        "claude_cross_check",
-        "Check Claude quota online",
-        true,
-        claude_cross_check_enabled,
-        None::<&str>,
-    )?;
     let separator_before_quit = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(
@@ -527,7 +449,6 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             &autostart,
             &desktop_shortcut,
             &taskbar_widget,
-            &claude_cross_check,
             &separator_before_quit,
             &quit,
         ],
@@ -535,9 +456,6 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let icon = app.default_window_icon().cloned().expect("application icon must be configured");
     let autostart_menu_item = autostart.clone();
     let taskbar_widget_menu_item = taskbar_widget.clone();
-    if let Ok(mut item) = app.state::<Arc<AppState>>().claude_cross_check_item.lock() {
-        *item = Some(claude_cross_check.clone());
-    }
     TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
@@ -573,26 +491,6 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 set_taskbar_widget_visible(app, enabled);
                 let _ = taskbar_widget_menu_item.set_checked(enabled);
             }
-            "claude_cross_check" => {
-                let state = app.state::<Arc<AppState>>().inner().clone();
-                let enabled = !state.claude_cross_check_enabled.load(Ordering::Relaxed);
-                if enabled && !state.claude_consent_granted.load(Ordering::Relaxed) {
-                    // The first enable has to be explained before it takes effect, and
-                    // the dashboard is where that explanation lives. Saying so is what
-                    // keeps the unchanged tick from reading as a broken menu item.
-                    if let Ok(item) = state.claude_cross_check_item.lock()
-                        && let Some(item) = item.as_ref()
-                    {
-                        let _ = item.set_checked(false);
-                    }
-                    show_main(app);
-                    let _ = app.emit_to("main", "claude-consent-requested", ());
-                    return;
-                }
-                // `apply_claude_cross_check` owns the tick, so the tray and the dashboard
-                // cannot leave it describing different settings.
-                apply_claude_cross_check(app, &state, enabled);
-            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -615,6 +513,14 @@ pub fn run() {
             None,
         ))
         .setup(|app| {
+            log::write(format!(
+                "application started, version {}, status line {}",
+                app.package_info().version,
+                match statusline::bridge_status().installed {
+                    true => "installed",
+                    false => "not installed",
+                }
+            ));
             let app_data_dir = app.path().app_data_dir()?;
             let database_path = app_data_dir.join("quotastation.db");
             let settings_path = app_data_dir.join("settings.json");
@@ -642,9 +548,6 @@ pub fn run() {
                 quick_panel_focus_lost_at: StdMutex::new(None),
                 taskbar_widget_enabled: AtomicBool::new(settings.taskbar_widget_enabled),
                 detected_providers: StdMutex::new(Vec::new()),
-                claude_cross_check_enabled: AtomicBool::new(settings.claude_cross_check_enabled),
-                claude_consent_granted: AtomicBool::new(settings.claude_consent_granted),
-                claude_cross_check_item: StdMutex::new(None),
                 settings_path,
             });
             state.detect_providers();
@@ -712,8 +615,8 @@ pub fn run() {
             get_usage_range,
             refresh_now,
             get_diagnostics,
-            get_provider_settings,
-            set_claude_cross_check,
+            get_log_path,
+            reveal_log_file,
             get_claude_status_line,
             set_claude_status_line,
             open_dashboard,

@@ -34,8 +34,10 @@ npm run tauri dev
 
 This is the only mode that shows development output: the core's messages appear in the
 terminal that started it, and the webview offers right-click → Inspect. The application
-stops when that terminal stops. Built executables are windowed applications with no
-console attached, so they print nothing anywhere; use this mode to diagnose them.
+stops when that terminal stops. Built executables are windowed applications with no console
+attached, so they print nothing to a terminal; what they and the status-line bridge do is
+recorded in `quotastation.log` instead (see Local data), and this mode is for everything
+that log does not answer.
 
 For renderer-only work, start Vite without the Rust host:
 
@@ -119,6 +121,14 @@ Normalized data is stored in the application data directory at:
 
 The database contains normalized usage, limits, refresh state, and pricing provenance. It
 does not store prompts, source code, raw session records, credentials, or full source paths.
+
+The same directory holds `quotastation.log`. Built executables are windowed applications with
+no console, and the status-line bridge is a process that lives for milliseconds inside Claude
+Code, so the log is the only place either of them can report what happened: which source
+answered a refresh, how many windows it carried, and why a read failed. It records no session
+content and no credential, rolls over at 512 KB into `quotastation.log.1`, and the
+Diagnostics tab's **Show activity log** button reveals it.
+
 Historical range changes query the normalized daily rows in SQLite; they do not trigger a
 new parse of the Codex session logs.
 
@@ -142,11 +152,6 @@ QuotaStation keeps live quota and local history acquisition independent:
   dashboard's settings dialog registers `quotastation.exe --claude-statusline` as the command; every Claude
   Code turn then leaves a reading in the application data directory, which the same log
   change that refreshes Claude's window picks up. Removing it takes out only that entry.
-- Claude Code's optional online cross-check is off by default and is only needed where the
-  status-line bridge is not installed. When it is on it runs with the live refresh, never
-  more than once every fifteen minutes, and it always yields to a `Retry-After`. Its
-  failures are recorded against their own acquisition path, are shown on the Claude panel,
-  and leave the already-known windows on display.
 - History refreshes at startup and on manual refresh. A recursive watcher reuses ccusage's
   resolved Codex session locations and debounces `.jsonl` changes for two seconds.
 - A full history reconciliation runs every fifteen minutes to recover missed filesystem
@@ -155,9 +160,8 @@ QuotaStation keeps live quota and local history acquisition independent:
   application event so the active range updates without waiting for the UI polling fallback.
 
 The status bar opens one dialog for both of the dashboard's occasional surfaces. Its
-Settings tab holds the provider quota-source choices — the Claude Code status-line bridge
-and the optional online cross-check — so the dashboard itself stays given over to the quota
-panels. Its Diagnostics tab reads normalized refresh records and in-memory watcher health,
+Settings tab holds the provider quota-source choices — currently the Claude Code status-line
+bridge — so the dashboard itself stays given over to the quota panels. Its Diagnostics tab reads normalized refresh records and in-memory watcher health,
 exposing acquisition status, timestamps, redacted errors, watched-location count, and
 embedded source revisions, and never full paths or raw session records. The status bar's own
 control is marked whenever an acquisition path, the watcher, or the command channel has

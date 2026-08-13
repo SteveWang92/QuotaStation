@@ -37,11 +37,19 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
             <time dateTime={limit.resetsAt === null ? undefined : new Date(limit.resetsAt * 1_000).toISOString()}>
               {formatCompactCountdown(limit.resetsAt)}
             </time>
-            {limit.remainingPercent === null ? (
+            {/* The bar fills with what has been consumed, exactly as the dashboard's meter
+                does. Filling it with what is left would leave the same quota drawn one way
+                in the taskbar and the other way in the window above it. */}
+            {limit.usedPercent === null ? (
               <i className="unknown" aria-hidden="true" />
             ) : (
-              <i aria-label={`${snapshot.displayName} ${limit.label}: ${limit.remainingPercent}% remaining`}>
-                <b style={{ width: `${limit.remainingPercent}%`, background: statusColor }} />
+              <i aria-label={`${snapshot.displayName} ${limit.label}: ${limit.usedPercent}% used`}>
+                <b
+                  style={{
+                    width: `${Math.min(100, Math.max(0, limit.usedPercent))}%`,
+                    background: statusColor,
+                  }}
+                />
               </i>
             )}
           </div>

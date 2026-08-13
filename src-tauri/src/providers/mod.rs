@@ -75,15 +75,6 @@ impl ProviderKind {
         .unwrap_or(false)
     }
 
-    /// The acquisition path for a provider's optional second quota source, when it has
-    /// one. Only Claude does: its logs give window timing but no allowance.
-    pub fn cross_check_path(self) -> Option<String> {
-        match self {
-            ProviderKind::Codex => None,
-            ProviderKind::Claude => Some(format!("{}_api", self.key())),
-        }
-    }
-
     /// Directories holding this provider's usage records, for filesystem watching.
     pub fn usage_paths(self) -> Result<Vec<PathBuf>> {
         match self {
@@ -96,12 +87,11 @@ impl ProviderKind {
 }
 
 /// Two providers is not enough to justify an async trait and the dependency it needs, so
-/// acquisition dispatches on the kind instead. `cross_check` enables the optional second
-/// source of any provider that has one; a provider without one ignores it.
-pub async fn read_live(kind: ProviderKind, cross_check: bool) -> Result<LiveSnapshot> {
+/// acquisition dispatches on the kind instead.
+pub async fn read_live(kind: ProviderKind) -> Result<LiveSnapshot> {
     match kind {
         ProviderKind::Codex => codex::read_live().await,
-        ProviderKind::Claude => claude::read_live(cross_check).await,
+        ProviderKind::Claude => claude::read_live().await,
     }
 }
 

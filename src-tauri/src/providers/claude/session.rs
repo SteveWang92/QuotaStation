@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use ccusage_adapter_claude::load_entries;
 use ccusage_core::cli::SharedArgs;
 
-use crate::domain::{CrossCheck, LimitKind, LimitWindow, LiveSnapshot};
+use crate::domain::{LimitKind, LimitWindow, LiveSnapshot};
 
 use super::FIVE_HOUR_WINDOW_MINS as WINDOW_MINS;
 
@@ -60,7 +60,6 @@ fn read_live_blocking(plan_type: Option<String>) -> Result<LiveSnapshot> {
         }],
         // Claude grants no reset inventory of the kind Codex publishes.
         earned_reset_count: None,
-        cross_check: CrossCheck::NotAttempted,
     })
 }
 

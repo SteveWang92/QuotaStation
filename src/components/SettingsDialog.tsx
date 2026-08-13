@@ -1,6 +1,5 @@
 import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
-import { ClaudeCrossCheck } from "./ClaudeCrossCheck";
 import { ClaudeStatusLine } from "./ClaudeStatusLine";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import type { DiagnosticsSnapshot } from "../types";
@@ -88,10 +87,7 @@ export function SettingsDialog({
         <div className="settings-body">
           {tab === "settings" ? (
             showClaude ? (
-              <>
-                <ClaudeStatusLine />
-                <ClaudeCrossCheck />
-              </>
+              <ClaudeStatusLine />
             ) : (
               <p className="settings-empty">
                 QuotaStation reads whichever provider clients this machine has. Nothing here

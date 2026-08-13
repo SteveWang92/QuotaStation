@@ -73,27 +73,22 @@ limit the account actually reached is stated exactly in the error Claude raises,
 outranks the inferred one. What the logs never carry is the allowance, so on that path alone
 the percentage consumed stays unknown and the seven-day window is not visible at all.
 
-Anthropic's OAuth usage endpoint remains available as a third source for installations
-without the bridge. Reading it costs the stored access token and a share of a rate limit
-Claude Code's own usage display is already spending, and that endpoint answers `429` often
-enough that it cannot be the primary source. It is therefore an optional cross-check, off by
-default and gated behind an explicit in-application confirmation. The adapter waits out any
-`Retry-After` and never reads the endpoint more often than every fifteen minutes.
+Anthropic's OAuth usage endpoint was a third source and is not one any more. It reports the
+same two windows, but it rate-limits an account as a whole and Claude Code's own usage
+display is already spending that budget, so in practice it answered `429` and nothing else —
+a source that costs a stored credential and never succeeds is worse than no source. Claude
+Code's sign-in is now read for one field, the plan name recorded beside the token, which
+needs no request and never leaves the machine. QuotaStation makes no network request for
+Claude at all.
 
-The three sources are combined by window rather than by precedence over the whole reading:
-the better-informed source owns a window both describe, and a window only one of them knows
-about is kept. A source that cannot answer therefore never blanks a window another one
-already filled, and a cross-check that failed is carried on the provider snapshot so a
-source that was deliberately switched on cannot look as though it did nothing.
-
-The token is read in the adapter alone. It is never persisted, logged, exported in
-diagnostics, or passed to the renderer. The adapter never refreshes the token itself and
-never sends a chat request to read rate-limit response headers; both would write to
-account state.
+The two remaining sources are combined by window rather than by precedence over the whole
+reading: the better-informed source owns a window both describe, and a window only one of
+them knows about is kept. A source that cannot answer therefore never blanks a window the
+other one already filled.
 
 Claude reports no reset-credit inventory. Its five-hour and seven-day windows map onto the
 shared primary and secondary quota windows; the log-derived path fills the primary one
-only.
+only, and without a percentage.
 
 ### Usage parsers
 
@@ -167,8 +162,11 @@ telemetry, mutation calls, and raw-data upload behavior are excluded.
 - Secrets remain in their originating credential store or client.
 - Raw prompts, source code, and complete file paths are not collected.
 - Diagnostic export must be explicit and redact account and machine identifiers.
-- Network access must be attributable to a provider refresh or pricing update, and the
-  optional Claude usage cross-check is the only refresh that makes one.
+- No acquisition path makes a network request. Both providers are read from local clients
+  and local files, and the pricing catalog is embedded at build time from a pinned snapshot.
+- The application and the status-line bridge append an activity log to the application data
+  directory, recording which source answered and why a read failed. It carries no session
+  content, no credential, and no provider paths, and is rolled over at half a megabyte.
 
 ## Deferred decisions
 

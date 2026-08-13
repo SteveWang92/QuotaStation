@@ -139,24 +139,6 @@ function Dashboard() {
     }
   }, [loadDiagnostics, loadUsageRange]);
 
-  // The tray toggle cannot turn the cross-check on by itself the first time, because the
-  // trade has to be explained before it is taken. It sends the user here instead.
-  useEffect(() => {
-    let disposed = false;
-    let stopListening = () => {};
-    void listen("claude-consent-requested", () => {
-      setSettingsTab("settings");
-      setSettingsOpen(true);
-    }).then((unlisten) => {
-      if (disposed) unlisten();
-      else stopListening = unlisten;
-    });
-    return () => {
-      disposed = true;
-      stopListening();
-    };
-  }, []);
-
   useEffect(() => {
     let disposed = false;
     let stopListening = () => {};
@@ -222,11 +204,6 @@ function Dashboard() {
               resets={provider.recentResets}
               statusColor={provider.compactStatus.color}
             />
-            {/* A second source that was deliberately switched on and then answered nothing
-                has to say so here; the provider itself is still reporting. */}
-            {provider.crossCheckError ? (
-              <p className="provider-note">{provider.crossCheckError}</p>
-            ) : null}
           </section>
         ))}
       </div>

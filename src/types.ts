@@ -64,7 +64,6 @@ export interface ProviderSnapshot {
   liveError: string | null;
   historyError: string | null;
   /** Why an optional second quota source could not confirm the reading on display. */
-  crossCheckError: string | null;
   parserRevision: string;
   pricingCatalogRevision: string;
 }

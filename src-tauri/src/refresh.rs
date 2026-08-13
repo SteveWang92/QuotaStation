@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{
     AppState,
-    domain::{CrossCheck, WorkspaceSnapshot},
+    domain::WorkspaceSnapshot,
     providers::{self, ProviderKind},
     sanitize::sanitize_error,
 };
@@ -51,8 +51,7 @@ async fn refresh_live_for(app: &AppHandle, state: &Arc<AppState>, providers: &[P
                 snapshot.last_attempt_at = Some(started_at.clone());
             })
             .await;
-        let cross_check = state.cross_check_enabled(provider);
-        let live = providers::read_live(provider, cross_check).await;
+        let live = providers::read_live(provider).await;
         apply_live(state, provider, &started_at, live).await;
     }
     publish_snapshot(app, state).await;
@@ -105,11 +104,6 @@ async fn apply_live(
     let completed_at = now();
     match result {
         Ok(live) => {
-            record_cross_check(state, provider, started_at, &completed_at, &live.cross_check).await;
-            let cross_check_error = match &live.cross_check {
-                CrossCheck::Failed(message) => Some(sanitize_error(message, PROVIDER_FALLBACK)),
-                _ => None,
-            };
             let save_error = state
                 .storage
                 .save_live(provider, &live, &completed_at)
@@ -129,7 +123,6 @@ async fn apply_live(
                     snapshot.limits = live.limits;
                     snapshot.earned_reset_count = live.earned_reset_count;
                     snapshot.recent_resets = recent_resets;
-                    snapshot.cross_check_error = cross_check_error;
                     snapshot.live_error = save_error;
                     if snapshot.live_error.is_none() {
                         snapshot.last_success_at = Some(completed_at.clone());
@@ -214,27 +207,6 @@ async fn apply_history(
             &completed_at,
             error.as_deref(),
         )
-        .await;
-}
-
-/// The optional second source gets its own diagnostics row, so a reading it could not
-/// confirm is visible without turning the provider itself into a failure.
-async fn record_cross_check(
-    state: &Arc<AppState>,
-    provider: ProviderKind,
-    started_at: &str,
-    completed_at: &str,
-    outcome: &CrossCheck,
-) {
-    let Some(path) = provider.cross_check_path() else { return };
-    let error = match outcome {
-        CrossCheck::NotAttempted => return,
-        CrossCheck::Confirmed => None,
-        CrossCheck::Failed(message) => Some(sanitize_error(message, PROVIDER_FALLBACK)),
-    };
-    let _ = state
-        .storage
-        .record_refresh(provider, &path, started_at, completed_at, error.as_deref())
         .await;
 }
 

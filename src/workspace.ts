@@ -28,7 +28,6 @@ export function emptySnapshot(provider: ProviderKey, displayName: string): Provi
     lastSuccessAt: null,
     liveError: null,
     historyError: null,
-    crossCheckError: null,
     parserRevision: "",
     pricingCatalogRevision: "",
   };

@@ -179,10 +179,6 @@ pub struct ProviderSnapshot {
     pub last_success_at: Option<String>,
     pub live_error: Option<String>,
     pub history_error: Option<String>,
-    /// Why an optional second quota source could not confirm this reading. It never makes
-    /// the provider a failure, but leaving it only in the diagnostics table makes a source
-    /// that was deliberately switched on look like it did nothing at all.
-    pub cross_check_error: Option<String>,
     pub parser_revision: String,
     pub pricing_catalog_revision: String,
 }
@@ -206,7 +202,6 @@ impl ProviderSnapshot {
             last_success_at: None,
             live_error: None,
             history_error: None,
-            cross_check_error: None,
             parser_revision: CCUSAGE_REVISION.to_string(),
             pricing_catalog_revision: PRICING_CATALOG_REVISION.to_string(),
         }
@@ -492,18 +487,4 @@ pub struct LiveSnapshot {
     pub plan_type: Option<String>,
     pub limits: Vec<LimitWindow>,
     pub earned_reset_count: Option<u64>,
-    /// What an optional secondary source had to say about these windows. It is reported
-    /// rather than persisted: the windows above stand on their own either way.
-    pub cross_check: CrossCheck,
-}
-
-/// Whether a provider's optional second source confirmed the reading it is attached to.
-/// A source that only ever corrects the primary one must not be able to turn a working
-/// provider into a failed one, so its outcome travels beside the reading.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum CrossCheck {
-    #[default]
-    NotAttempted,
-    Confirmed,
-    Failed(String),
 }
