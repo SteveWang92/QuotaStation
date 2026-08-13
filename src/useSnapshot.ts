@@ -17,7 +17,10 @@ const MAX_RETRY_MS = 5_000;
  * opening its database. Those reads are retried with a backoff instead of leaving
  * the window on its placeholder snapshot.
  */
-export function useSnapshot(initialSnapshot: WorkspaceSnapshot, onSnapshot?: () => void) {
+export function useSnapshot(
+  initialSnapshot: WorkspaceSnapshot,
+  onSnapshot?: (snapshot: WorkspaceSnapshot) => void,
+) {
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [error, setError] = useState<string | null>(null);
   // A workspace with no providers means something different before and after the first
@@ -40,7 +43,7 @@ export function useSnapshot(initialSnapshot: WorkspaceSnapshot, onSnapshot?: () 
       setLoaded(true);
       setError(null);
       retryDelay = FIRST_RETRY_MS;
-      onSnapshotRef.current?.();
+      onSnapshotRef.current?.(next);
     };
 
     const load = async () => {

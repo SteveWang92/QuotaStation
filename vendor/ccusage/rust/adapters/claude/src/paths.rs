@@ -54,6 +54,12 @@ pub fn claude_usage_paths() -> Result<Vec<PathBuf>> {
         .collect())
 }
 
+/// Whether discovery found at least one Claude Code session record.
+pub fn has_claude_usage_records() -> Result<bool> {
+    let paths = claude_paths()?;
+    Ok(!usage_files(&paths, None).is_empty())
+}
+
 fn normalize_claude_config_path(raw: &str) -> PathBuf {
     let path = expand_home_path(raw);
     if path.file_name().is_some_and(|name| name == "projects") && path.is_dir() {

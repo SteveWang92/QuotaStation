@@ -129,12 +129,10 @@ fn normalize(response: &UsageResponse) -> Vec<LimitWindow> {
     .collect()
 }
 
-/// The endpoint reports utilization as a percentage, but the equivalent rate-limit
-/// response headers report the same quantity as a fraction. Treating a value that cannot
-/// be a percentage as a fraction keeps a full window from being displayed as 1% used.
+/// The OAuth usage endpoint reports utilization on a 0-100 percentage scale. Fractional
+/// rate-limit headers use a different protocol and must be normalized at their own boundary.
 fn normalize_utilization(value: f64) -> f64 {
-    let percent = if (0.0..=1.0).contains(&value) { value * 100.0 } else { value };
-    percent.clamp(0.0, 100.0)
+    value.clamp(0.0, 100.0)
 }
 
 fn parse_timestamp(value: &str) -> Option<i64> {
@@ -312,11 +310,10 @@ mod tests {
     }
 
     #[test]
-    fn utilization_is_read_as_a_percentage_or_a_fraction() {
+    fn utilization_is_read_as_an_endpoint_percentage() {
         assert_eq!(normalize_utilization(40.0), 40.0);
-        assert_eq!(normalize_utilization(0.4), 40.0);
-        // A full window reads as 100% either way rather than as 1%.
-        assert_eq!(normalize_utilization(1.0), 100.0);
+        assert_eq!(normalize_utilization(0.4), 0.4);
+        assert_eq!(normalize_utilization(1.0), 1.0);
         assert_eq!(normalize_utilization(100.0), 100.0);
         assert_eq!(normalize_utilization(140.0), 100.0);
     }

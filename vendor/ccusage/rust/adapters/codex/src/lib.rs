@@ -14,7 +14,7 @@ use crate::{PricingMap, Result, cli::AgentCommandArgs, log_level, print_json_or_
 
 pub use aggregate::{aggregate_events, filter_events_by_date, load_groups};
 pub use loader::load_codex_events;
-pub use paths::codex_usage_paths;
+pub use paths::{codex_usage_paths, has_codex_usage_records};
 #[doc(hidden)]
 pub use loader::load_codex_events_from_directory;
 pub use report::{

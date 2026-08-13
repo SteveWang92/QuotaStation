@@ -17,6 +17,13 @@ pub fn codex_usage_paths() -> Result<Vec<PathBuf>> {
         .collect())
 }
 
+/// Whether discovery found at least one Codex session record.
+pub fn has_codex_usage_records() -> Result<bool> {
+    Ok(codex_usage_sources()?
+        .iter()
+        .any(|source| !collect_codex_usage_files(&source.dir).is_empty()))
+}
+
 #[cfg(test)]
 fn codex_usage_paths_from_homes(homes: Vec<PathBuf>) -> Vec<PathBuf> {
     codex_usage_sources_from_homes(homes)

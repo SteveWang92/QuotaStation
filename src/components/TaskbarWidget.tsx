@@ -24,15 +24,26 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
             <span>
               {badge}·{formatWindowBadge(limit.windowDurationMins, limit.label)}
             </span>
-            <strong style={{ color: statusColor }}>
+            <strong
+              style={{ color: statusColor }}
+              aria-label={
+                limit.remainingPercent === null
+                  ? `${snapshot.displayName} ${limit.label}: remaining percentage unavailable`
+                  : undefined
+              }
+            >
               {limit.remainingPercent === null ? "—" : `${Math.round(limit.remainingPercent)}%`}
             </strong>
             <time dateTime={limit.resetsAt === null ? undefined : new Date(limit.resetsAt * 1_000).toISOString()}>
               {formatCompactCountdown(limit.resetsAt)}
             </time>
-            <i aria-label={`${snapshot.displayName} ${limit.label}: ${limit.remainingPercent ?? 0}% remaining`}>
-              <b style={{ width: `${limit.remainingPercent ?? 0}%`, background: statusColor }} />
-            </i>
+            {limit.remainingPercent === null ? (
+              <i className="unknown" aria-hidden="true" />
+            ) : (
+              <i aria-label={`${snapshot.displayName} ${limit.label}: ${limit.remainingPercent}% remaining`}>
+                <b style={{ width: `${limit.remainingPercent}%`, background: statusColor }} />
+              </i>
+            )}
           </div>
         ))
       ) : (

@@ -13,8 +13,13 @@ import { TaskbarWidget } from "./components/TaskbarWidget";
 import { StatusBar } from "./components/StatusBar";
 import { UsageSummary } from "./components/UsageSummary";
 import { createPresetRange, type DateRangeSelection } from "./dateRanges";
-import type { DiagnosticsSnapshot, ProviderKey, UsageRangeSnapshot } from "./types";
-import { EMPTY_WORKSPACE } from "./workspace";
+import type {
+  DiagnosticsSnapshot,
+  ProviderKey,
+  UsageRangeSnapshot,
+  WorkspaceSnapshot,
+} from "./types";
+import { EMPTY_WORKSPACE, resolveProviderKey } from "./workspace";
 
 const INITIAL_RANGE = createPresetRange("today");
 const EMPTY_USAGE_RANGE: UsageRangeSnapshot = {
@@ -83,11 +88,18 @@ function Dashboard() {
 
   // The shared subscription retries until the core is ready, so the first usage
   // range read waits for it instead of failing against an unmanaged state.
-  const onSnapshot = useCallback(() => {
+  const onSnapshot = useCallback((nextWorkspace: WorkspaceSnapshot) => {
     void loadDiagnostics();
-    if (!rangeRequested.current) {
+    const rangeProvider = resolveProviderKey(nextWorkspace.providers, providerRef.current);
+    if (!rangeProvider) return;
+    const providerChanged = rangeProvider !== providerRef.current;
+    if (providerChanged) {
+      providerRef.current = rangeProvider;
+      setSelectedProvider(rangeProvider);
+    }
+    if (!rangeRequested.current || providerChanged) {
       rangeRequested.current = true;
-      void loadUsageRange(activeRangeRef.current, providerRef.current);
+      void loadUsageRange(activeRangeRef.current, rangeProvider);
     }
   }, [loadDiagnostics, loadUsageRange]);
 

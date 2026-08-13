@@ -319,5 +319,6 @@ button { font: inherit; }
 .taskbar-quota strong { grid-column: 3; color: var(--taskbar-status-color); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
 .taskbar-quota time { grid-column: 4; color: #aeb7bd; font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .taskbar-quota i { grid-column: 1 / -1; height: 3px; overflow: hidden; border-radius: 2px; background: rgba(138, 149, 157, 0.32); }
+.taskbar-quota i.unknown { background: repeating-linear-gradient(90deg, rgba(138, 149, 157, 0.18) 0 5px, rgba(138, 149, 157, 0.42) 5px 9px); }
 .taskbar-quota b { display: block; height: 100%; border-radius: inherit; background: var(--taskbar-status-color); }
 .taskbar-unavailable { grid-column: 1 / -1; color: var(--taskbar-status-color); font-size: 11px; text-align: center; }

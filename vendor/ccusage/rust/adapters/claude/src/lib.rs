@@ -28,7 +28,7 @@ use crate::{
 
 #[doc(hidden)]
 pub use paths::timestamp_from_line;
-pub use paths::claude_usage_paths;
+pub use paths::{claude_usage_paths, has_claude_usage_records};
 pub use paths::usage_files;
 pub(crate) use paths::{claude_paths, extract_project, extract_session_parts};
 

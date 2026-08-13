@@ -68,7 +68,11 @@ impl ProviderKind {
     /// nobody uses is not shown at all, so the display never carries a column that can
     /// only ever say "unavailable".
     pub fn is_installed(self) -> bool {
-        self.usage_paths().is_ok_and(|paths| !paths.is_empty())
+        match self {
+            ProviderKind::Codex => ccusage_adapter_codex::has_codex_usage_records(),
+            ProviderKind::Claude => ccusage_adapter_claude::has_claude_usage_records(),
+        }
+        .unwrap_or(false)
     }
 
     /// The acquisition path for a provider's optional second quota source, when it has

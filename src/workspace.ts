@@ -33,6 +33,16 @@ export function emptySnapshot(provider: ProviderKey, displayName: string): Provi
   };
 }
 
+/** Keeps history queries attached to a provider that is still present in the workspace. */
+export function resolveProviderKey(
+  providers: ProviderSnapshot[],
+  preferred: ProviderKey,
+): ProviderKey | undefined {
+  return providers.some((provider) => provider.provider === preferred)
+    ? preferred
+    : providers[0]?.provider;
+}
+
 /**
  * The placeholder carries no providers: which ones exist is decided by what the core
  * finds on this machine, so guessing one here would show a column that may not be there.
