@@ -166,7 +166,8 @@ begins when monitoring is enabled.
   hours old. It never runs during provider refresh and does not automatically vacuum.
 - Each acquisition path fails independently and preserves visibly stale last-known-good
   data.
-- History refresh samples at most the final 256 KiB of each JSONL for structural quality.
+- History refresh samples at most the final 256 KiB of each of the 16 most recently modified
+  JSONL files for structural quality, bounding the additional read to roughly 4 MiB.
   Three or more candidate records with no compatible records, or at least 25 percent
   incompatible candidates, report schema incompatibility and preserve last-known-good data;
   isolated malformed lines remain tolerated.

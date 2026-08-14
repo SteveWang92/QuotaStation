@@ -110,7 +110,7 @@ pub async fn read_history(kind: ProviderKind) -> Result<(HistorySnapshot, String
         ProviderKind::Codex => codex::read_history(&timezone).await,
         ProviderKind::Claude => claude::read_history(&timezone).await,
     }?;
-    let quality = inspect_history_quality(kind, before.keys())?;
+    let quality = inspect_history_quality(kind, recent_quality_files(&before))?;
     let after = usage_file_state(kind)?;
     anyhow::ensure!(before == after, "Provider session files changed during parsing; retrying after they settle");
     ensure_history_quality(quality)?;
@@ -122,6 +122,7 @@ pub async fn read_history(kind: ProviderKind) -> Result<(HistorySnapshot, String
 }
 
 const QUALITY_TAIL_BYTES: u64 = 256 * 1024;
+const MAX_QUALITY_FILES: usize = 16;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct HistoryParseQuality {
@@ -150,6 +151,12 @@ fn inspect_history_quality<'a>(
         }
     }
     Ok(quality)
+}
+
+fn recent_quality_files(state: &BTreeMap<PathBuf, FileState>) -> impl Iterator<Item = &PathBuf> {
+    let mut files = state.iter().collect::<Vec<_>>();
+    files.sort_by(|(_, left), (_, right)| right.modified.cmp(&left.modified));
+    files.into_iter().take(MAX_QUALITY_FILES).map(|(path, _)| path)
 }
 
 fn read_quality_tail(path: &Path) -> Result<Vec<u8>> {
@@ -347,5 +354,23 @@ mod tests {
         .expect_err("one quarter failed candidates must reject the refresh");
         assert!(error.to_string().contains("scanned_files=2"));
         assert!(error.to_string().contains("failed=4"));
+    }
+
+    #[test]
+    fn quality_sampling_is_bounded_to_the_most_recent_files() {
+        let mut state = BTreeMap::new();
+        for index in 0..20 {
+            state.insert(
+                PathBuf::from(format!("session-{index}.jsonl")),
+                FileState {
+                    len: 1,
+                    modified: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(index)),
+                },
+            );
+        }
+        let files = recent_quality_files(&state).cloned().collect::<Vec<_>>();
+        assert_eq!(files.len(), MAX_QUALITY_FILES);
+        assert_eq!(files.first(), Some(&PathBuf::from("session-19.jsonl")));
+        assert_eq!(files.last(), Some(&PathBuf::from("session-4.jsonl")));
     }
 }
