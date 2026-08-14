@@ -46,9 +46,9 @@ reset interpretation, and error mapping. Adapters return normalized data and nev
 credentials to the presentation layer.
 
 The Codex live adapter starts the installed `codex app-server` over its JSONL stdio
-transport, completes the protocol handshake, and uses only supported account, rate-limit,
-and usage read operations. It listens for rate-limit updates but never logs users in or
-out, changes configuration, consumes reset credits, or calls other mutation operations.
+transport, completes the protocol handshake, and uses only the supported `account/read` and
+`account/rateLimits/read` operations. It never logs users in or out, changes configuration,
+consumes reset credits, or calls other mutation operations.
 
 Claude Code publishes no comparable local interface: it has no usage subcommand, and no
 file it writes on its own records remaining quota or a forward-looking reset. It does,
@@ -143,8 +143,8 @@ equivalent backfill and its restart history begins when monitoring is enabled.
 - The Rust core owns the single-instance lifecycle, tray, provider child processes,
   filesystem watching, scheduling, retries, normalization, persistence, and query services.
 - The renderer owns presentation and user interaction only.
-- Live Codex limits refresh on startup and every five minutes, with app-server updates
-  applied immediately.
+- Live Codex limits refresh on startup and every five minutes through a short-lived
+  app-server process.
 - Codex session history uses debounced filesystem changes plus a fifteen-minute full
   reconciliation.
 - Normalized-data retention runs at startup when its last successful run is at least 24

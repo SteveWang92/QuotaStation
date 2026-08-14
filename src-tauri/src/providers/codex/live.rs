@@ -1,4 +1,10 @@
-use std::{collections::BTreeSet, env, path::{Path, PathBuf}, process::Stdio};
+use std::{
+    collections::BTreeSet,
+    env,
+    future::Future,
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -20,18 +26,31 @@ pub async fn read_live() -> Result<LiveSnapshot> {
 
 async fn read_live_inner() -> Result<LiveSnapshot> {
     let candidates = discover_codex_candidates()?;
-    let mut spawn_error = None;
+    first_success(candidates, attempt_candidate).await
+}
+
+async fn attempt_candidate(executable: PathBuf) -> Result<LiveSnapshot> {
+    let mut child = spawn_app_server(&executable)?;
+    let result = timeout(Duration::from_secs(4), exchange(&mut child))
+        .await
+        .context("Codex app-server candidate timed out")?;
+    let _ = child.kill().await;
+    result
+}
+
+async fn first_success<T, F, Fut>(candidates: Vec<PathBuf>, mut attempt: F) -> Result<T>
+where
+    F: FnMut(PathBuf) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let mut last_error = None;
     for executable in candidates {
-        match spawn_app_server(&executable) {
-            Ok(mut child) => {
-                let result = exchange(&mut child).await;
-                let _ = child.kill().await;
-                return result;
-            }
-            Err(error) => spawn_error = Some(error),
+        match attempt(executable).await {
+            Ok(value) => return Ok(value),
+            Err(error) => last_error = Some(error),
         }
     }
-    Err(spawn_error.unwrap_or_else(|| anyhow!("No usable Codex app-server executable was found")))
+    Err(last_error.unwrap_or_else(|| anyhow!("No usable Codex app-server executable was found")))
 }
 
 fn spawn_app_server(executable: &Path) -> Result<Child> {
@@ -49,33 +68,53 @@ fn spawn_app_server(executable: &Path) -> Result<Child> {
 fn discover_codex_candidates() -> Result<Vec<PathBuf>> {
     if let Some(path) = env::var_os(CODEX_EXECUTABLE_OVERRIDE).filter(|value| !value.is_empty()) {
         let path = PathBuf::from(path);
-        if path.is_file() { return Ok(vec![path]); }
+        if path.is_file() {
+            return Ok(vec![path]);
+        }
         bail!("Codex executable override does not point to a file");
     }
-    let mut candidates = BTreeSet::new();
-    if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
-        add_if_file(&mut candidates, app_data.join("npm").join("codex.cmd"));
-        let nvm = app_data.join("nvm");
-        if let Ok(versions) = std::fs::read_dir(nvm) {
-            let mut versions = versions.filter_map(Result::ok).map(|entry| entry.path()).collect::<Vec<_>>();
-            versions.sort_by(|left, right| right.cmp(left));
-            for version in versions {
-                add_if_file(&mut candidates, version.join("codex.cmd"));
-                add_if_file(&mut candidates, version.join("codex.exe"));
-            }
+    let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+    if let Ok(paths) = which::which_all("codex") {
+        for path in paths {
+            add_if_file(&mut candidates, &mut seen, path);
         }
     }
-    if let Ok(paths) = which::which_all("codex") {
-        candidates.extend(paths);
+    if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
+        add_if_file(&mut candidates, &mut seen, app_data.join("npm").join("codex.cmd"));
+        let nvm = app_data.join("nvm");
+        if let Ok(versions) = std::fs::read_dir(nvm) {
+            let mut versions = versions
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            versions.sort_by_key(|path| std::cmp::Reverse(version_key(path)));
+            for version in versions {
+                add_if_file(&mut candidates, &mut seen, version.join("codex.cmd"));
+                add_if_file(&mut candidates, &mut seen, version.join("codex.exe"));
+            }
+        }
     }
     if candidates.is_empty() {
         bail!("Codex CLI was not found; install the official @openai/codex package or set QUOTASTATION_CODEX_EXECUTABLE");
     }
-    Ok(candidates.into_iter().collect())
+    Ok(candidates)
 }
 
-fn add_if_file(candidates: &mut BTreeSet<PathBuf>, path: PathBuf) {
-    if path.is_file() { candidates.insert(path); }
+fn version_key(path: &Path) -> Vec<u64> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .trim_start_matches('v')
+        .split('.')
+        .map(|part| part.parse().unwrap_or(0))
+        .collect()
+}
+
+fn add_if_file(candidates: &mut Vec<PathBuf>, seen: &mut BTreeSet<PathBuf>, path: PathBuf) {
+    if path.is_file() && seen.insert(path.clone()) {
+        candidates.push(path);
+    }
 }
 
 async fn exchange(child: &mut Child) -> Result<LiveSnapshot> {
@@ -91,21 +130,52 @@ async fn exchange(child: &mut Child) -> Result<LiveSnapshot> {
     send(&mut stdin, json!({ "method": "initialized", "params": {} })).await?;
     send(&mut stdin, json!({ "method": "account/read", "id": 2, "params": { "refreshToken": false } })).await?;
     send(&mut stdin, json!({ "method": "account/rateLimits/read", "id": 3 })).await?;
-    send(&mut stdin, json!({ "method": "account/usage/read", "id": 4 })).await?;
 
     let mut account = None;
     let mut rate_limits = None;
-    let mut usage_seen = false;
-    while account.is_none() || rate_limits.is_none() || !usage_seen {
+    while account.is_none() || rate_limits.is_none() {
         let value = next_value(&mut lines).await?;
         match value.get("id").and_then(Value::as_i64) {
             Some(2) => account = Some(response_result(value)?),
             Some(3) => rate_limits = Some(response_result(value)?),
-            Some(4) => { usage_seen = true; }
             _ => {}
         }
     }
     normalize(account.unwrap(), rate_limits.unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_failed_exchange_falls_back_to_the_next_candidate() {
+        let candidates = vec![PathBuf::from("first"), PathBuf::from("second")];
+        let snapshot = first_success(candidates, |candidate| async move {
+            if candidate == Path::new("first") {
+                bail!("protocol handshake failed");
+            }
+            Ok(LiveSnapshot {
+                plan_type: Some("test".to_string()),
+                limits: Vec::new(),
+                earned_reset_count: None,
+            })
+        })
+        .await
+        .expect("second candidate succeeds");
+        assert_eq!(snapshot.plan_type.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn nvm_versions_sort_semantically() {
+        let mut versions = [
+            PathBuf::from("v9.0.0"),
+            PathBuf::from("v24.2.0"),
+            PathBuf::from("v24.18.1"),
+        ];
+        versions.sort_by_key(|path| std::cmp::Reverse(version_key(path)));
+        assert_eq!(versions[0], Path::new("v24.18.1"));
+    }
 }
 
 async fn send(stdin: &mut tokio::process::ChildStdin, value: Value) -> Result<()> {
