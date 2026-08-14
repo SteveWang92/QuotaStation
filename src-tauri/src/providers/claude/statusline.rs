@@ -185,7 +185,7 @@ pub fn run_bridge_if_requested() -> bool {
             seven_day: limits.seven_day,
         }) {
             Ok(()) => crate::log::write("status line reading stored"),
-            Err(error) => crate::log::write(format!("status line reading not stored: {error}")),
+            Err(_) => crate::log::write("status line reading not stored"),
         }
     }
     let model = input
@@ -248,7 +248,7 @@ pub struct BridgeStatus {
     pub installed: bool,
     /// A status line belonging to something else. Replacing it is the user's call, so it is
     /// reported rather than overwritten.
-    pub foreign_command: Option<String>,
+    pub has_foreign_command: bool,
     pub last_reading_at: Option<i64>,
     /// Claude Code is running, but only in hosts that render their own interface instead of
     /// a status line. Nothing the bridge does can produce a reading from those sessions, so
@@ -261,7 +261,7 @@ pub fn bridge_status() -> BridgeStatus {
     let ours = configured.as_deref().is_some_and(is_bridge_command);
     BridgeStatus {
         installed: ours,
-        foreign_command: configured.filter(|_| !ours),
+        has_foreign_command: configured.is_some() && !ours,
         last_reading_at: last_reading_at(),
         desktop_only_sessions: super::sessions::live_sessions().desktop_only(),
     }

@@ -84,8 +84,8 @@ export interface WorkspaceSnapshot {
  */
 export interface ClaudeStatusLineStatus {
   installed: boolean;
-  /** A status line belonging to something else, which QuotaStation never replaces. */
-  foreignCommand: string | null;
+  /** Whether a status line belonging to something else blocks installation. */
+  hasForeignCommand: boolean;
   /** Epoch seconds of the last reading Claude Code handed over. */
   lastReadingAt: number | null;
   /** Claude Code is running, but only in hosts that render no status line. */

@@ -85,7 +85,7 @@ export function ClaudeStatusLine() {
             terminal, and between those the windows above stay as last reported.
           </p>
         )}
-        {status.foreignCommand ? (
+        {status.hasForeignCommand ? (
           <p className="provider-consent-error">
             Claude Code already runs its own status line, which QuotaStation will not
             replace. Remove it in Claude Code's settings first.
@@ -96,7 +96,7 @@ export function ClaudeStatusLine() {
       <button
         type="button"
         onClick={() => void setInstalled(!status.installed)}
-        disabled={busy || (!status.installed && status.foreignCommand !== null)}
+        disabled={busy || (!status.installed && status.hasForeignCommand)}
       >
         {status.installed ? "Remove status line" : "Install status line"}
       </button>

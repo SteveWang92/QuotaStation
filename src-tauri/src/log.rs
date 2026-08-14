@@ -28,7 +28,8 @@ pub fn log_path() -> Option<PathBuf> {
 /// Appends one line, with a timestamp and the process that wrote it. Failures are silent:
 /// logging that cannot be written must never become a second fault to report.
 pub fn write(message: impl AsRef<str>) {
-    let _ = try_write(message.as_ref());
+    let safe_message = crate::sanitize::sanitize_error(message.as_ref(), "Activity unavailable");
+    let _ = try_write(&safe_message);
 }
 
 fn try_write(message: &str) -> std::io::Result<()> {

@@ -17,12 +17,12 @@ export function DiagnosticsPanel({ diagnostics, interfaceError }: DiagnosticsPan
   // A built application has no console, and the status-line bridge is a process that lives
   // for milliseconds inside Claude Code. The log is where both of them report, so the panel
   // has to be able to point at it.
-  const [logPath, setLogPath] = useState<string | null>(null);
+  const [logAvailable, setLogAvailable] = useState(false);
 
   useEffect(() => {
-    void invoke<string | null>("get_log_path")
-      .then(setLogPath)
-      .catch(() => setLogPath(null));
+    void invoke<boolean>("get_log_available")
+      .then(setLogAvailable)
+      .catch(() => setLogAvailable(false));
   }, []);
 
   return (
@@ -65,7 +65,7 @@ export function DiagnosticsPanel({ diagnostics, interfaceError }: DiagnosticsPan
       <div className="diagnostic-revisions">
         <span>ccusage <code>{formatRevision(diagnostics.parserRevision)}</code></span>
         <span>Pricing <code>{formatRevision(diagnostics.pricingCatalogRevision)}</code></span>
-        {logPath ? (
+        {logAvailable ? (
           <button type="button" className="diagnostic-log" onClick={() => void invoke("reveal_log_file")}>
             Show activity log
           </button>

@@ -38,7 +38,13 @@ fn looks_like_path(token: &str) -> bool {
     if token.len() < 3 {
         return false;
     }
-    token.contains('\\')
+    let bytes = token.as_bytes();
+    let windows_drive_path = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/');
+    windows_drive_path
+        || token.contains('\\')
         || token.contains("://")
         || token.starts_with("~/")
         || (token.starts_with('/') && token[1..].contains('/'))
@@ -55,6 +61,15 @@ mod tests {
             "Storage failed",
         );
         assert_eq!(message, "error returned from database: unable to open <path>");
+    }
+
+    #[test]
+    fn redacts_windows_paths_with_forward_slashes() {
+        let message = sanitize_error(
+            "unable to read C:/Users/example/.claude/settings.json",
+            "Provider failed",
+        );
+        assert_eq!(message, "unable to read <path>");
     }
 
     #[test]

@@ -207,14 +207,14 @@ fn set_taskbar_widget_size(app: tauri::AppHandle) -> Result<(), String> {
     taskbar::set_widget_size(&app)
 }
 
-/// Where the activity log is, and a way to open the folder holding it.
+/// Whether the activity log can be revealed without exposing its path to the renderer.
 ///
 /// A built executable has no console: neither the application nor the status-line bridge
 /// can report what it did anywhere a person could see, so both write to this file and the
 /// diagnostics panel points at it.
 #[tauri::command]
-fn get_log_path() -> Option<String> {
-    log::log_path().map(|path| path.display().to_string())
+fn get_log_available() -> bool {
+    log::log_path().is_some()
 }
 
 #[tauri::command]
@@ -246,7 +246,9 @@ async fn set_claude_status_line(
     state: State<'_, Arc<AppState>>,
 ) -> Result<statusline::BridgeStatus, String> {
     let result = if installed { statusline::install() } else { statusline::remove() };
-    result.map_err(|error| error.to_string())?;
+    result.map_err(|error| {
+        sanitize::sanitize_error(&error.to_string(), "Status line update failed")
+    })?;
     // Claude Code writes the first reading on its next turn, so this refresh only picks up
     // one that is already there; the session watcher and the poll carry the rest.
     refresh::refresh_live_for_provider(&app, state.inner(), ProviderKind::Claude).await;
@@ -262,10 +264,18 @@ async fn get_diagnostics(state: State<'_, Arc<AppState>>) -> Result<DiagnosticsS
                 .storage
                 .load_acquisition_diagnostics(provider)
                 .await
-                .map_err(|error| error.to_string())?,
+                .map_err(|error| {
+                    sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
+                })?,
         );
     }
-    let retention = state.storage.load_retention_diagnostics().await.map_err(|error| error.to_string())?;
+    let retention = state
+        .storage
+        .load_retention_diagnostics()
+        .await
+        .map_err(|error| {
+            sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
+        })?;
     Ok(DiagnosticsSnapshot {
         watcher: state.watcher_diagnostics.read().await.clone(),
         acquisitions,
@@ -677,7 +687,7 @@ pub fn run() {
             get_usage_range,
             refresh_now,
             get_diagnostics,
-            get_log_path,
+            get_log_available,
             reveal_log_file,
             get_claude_status_line,
             set_claude_status_line,

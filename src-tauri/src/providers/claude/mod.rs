@@ -53,8 +53,8 @@ pub async fn read_live() -> Result<LiveSnapshot> {
         // The session logs are the fallback, so their absence only ends the read when
         // nothing else answered either.
         Err(error) if reported.is_empty() => return Err(error),
-        Err(error) => {
-            crate::log::write(format!("claude session logs unreadable: {error}"));
+        Err(_) => {
+            crate::log::write("claude session logs unreadable");
             LiveSnapshot { plan_type, limits: Vec::new(), earned_reset_count: None }
         }
     };
