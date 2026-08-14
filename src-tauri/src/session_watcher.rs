@@ -5,7 +5,12 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::AppHandle;
 use tokio::{sync::mpsc, time::Instant};
 
-use crate::{AppState, providers::ProviderKind, refresh};
+use crate::{
+    AppState,
+    domain::WatcherDiagnostics,
+    providers::ProviderKind,
+    refresh,
+};
 
 enum WatcherMessage {
     /// Which provider's session files changed, so only that history is reparsed.
@@ -130,5 +135,28 @@ async fn mark_event(state: &Arc<AppState>) {
 
 async fn mark_failed(state: &Arc<AppState>) {
     let mut diagnostics = state.watcher_diagnostics.write().await;
+    mark_failed_diagnostics(&mut diagnostics);
+}
+
+fn mark_failed_diagnostics(diagnostics: &mut WatcherDiagnostics) {
+    diagnostics.status = "degraded".to_string();
     diagnostics.error = Some("The operating system reported a session watcher error.".to_string());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watcher_failure_is_not_reported_as_active() {
+        let mut diagnostics = WatcherDiagnostics {
+            status: "active".to_string(),
+            watched_location_count: 1,
+            last_event_at: None,
+            error: None,
+        };
+        mark_failed_diagnostics(&mut diagnostics);
+        assert_eq!(diagnostics.status, "degraded");
+        assert!(diagnostics.error.is_some());
+    }
 }

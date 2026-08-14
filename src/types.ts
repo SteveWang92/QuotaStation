@@ -118,7 +118,7 @@ export interface AcquisitionDiagnostics {
 }
 
 export interface WatcherDiagnostics {
-  status: "starting" | "active" | "unavailable";
+  status: "starting" | "active" | "degraded" | "unavailable";
   watchedLocationCount: number;
   lastEventAt: string | null;
   error: string | null;

@@ -37,7 +37,11 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
       </div>
       <div className="quota-meter" aria-label={`${limit.label} usage`}>
         <div className="quota-track">
-          <span style={{ width: `${Math.min(100, Math.max(0, used ?? 0))}%` }} />
+          {used === null ? (
+            <span className="unknown" aria-label="Usage unavailable" />
+          ) : (
+            <span style={{ width: `${Math.min(100, Math.max(0, used))}%` }} />
+          )}
         </div>
       </div>
       <div className="quota-percent">

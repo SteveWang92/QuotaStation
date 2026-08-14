@@ -38,6 +38,7 @@ function countdownParts(epochSeconds: number) {
 
 export function formatCountdown(epochSeconds: number | null): string {
   if (epochSeconds === null) return "Unknown";
+  if (epochSeconds * 1_000 <= Date.now()) return "Expired";
   const { days, hours, minutes } = countdownParts(epochSeconds);
   return days > 0 ? `${days}d ${hours}h ${minutes}m` : `${hours}h ${minutes}m`;
 }
@@ -45,6 +46,7 @@ export function formatCountdown(epochSeconds: number | null): string {
 /** Same countdown truncated for surfaces that only have room for two units. */
 export function formatCompactCountdown(epochSeconds: number | null): string {
   if (epochSeconds === null) return "—";
+  if (epochSeconds * 1_000 <= Date.now()) return "Expired";
   const { days, hours, minutes } = countdownParts(epochSeconds);
   return days > 0 ? `${days}d ${hours}h` : `${hours}h ${minutes}m`;
 }

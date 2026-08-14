@@ -44,10 +44,10 @@ describe("countdowns", () => {
     expect(formatCompactCountdown(resetsAt)).toBe("2d 3h");
   });
 
-  it("clamps a window that has already reset", () => {
+  it("marks a window that has already reset as expired", () => {
     freezeClock();
-    expect(formatCountdown(inSeconds(-90))).toBe("0h 0m");
-    expect(formatCompactCountdown(inSeconds(-90))).toBe("0h 0m");
+    expect(formatCountdown(inSeconds(-90))).toBe("Expired");
+    expect(formatCompactCountdown(inSeconds(-90))).toBe("Expired");
   });
 
   it("marks an unknown reset time on both surfaces", () => {
