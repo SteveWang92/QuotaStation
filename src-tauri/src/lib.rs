@@ -632,7 +632,7 @@ pub fn run() {
                 tauri::async_runtime::block_on(async {
                     let mut diagnostics = state.watcher_diagnostics.write().await;
                     diagnostics.status = "unavailable".to_string();
-                    diagnostics.error = Some("Codex session watching is unavailable; periodic reconciliation remains active.".to_string());
+                    diagnostics.error = Some("Session watching is unavailable; periodic reconciliation remains active.".to_string());
                 });
             }
             let app_handle = app.handle().clone();

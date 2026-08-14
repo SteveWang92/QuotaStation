@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{collections::{BTreeMap, BTreeSet}, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -15,28 +15,61 @@ use crate::{
 enum WatcherMessage {
     /// Which provider's session files changed, so only that history is reparsed.
     HistoryChanged(ProviderKind),
+    LocationsChanged(usize),
     Failed,
 }
 
 pub fn start(app: AppHandle, state: Arc<AppState>) -> Result<()> {
     let (sender, receiver) = mpsc::unbounded_channel();
-    let mut watched_location_count = 0;
-    let mut watchers = Vec::new();
+    let mut watchers = BTreeMap::new();
+    reconcile_watchers(&state, &sender, &mut watchers);
+    let _ = sender.send(WatcherMessage::LocationsChanged(watchers.len()));
 
-    for provider in state.enabled_providers() {
-        let locations = provider
-            .usage_paths()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|path| path.is_dir())
-            .collect::<Vec<_>>();
-        if locations.is_empty() {
+    let manager_state = state.clone();
+    std::thread::Builder::new()
+        .name("session-watcher".to_string())
+        .spawn(move || {
+            loop {
+                std::thread::park_timeout(Duration::from_secs(60));
+                if reconcile_watchers(&manager_state, &sender, &mut watchers) {
+                    let _ = sender.send(WatcherMessage::LocationsChanged(watchers.len()));
+                }
+            }
+        })
+        .context("start session watcher thread")?;
+
+    tauri::async_runtime::spawn(run_event_loop(app, state, receiver));
+    Ok(())
+}
+
+fn reconcile_watchers(
+    state: &AppState,
+    sender: &mpsc::UnboundedSender<WatcherMessage>,
+    watchers: &mut BTreeMap<(ProviderKind, PathBuf), RecommendedWatcher>,
+) -> bool {
+    let mut desired = BTreeSet::new();
+    for provider in state.detect_providers() {
+        let Ok(locations) = provider.usage_paths() else {
+            let _ = sender.send(WatcherMessage::Failed);
+            continue;
+        };
+        for location in locations.into_iter().filter(|path| path.is_dir()) {
+            let location = std::fs::canonicalize(&location).unwrap_or(location);
+            desired.insert((provider, location));
+        }
+    }
+
+    let previous = watchers.keys().cloned().collect::<BTreeSet<_>>();
+    watchers.retain(|key, _| desired.contains(key));
+    for key in desired {
+        if watchers.contains_key(&key) {
             continue;
         }
-
+        let provider = key.0;
+        let location = key.1.clone();
         let event_sender = sender.clone();
-        let mut watcher =
-            notify::recommended_watcher(move |result: notify::Result<Event>| match result {
+        let Ok(mut watcher) = notify::recommended_watcher(
+            move |result: notify::Result<Event>| match result {
                 Ok(event) if is_history_event(&event) => {
                     let _ = event_sender.send(WatcherMessage::HistoryChanged(provider));
                 }
@@ -44,39 +77,18 @@ pub fn start(app: AppHandle, state: Arc<AppState>) -> Result<()> {
                 Err(_) => {
                     let _ = event_sender.send(WatcherMessage::Failed);
                 }
-            })
-            .context("create session watcher")?;
-
-        for location in &locations {
-            if watcher.watch(location, RecursiveMode::Recursive).is_ok() {
-                watched_location_count += 1;
-            }
+            },
+        ) else {
+            let _ = sender.send(WatcherMessage::Failed);
+            continue;
+        };
+        if watcher.watch(&location, RecursiveMode::Recursive).is_err() {
+            let _ = sender.send(WatcherMessage::Failed);
+            continue;
         }
-        watchers.push(watcher);
+        watchers.insert(key, watcher);
     }
-
-    anyhow::ensure!(
-        watched_location_count > 0,
-        "no provider session locations could be watched"
-    );
-
-    tauri::async_runtime::block_on(async {
-        let mut diagnostics = state.watcher_diagnostics.write().await;
-        diagnostics.status = "active".to_string();
-        diagnostics.watched_location_count = watched_location_count;
-        diagnostics.error = None;
-    });
-
-    std::thread::Builder::new()
-        .name("session-watcher".to_string())
-        .spawn(move || {
-            let _watchers: Vec<RecommendedWatcher> = watchers;
-            std::thread::park();
-        })
-        .context("start session watcher thread")?;
-
-    tauri::async_runtime::spawn(run_event_loop(app, state, receiver));
-    Ok(())
+    previous != watchers.keys().cloned().collect()
 }
 
 fn is_history_event(event: &Event) -> bool {
@@ -95,6 +107,7 @@ async fn run_event_loop(
     while let Some(message) = receiver.recv().await {
         match message {
             WatcherMessage::Failed => mark_failed(&state).await,
+            WatcherMessage::LocationsChanged(count) => mark_locations(&state, count).await,
             WatcherMessage::HistoryChanged(provider) => {
                 // A burst of writes across providers is one settling period, and each
                 // provider that took part is reparsed once when it ends.
@@ -111,6 +124,7 @@ async fn run_event_loop(
                                 deadline = Instant::now() + Duration::from_secs(2);
                             }
                             Some(WatcherMessage::Failed) => mark_failed(&state).await,
+                            Some(WatcherMessage::LocationsChanged(count)) => mark_locations(&state, count).await,
                             None => return,
                         }
                     }
@@ -132,6 +146,7 @@ async fn run_event_loop(
                                 mark_event(&state).await;
                             }
                             WatcherMessage::Failed => mark_failed(&state).await,
+                            WatcherMessage::LocationsChanged(count) => mark_locations(&state, count).await,
                         }
                     }
                 }
@@ -148,6 +163,24 @@ async fn mark_event(state: &Arc<AppState>) {
 async fn mark_failed(state: &Arc<AppState>) {
     let mut diagnostics = state.watcher_diagnostics.write().await;
     mark_failed_diagnostics(&mut diagnostics);
+}
+
+async fn mark_locations(state: &Arc<AppState>, count: usize) {
+    let mut diagnostics = state.watcher_diagnostics.write().await;
+    update_location_diagnostics(&mut diagnostics, count);
+}
+
+fn update_location_diagnostics(diagnostics: &mut WatcherDiagnostics, count: usize) {
+    diagnostics.watched_location_count = count;
+    if count == 0 {
+        diagnostics.status = "unavailable".to_string();
+        diagnostics.error = Some(
+            "No provider session location exists yet; periodic discovery remains active.".to_string(),
+        );
+    } else {
+        diagnostics.status = "active".to_string();
+        diagnostics.error = None;
+    }
 }
 
 fn mark_failed_diagnostics(diagnostics: &mut WatcherDiagnostics) {
@@ -170,5 +203,18 @@ mod tests {
         mark_failed_diagnostics(&mut diagnostics);
         assert_eq!(diagnostics.status, "degraded");
         assert!(diagnostics.error.is_some());
+    }
+
+    #[test]
+    fn watcher_diagnostics_recover_when_a_location_appears() {
+        let mut diagnostics = WatcherDiagnostics::default();
+        update_location_diagnostics(&mut diagnostics, 0);
+        assert_eq!(diagnostics.status, "unavailable");
+        assert!(diagnostics.error.is_some());
+
+        update_location_diagnostics(&mut diagnostics, 2);
+        assert_eq!(diagnostics.status, "active");
+        assert_eq!(diagnostics.watched_location_count, 2);
+        assert!(diagnostics.error.is_none());
     }
 }

@@ -152,7 +152,8 @@ begins when monitoring is enabled.
 - Live Codex limits refresh on startup and every five minutes through a short-lived
   app-server process.
 - Codex session history uses debounced filesystem changes plus a fifteen-minute full
-  reconciliation.
+  reconciliation. The watcher rechecks provider roots every minute, so a client installed
+  or first used after QuotaStation starts becomes watched without restarting the app.
 - Normalized-data retention runs at startup when its last successful run is at least 24
   hours old. It never runs during provider refresh and does not automatically vacuum.
 - Each acquisition path fails independently and preserves visibly stale last-known-good
