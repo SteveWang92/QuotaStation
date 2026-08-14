@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createCustomRange,
   createPresetRange,
+  hasRolledOver,
   resolveDateRange,
   todayString,
 } from "../src/dateRanges";
@@ -41,6 +42,31 @@ describe("preset ranges", () => {
       expect(calendarDaysBetween(range.startDate, range.endDate)).toBe(days - 1);
       expect(range.label).toBe(`Last ${days} days`);
     }
+  });
+});
+
+describe("rollover detection", () => {
+  it("reports nothing to redraw while the day holds", () => {
+    expect(hasRolledOver(createPresetRange("today"))).toBe(false);
+    expect(hasRolledOver(createPresetRange("7d"))).toBe(false);
+  });
+
+  it("reports a preset stale once the calendar has moved past it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 11, 23, 59));
+    const today = createPresetRange("today");
+    const week = createPresetRange("7d");
+    vi.setSystemTime(new Date(2026, 7, 12, 0, 1));
+    expect(hasRolledOver(today)).toBe(true);
+    expect(hasRolledOver(week)).toBe(true);
+  });
+
+  it("leaves a custom range alone, since its boundaries were chosen", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 11, 23, 59));
+    const range = createCustomRange("2026-07-01", "2026-07-31");
+    vi.setSystemTime(new Date(2026, 7, 12, 0, 1));
+    expect(hasRolledOver(range)).toBe(false);
   });
 });
 

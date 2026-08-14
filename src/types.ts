@@ -60,14 +60,20 @@ export interface ProviderSnapshot {
   apiEquivalentCostUsd: number | null;
   models: ModelUsage[];
   freshness: Freshness;
+  /**
+   * The snapshot mirrors the Rust type exactly, so several fields arrive already folded
+   * into something a surface draws: the stale age is phrased inside `compactStatus`, the
+   * attempt times are listed per acquisition path in the diagnostics panel, and the model
+   * mix is drawn from the selected date range rather than from today alone.
+   */
   staleAgeSeconds: number | null;
   compactStatus: CompactStatus;
   lastAttemptAt: string | null;
   lastLiveSuccessAt: string | null;
   lastHistorySuccessAt: string | null;
+  /** Why each read last failed, named on the provider panel so a stale reading says why. */
   liveError: string | null;
   historyError: string | null;
-  /** Why an optional second quota source could not confirm the reading on display. */
   parserRevision: string;
   pricingCatalogRevision: string;
 }

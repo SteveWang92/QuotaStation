@@ -47,6 +47,16 @@ export function resolveDateRange(selection: DateRangeSelection): DateRangeSelect
   return selection.preset === "custom" ? selection : createPresetRange(selection.preset);
 }
 
+/**
+ * Whether a preset now covers different days than the ones already on display. A window
+ * that stays open overnight is otherwise still showing yesterday under today's heading,
+ * because nothing about the data changed — only the calendar did.
+ */
+export function hasRolledOver(selection: DateRangeSelection): boolean {
+  const resolved = resolveDateRange(selection);
+  return resolved.startDate !== selection.startDate || resolved.endDate !== selection.endDate;
+}
+
 export function formatRangeDate(value: string): string {
   return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short", year: "numeric" })
     .format(new Date(`${value}T00:00:00`));

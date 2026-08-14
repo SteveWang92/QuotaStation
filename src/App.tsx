@@ -12,10 +12,16 @@ import { QuickPanel } from "./components/QuickPanel";
 import { TaskbarWidget } from "./components/TaskbarWidget";
 import { StatusBar } from "./components/StatusBar";
 import { UsageSummary } from "./components/UsageSummary";
-import { createPresetRange, resolveDateRange, type DateRangeSelection } from "./dateRanges";
+import {
+  createPresetRange,
+  hasRolledOver,
+  resolveDateRange,
+  type DateRangeSelection,
+} from "./dateRanges";
 import type {
   DiagnosticsSnapshot,
   ProviderKey,
+  ProviderSnapshot,
   UsageRangeSnapshot,
   WorkspaceSnapshot,
 } from "./types";
@@ -42,6 +48,18 @@ const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
 const CURRENT_WINDOW_LABEL = getCurrentWindow().label;
 document.documentElement.classList.toggle("compact-window", CURRENT_WINDOW_LABEL !== "main");
 document.documentElement.classList.toggle("taskbar-window", CURRENT_WINDOW_LABEL === "taskbar-widget");
+
+/**
+ * The two reads behind a provider fail independently — the quota windows can be current
+ * while the history is not, and the reverse — so each is named separately rather than
+ * collapsed into one message.
+ */
+function readErrors(provider: ProviderSnapshot): string[] {
+  return [
+    provider.liveError === null ? null : `Quota: ${provider.liveError}`,
+    provider.historyError === null ? null : `History: ${provider.historyError}`,
+  ].filter((message): message is string => message !== null);
+}
 
 function Dashboard() {
   const [usageRange, setUsageRange] = useState<UsageRangeSnapshot>(EMPTY_USAGE_RANGE);
@@ -102,7 +120,11 @@ function Dashboard() {
       providerRef.current = rangeProvider;
       setSelectedProvider(rangeProvider);
     }
-    if (!rangeRequested.current || providerChanged) {
+    // Each snapshot is also the only regular tick this window receives, so it is where a
+    // calendar preset notices that midnight has passed. Without it an idle machine keeps
+    // yesterday's totals under a heading that reads "Today" until something else asks for
+    // a range.
+    if (!rangeRequested.current || providerChanged || hasRolledOver(activeRangeRef.current)) {
       rangeRequested.current = true;
       void loadUsageRange(activeRangeRef.current, rangeProvider);
     }
@@ -196,6 +218,11 @@ function Dashboard() {
               <h2>{provider.displayName}</h2>
               <span style={{ color: provider.compactStatus.color }}>{provider.compactStatus.label}</span>
             </header>
+            {/* A reading held back as stale is only actionable with the reason beside it.
+                The core redacts these before they leave it, so they are safe to draw. */}
+            {readErrors(provider).map((message) => (
+              <p className="provider-panel-error" key={message}>{message}</p>
+            ))}
             <QuotaSection
               provider={provider.displayName}
               limits={provider.limits}
