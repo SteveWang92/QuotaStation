@@ -92,3 +92,10 @@ The full sequence, once Steve asks for it:
    there is a bundle to attach or Steve asks for one.
 10. Reset `dev` to `main` — `git checkout dev && git reset --hard main` and
     `git push --force-with-lease origin dev` — so `dev` starts the next version even with it.
+
+`v0.1.0` was the base case and skipped steps 2 through 7. There was no `main` to diff
+against, so there was no pull request and nothing for a release review to gate; the version
+and the changelog were already final, so a `chore(release)` commit would have carried no
+change at all. `main` was branched from `dev` and the tag placed on the commit they shared,
+which also left step 10 with nothing to do. Every release after it follows the full sequence
+above. The GitHub default branch stays `dev` so the repository opens on current work.
