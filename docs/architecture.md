@@ -153,6 +153,9 @@ begins when monitoring is enabled.
 
 - The Rust core owns the single-instance lifecycle, tray, provider child processes,
   filesystem watching, scheduling, retries, normalization, persistence, and query services.
+- The Rust taskbar adapter owns a whole-slot width contract with two provider slots reserved.
+  Additional providers grow it by a complete slot; if Explorer cannot supply the full width,
+  the widget uses its floating fallback instead of clipping normalized provider data.
 - The renderer owns presentation and user interaction only.
 - Live Codex limits refresh on startup and every five minutes through a short-lived
   app-server process.

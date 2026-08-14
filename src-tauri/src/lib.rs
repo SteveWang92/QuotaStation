@@ -196,15 +196,14 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     }
 }
 
-/// Restores the widget to its own size and place after the renderer mounts. The size is a
-/// constant now, so this exists to re-dock the window rather than to follow the content.
+/// Restores the widget to the shared provider-slot contract after the renderer mounts.
 #[tauri::command]
-fn set_taskbar_widget_size(app: tauri::AppHandle) -> Result<(), String> {
+fn set_taskbar_widget_size(app: tauri::AppHandle, provider_count: u32) -> Result<(), String> {
     // A hidden widget still runs its renderer; resizing it must not bring it back.
     if !app.state::<Arc<AppState>>().taskbar_widget_enabled.load(Ordering::Relaxed) {
         return Ok(());
     }
-    taskbar::set_widget_size(&app)
+    taskbar::set_widget_size(&app, provider_count)
 }
 
 /// Whether the activity log can be revealed without exposing its path to the renderer.

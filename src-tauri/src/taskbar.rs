@@ -50,7 +50,13 @@ fn dock_widget(app: &tauri::AppHandle) -> Result<(), String> {
     let tray = unsafe { FindWindowExW(Some(taskbar), None, w!("TrayNotifyWnd"), PCWSTR::null()) }.ok();
     let tray_left = tray.and_then(window_rect).map(|rect| rect.left).unwrap_or(taskbar_rect.right);
     let requested_width = widget.outer_size().map_err(|error| error.to_string())?.width as i32;
-    let width = requested_width.min((tray_left - taskbar_rect.left - 16).max(140));
+    let available_width = (tray_left - taskbar_rect.left - 16).max(0);
+    if available_width < requested_width {
+        return Err(format!(
+            "taskbar has {available_width}px available but the status layout requires {requested_width}px"
+        ));
+    }
+    let width = requested_width;
     // The widget is a child of the taskbar, so anything taller than the taskbar is simply
     // cropped by it — and the crop takes the bottom row of a two-window reading with it.
     // The height therefore follows the taskbar down instead of holding a minimum it may not
@@ -82,29 +88,35 @@ fn dock_widget(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// The widget keeps one size whatever it is showing. Its width used to follow the provider
-/// count and the number of windows each was reporting, which meant it grew sideways as
-/// providers finished loading and shrank again when one stopped answering: the neighbouring
-/// taskbar icons moved every time. A fixed slot fits the widest case — two providers, two
-/// windows each — and the content is right-aligned inside it, so a narrower reading simply
-/// leaves transparent space where the taskbar shows through. `place_widget` still narrows
-/// the window when the taskbar is short of room beside the notification area.
+/// Two provider slots are always reserved, so ordinary loading and provider failures do not
+/// move neighbouring taskbar icons. A future third provider grows the contract by one whole
+/// slot rather than overflowing a width designed for Codex and Claude only. If Explorer cannot
+/// provide the complete contract width, docking fails and the full layout floats instead of
+/// being squeezed until its leftmost provider is cropped.
 ///
 /// The width is the width the layout is drawn at, so it is scaled by the monitor's factor
 /// before the window is sized: asking for 460 device pixels on a 125% display left the
 /// renderer 368 CSS pixels to lay out 441 in, and the columns that overflowed were cropped
 /// off the left edge — the first provider lost its name. The height stays in device pixels
 /// because the taskbar, not the layout, decides it.
-pub const WIDGET_WIDTH: u32 = 460;
+const WIDGET_BASE_WIDTH: u32 = 40;
+const PROVIDER_SLOT_WIDTH: u32 = 210;
+const MIN_PROVIDER_SLOTS: u32 = 2;
+const MAX_PROVIDER_SLOTS: u32 = 8;
 pub const WIDGET_HEIGHT: u32 = 40;
 
+pub fn widget_width(provider_count: u32) -> u32 {
+    let slots = provider_count.clamp(MIN_PROVIDER_SLOTS, MAX_PROVIDER_SLOTS);
+    WIDGET_BASE_WIDTH.saturating_add(slots.saturating_mul(PROVIDER_SLOT_WIDTH))
+}
+
 #[cfg(windows)]
-pub fn set_widget_size(app: &tauri::AppHandle) -> Result<(), String> {
+pub fn set_widget_size(app: &tauri::AppHandle, provider_count: u32) -> Result<(), String> {
     let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
     let scale = widget.scale_factor().unwrap_or(1.0).max(1.0);
     widget
         .set_size(PhysicalSize::new(
-            (f64::from(WIDGET_WIDTH) * scale).round() as u32,
+            (f64::from(widget_width(provider_count)) * scale).round() as u32,
             WIDGET_HEIGHT,
         ))
         .map_err(|error| error.to_string())?;
@@ -154,19 +166,28 @@ pub fn place_widget(_app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-pub fn set_widget_size(_app: &tauri::AppHandle) -> Result<(), String> {
+pub fn set_widget_size(_app: &tauri::AppHandle, _provider_count: u32) -> Result<(), String> {
     Err("taskbar status is supported on Windows only".to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{WIDGET_HEIGHT, WIDGET_WIDTH};
+    use super::{WIDGET_HEIGHT, widget_width};
 
     #[test]
     fn the_widget_reserves_one_slot_for_every_reading_it_can_show() {
         // Two providers showing two windows each is the widest the interface goes, and the
         // taskbar clamps anything taller than this.
-        assert!(WIDGET_WIDTH >= 2 * 200, "two provider columns must fit");
+        assert!(widget_width(2) >= 2 * 200, "two provider columns must fit");
         assert!((30..=44).contains(&WIDGET_HEIGHT), "the taskbar clamps its own height");
+    }
+
+    #[test]
+    fn provider_capacity_grows_only_after_the_reserved_two_slots() {
+        let reserved_width = widget_width(2);
+        assert_eq!(widget_width(0), reserved_width);
+        assert_eq!(widget_width(1), reserved_width);
+        assert!(widget_width(3) > reserved_width);
+        assert_eq!(widget_width(u32::MAX), widget_width(8), "renderer input is bounded");
     }
 }

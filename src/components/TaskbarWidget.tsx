@@ -94,11 +94,11 @@ export function TaskbarWidget({ initialWorkspace }: { initialWorkspace: Workspac
   const providers = workspace.providers;
 
   useEffect(() => {
-    // The widget holds one size whatever it is showing, so this only re-docks the window
-    // after the renderer mounts. The taskbar slice has no room for an error surface; the
-    // tray icon and the dashboard remain the recovery surfaces for a failed placement.
-    void invoke("set_taskbar_widget_size").catch(() => {});
-  }, []);
+    // Rust owns the slot width and reserves the existing two-provider capacity. Passing only
+    // the normalized provider count lets future providers grow by a complete slot without
+    // making the renderer responsible for native taskbar geometry.
+    void invoke("set_taskbar_widget_size", { providerCount: providers.length }).catch(() => {});
+  }, [providers.length]);
 
   return (
     <main
