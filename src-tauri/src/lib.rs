@@ -174,7 +174,7 @@ fn place_taskbar_widget(app: &tauri::AppHandle) {
     let Ok(mut last_error) = LAST_ERROR.lock() else { return };
     if *last_error != error {
         if let Some(message) = &error {
-            eprintln!("taskbar status placement: {message}");
+            log::write(format!("taskbar status placement: {message}"));
         }
         *last_error = error;
     }
@@ -184,7 +184,7 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     let state = app.state::<Arc<AppState>>();
     state.taskbar_widget_enabled.store(visible, Ordering::Relaxed);
     if let Err(error) = save_settings(&state) {
-        eprintln!("failed to save application settings: {error}");
+        log::write(format!("failed to save application settings: {error}"));
     }
     if let Some(widget) = app.get_webview_window("taskbar-widget") {
         if visible {
@@ -547,14 +547,16 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         let _ = autostart_menu_item.set_checked(!enabled);
                     }
                     Err(error) => {
-                        eprintln!("failed to update start-with-Windows setting: {error}");
+                        log::write(format!("failed to update start-with-Windows setting: {error}"));
                         let _ = autostart_menu_item.set_checked(enabled);
                     }
                 }
             }
             "desktop_shortcut" => match create_desktop_shortcut(app) {
-                Ok(path) => eprintln!("desktop shortcut created at {}", path.display()),
-                Err(error) => eprintln!("failed to create desktop shortcut: {error}"),
+                // The location is the user's own desktop and naming it adds nothing the
+                // person who clicked the item does not already know.
+                Ok(_) => log::write("desktop shortcut created"),
+                Err(error) => log::write(format!("failed to create desktop shortcut: {error}")),
             },
             "taskbar_widget" => {
                 let state = app.state::<Arc<AppState>>();
@@ -599,7 +601,7 @@ pub fn run() {
             let storage = tauri::async_runtime::block_on(Storage::open(&database_path))
                 .map_err(|error| error.to_string())?;
             if let Err(error) = tauri::async_runtime::block_on(storage.run_retention_if_due()) {
-                eprintln!("normalized data retention failed: {error:#}");
+                log::write(format!("normalized data retention failed: {error:#}"));
             }
             let mut snapshots = BTreeMap::new();
             for provider in ProviderKind::ALL {
@@ -641,7 +643,7 @@ pub fn run() {
             let backfill_state = app.state::<Arc<AppState>>().inner().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = backfill_resets(&backfill_state).await {
-                    eprintln!("quota reset backfill failed: {error:#}");
+                    log::write(format!("quota reset backfill failed: {error:#}"));
                 }
             });
             let retention_storage = app.state::<Arc<AppState>>().storage.clone();
@@ -651,7 +653,7 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     if let Err(error) = retention_storage.run_retention_if_due().await {
-                        log::write(format!("normalized data retention failed: {error}"));
+                        log::write(format!("normalized data retention failed: {error:#}"));
                     }
                 }
             });
