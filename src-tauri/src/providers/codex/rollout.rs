@@ -59,27 +59,41 @@ fn read_observations_blocking(since: Option<i64>) -> Result<Vec<WindowObservatio
     let mut observations = Vec::new();
     for path in rollout_files(since)? {
         let Ok(file) = File::open(&path) else { continue };
-        for line in BufReader::new(file).lines().map_while(Result::ok) {
-            if !line.contains(RECORD_MARKER) {
-                continue;
-            }
-            let Ok(record) = serde_json::from_str::<RolloutLine>(&line) else { continue };
-            let Some(limits) = record.payload.rate_limits else { continue };
-            let Ok(observed) = record.timestamp.parse::<jiff::Timestamp>() else { continue };
-            let observed_at = observed.as_second();
-            for (window, kind) in [(limits.primary, LimitKind::Primary), (limits.secondary, LimitKind::Secondary)] {
-                let Some(window) = window else { continue };
-                let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) =
-                    (window.used_percent, window.window_minutes, window.resets_at)
-                else {
-                    continue;
-                };
-                observations.push(WindowObservation { observed_at, kind, used_percent, window_duration_mins, resets_at });
-            }
-        }
+        read_observation_lines(BufReader::new(file), &mut observations);
     }
     observations.sort_by_key(|observation| observation.observed_at);
     Ok(observations)
+}
+
+fn read_observation_lines(reader: impl BufRead, observations: &mut Vec<WindowObservation>) {
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        if !line.contains(RECORD_MARKER) {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<RolloutLine>(&line) else { continue };
+        let Some(limits) = record.payload.rate_limits else { continue };
+        let Ok(observed) = record.timestamp.parse::<jiff::Timestamp>() else { continue };
+        let observed_at = observed.as_second();
+        for (window, kind) in [
+            (limits.primary, LimitKind::Primary),
+            (limits.secondary, LimitKind::Secondary),
+        ] {
+            let Some(window) = window else { continue };
+            let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) =
+                (window.used_percent, window.window_minutes, window.resets_at)
+            else {
+                continue;
+            };
+            observations.push(WindowObservation {
+                observed_at,
+                kind,
+                used_percent,
+                window_duration_mins,
+                resets_at,
+            });
+        }
+    }
 }
 
 /// Live and archived sessions share one layout of dated directories, and both hold
@@ -137,6 +151,8 @@ fn codex_home() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
 
     #[test]
@@ -153,5 +169,16 @@ mod tests {
         let line = r#"{"timestamp":"2026-08-10T12:53:51.548Z","type":"event_msg","payload":{"type":"token_count"}}"#;
         let record: RolloutLine = serde_json::from_str(line).expect("decode rollout line");
         assert!(record.payload.rate_limits.is_none());
+    }
+
+    #[test]
+    fn a_non_utf8_line_does_not_hide_later_observations() {
+        let valid = br#"{"timestamp":"2026-08-10T12:53:51.548Z","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":45.0,"window_minutes":300,"resets_at":1786835437}}}}"#;
+        let mut input = vec![0xff, b'\n'];
+        input.extend_from_slice(valid);
+        input.push(b'\n');
+        let mut observations = Vec::new();
+        read_observation_lines(Cursor::new(input), &mut observations);
+        assert_eq!(observations.len(), 1);
     }
 }

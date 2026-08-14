@@ -1,7 +1,7 @@
 pub mod claude;
 pub mod codex;
 
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, path::{Path, PathBuf}, time::{Duration, SystemTime}};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -96,10 +96,49 @@ pub async fn read_live(kind: ProviderKind) -> Result<LiveSnapshot> {
 }
 
 pub async fn read_history(kind: ProviderKind) -> Result<HistorySnapshot> {
-    match kind {
+    let before = usage_file_state(kind)?;
+    let history = match kind {
         ProviderKind::Codex => codex::read_history().await,
         ProviderKind::Claude => claude::read_history().await,
+    }?;
+    let after = usage_file_state(kind)?;
+    anyhow::ensure!(before == after, "Provider session files changed during parsing; retrying after they settle");
+    anyhow::ensure!(
+        before.is_empty() || !history.days.is_empty(),
+        "Provider session files exist but no usage records could be parsed"
+    );
+    Ok(history)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileState {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+fn usage_file_state(kind: ProviderKind) -> Result<BTreeMap<PathBuf, FileState>> {
+    let mut state = BTreeMap::new();
+    for root in kind.usage_paths()? {
+        collect_file_state(&root, &mut state)?;
     }
+    Ok(state)
+}
+
+fn collect_file_state(path: &Path, state: &mut BTreeMap<PathBuf, FileState>) -> Result<()> {
+    if !path.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_file_state(&path, state)?;
+        } else if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl")) {
+            let metadata = entry.metadata()?;
+            state.insert(path, FileState { len: metadata.len(), modified: metadata.modified().ok() });
+        }
+    }
+    Ok(())
 }
 
 /// Historical rate-limit readings recovered from a provider's own logs. Only providers
