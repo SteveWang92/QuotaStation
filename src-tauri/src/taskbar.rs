@@ -57,11 +57,9 @@ fn dock_widget(app: &tauri::AppHandle) -> Result<(), String> {
         ));
     }
     let width = requested_width;
-    // The widget is a child of the taskbar, so anything taller than the taskbar is simply
-    // cropped by it — and the crop takes the bottom row of a two-window reading with it.
-    // The height therefore follows the taskbar down instead of holding a minimum it may not
-    // have room for; the interface is laid out to survive the short end of this range.
-    let height = (taskbar_height - 6).clamp(20, 44);
+    // Use the taskbar's actual physical height. A 44px ceiling left only 22 CSS pixels at
+    // 200% scaling and cropped the second quota row even when Explorer had ample space.
+    let height = docked_height(taskbar_height);
     let x = (tray_left - taskbar_rect.left - width - 8).max(8);
     let y = ((taskbar_height - height) / 2).max(0);
     let hwnd = widget.hwnd().map_err(|error| error.to_string())?;
@@ -108,6 +106,10 @@ pub const WIDGET_HEIGHT: u32 = 40;
 pub fn widget_width(provider_count: u32) -> u32 {
     let slots = provider_count.clamp(MIN_PROVIDER_SLOTS, MAX_PROVIDER_SLOTS);
     WIDGET_BASE_WIDTH.saturating_add(slots.saturating_mul(PROVIDER_SLOT_WIDTH))
+}
+
+fn docked_height(taskbar_height: i32) -> i32 {
+    (taskbar_height - 6).max(20)
 }
 
 #[cfg(windows)]
@@ -172,14 +174,14 @@ pub fn set_widget_size(_app: &tauri::AppHandle, _provider_count: u32) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{WIDGET_HEIGHT, widget_width};
+    use super::{WIDGET_HEIGHT, docked_height, widget_width};
 
     #[test]
     fn the_widget_reserves_one_slot_for_every_reading_it_can_show() {
         // Two providers showing two windows each is the widest the interface goes, and the
         // taskbar clamps anything taller than this.
         assert!(widget_width(2) >= 2 * 200, "two provider columns must fit");
-        assert!((30..=44).contains(&WIDGET_HEIGHT), "the taskbar clamps its own height");
+        assert!(WIDGET_HEIGHT >= 30, "the initial window must fit both rows before docking");
     }
 
     #[test]
@@ -189,5 +191,12 @@ mod tests {
         assert_eq!(widget_width(1), reserved_width);
         assert!(widget_width(3) > reserved_width);
         assert_eq!(widget_width(u32::MAX), widget_width(8), "renderer input is bounded");
+    }
+
+    #[test]
+    fn docked_height_follows_high_dpi_taskbars_instead_of_clipping_them() {
+        assert_eq!(docked_height(40), 34);
+        assert_eq!(docked_height(80), 74);
+        assert_eq!(docked_height(18), 20, "a malformed tiny taskbar still gets a legal window");
     }
 }
