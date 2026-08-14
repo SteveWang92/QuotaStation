@@ -133,8 +133,8 @@ failed records for 180 days, with the newest record per acquisition path always 
 usage aggregates and quota reset events are retained indefinitely. Raw
 session payloads and complete local paths are never retained.
 
-A Codex app-server quota reset is inferred when usage collapses to nothing, the published expiry jumps
-forward, and the restarted window is anchored inside the gap between the two readings. A
+A Codex app-server quota reset is inferred when usage falls materially, the published expiry
+jumps forward, and the restarted window is anchored inside the gap between the two readings. A
 window that appears to have restarted more than two hours before its published expiry is
 classified internally as unplanned. This is a heuristic derived from adjacent samples, so
 the interface labels it as a possible early reset rather than provider-confirmed fact. The

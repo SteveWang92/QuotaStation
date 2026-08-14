@@ -70,18 +70,11 @@ fn read_live_blocking(plan_type: Option<String>) -> Result<LiveSnapshot> {
 fn current_window_end(timestamps: &mut [i64], now_ms: i64) -> Option<i64> {
     timestamps.sort_unstable();
     let mut window_start = None;
-    let mut previous = None;
     for &timestamp in timestamps.iter() {
-        let starts_new_window = match (window_start, previous) {
-            (Some(start), Some(previous)) => {
-                timestamp - start >= WINDOW_MS || timestamp - previous >= WINDOW_MS
-            }
-            _ => true,
-        };
+        let starts_new_window = window_start.is_none_or(|start| timestamp - start >= WINDOW_MS);
         if starts_new_window {
             window_start = Some(timestamp.div_euclid(HOUR_MS) * HOUR_MS);
         }
-        previous = Some(timestamp);
     }
     let end = window_start? + WINDOW_MS;
     (end > now_ms).then_some(end)

@@ -15,10 +15,9 @@ use crate::domain::{LimitKind, LimitResetEvent, ResetClassification};
 /// between the reported expiry and the instant the counter actually turned over.
 pub const UNPLANNED_THRESHOLD_SECONDS: i64 = 2 * 60 * 60;
 
-/// Usage has to fall from a meaningful level to effectively nothing. A partial fall is
-/// the rolling window ageing out earlier requests, which is not a reset.
-const BEFORE_MIN_USED_PERCENT: f64 = 5.0;
-const AFTER_MAX_USED_PERCENT: f64 = 1.0;
+/// A material fall is required, but the first poll of a restarted window may already have
+/// recorded work. Requiring it to remain below one percent permanently missed those resets.
+const MIN_USED_PERCENT_DROP: f64 = 5.0;
 
 /// The published expiry drifts forward continuously as the window ages, so only a jump
 /// distinguishes a restart from that drift.
@@ -28,6 +27,7 @@ const MIN_FORWARD_SHIFT_SECONDS: i64 = 60;
 /// after the restart, so its anchor cannot predate the earlier observation. The slack
 /// absorbs clock differences between the Codex server and this machine.
 const ANCHOR_SLACK_SECONDS: i64 = 300;
+const MAX_WINDOW_DURATION_MINS: i64 = 366 * 24 * 60;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WindowObservation {
@@ -42,20 +42,34 @@ pub struct WindowObservation {
 /// has to hold: usage collapsed, the expiry jumped forward, and the new window is
 /// anchored inside the gap between the two readings.
 pub fn detect(previous: WindowObservation, current: WindowObservation) -> Option<LimitResetEvent> {
+    if current.observed_at < previous.observed_at
+        || !(0.0..=100.0).contains(&previous.used_percent)
+        || !(0.0..=100.0).contains(&current.used_percent)
+        || !previous.used_percent.is_finite()
+        || !current.used_percent.is_finite()
+        || !(1..=MAX_WINDOW_DURATION_MINS).contains(&current.window_duration_mins)
+    {
+        return None;
+    }
     if previous.window_duration_mins != current.window_duration_mins {
         return None;
     }
-    if previous.used_percent < BEFORE_MIN_USED_PERCENT || current.used_percent > AFTER_MAX_USED_PERCENT {
+    if previous.used_percent - current.used_percent < MIN_USED_PERCENT_DROP {
         return None;
     }
-    if current.resets_at - previous.resets_at < MIN_FORWARD_SHIFT_SECONDS {
+    if current.resets_at.checked_sub(previous.resets_at)? < MIN_FORWARD_SHIFT_SECONDS {
         return None;
     }
-    let anchored_at = current.resets_at - current.window_duration_mins * 60;
-    if anchored_at < previous.observed_at - ANCHOR_SLACK_SECONDS {
+    let anchored_at = current
+        .window_duration_mins
+        .checked_mul(60)
+        .and_then(|duration| current.resets_at.checked_sub(duration))?;
+    if anchored_at < previous.observed_at.saturating_sub(ANCHOR_SLACK_SECONDS)
+        || anchored_at > current.observed_at.saturating_add(ANCHOR_SLACK_SECONDS)
+    {
         return None;
     }
-    let early_by_seconds = previous.resets_at - anchored_at;
+    let early_by_seconds = previous.resets_at.checked_sub(anchored_at)?;
     Some(LimitResetEvent {
         window_kind: current.kind,
         window_label: current.kind.window_label(Some(current.window_duration_mins)),
@@ -130,6 +144,32 @@ mod tests {
         let current = observation(expiry + 600, 0.0, expiry + 300 + WEEK_SECONDS);
         let event = detect(previous, current).expect("an expiry is still a reset");
         assert_eq!(event.classification, ResetClassification::Scheduled);
+    }
+
+    #[test]
+    fn a_restart_is_detected_when_the_first_new_sample_is_already_two_percent_used() {
+        let previous = observation(1_000_000, 52.0, 1_000_000 + 4 * 86_400);
+        let current = observation(1_010_000, 2.0, 1_009_000 + WEEK_SECONDS);
+        assert!(detect(previous, current).is_some());
+    }
+
+    #[test]
+    fn a_window_anchor_after_the_current_reading_is_rejected() {
+        let previous = observation(1_000_000, 52.0, 1_000_000 + 4 * 86_400);
+        let current = observation(1_010_000, 0.0, 1_020_000 + WEEK_SECONDS);
+        assert!(detect(previous, current).is_none());
+    }
+
+    #[test]
+    fn invalid_observation_values_are_rejected() {
+        let previous = observation(1_000_000, 52.0, 1_000_000 + 4 * 86_400);
+        assert!(detect(previous, observation(999_999, 0.0, 1_009_000 + WEEK_SECONDS)).is_none());
+        assert!(detect(previous, observation(1_010_000, f64::NAN, 1_009_000 + WEEK_SECONDS)).is_none());
+        let invalid_duration = WindowObservation {
+            window_duration_mins: 0,
+            ..observation(1_010_000, 0.0, 1_009_000 + WEEK_SECONDS)
+        };
+        assert!(detect(previous, invalid_duration).is_none());
     }
 
     #[test]
