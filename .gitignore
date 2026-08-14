@@ -16,6 +16,9 @@ build/
 coverage/
 out/
 target/
+# Every packaged build is kept here, one entry per version. They are large binaries and
+# belong on release pages rather than in the history.
+release/
 
 # Tool caches
 .cache/

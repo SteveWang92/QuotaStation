@@ -88,8 +88,10 @@ The full sequence, once Steve asks for it:
 8. `git checkout main && git pull origin main`, then
    `git tag -a vX.Y.Z -m "QuotaStation X.Y.Z"` and `git push origin vX.Y.Z`. Tags do not
    travel with an ordinary push.
-9. Publish a GitHub release from the tag, with the changelog section as its notes, only when
-   there is a bundle to attach or Steve asks for one.
+9. Publish a GitHub release from the tag — `gh release create vX.Y.Z --title vX.Y.Z
+   --notes-file <section>` — with that version's changelog section as its notes, and attach
+   the built bundle when there is one. Every tag gets a release; a tag on its own is not the
+   published record.
 10. Reset `dev` to `main` — `git checkout dev && git reset --hard main` and
     `git push --force-with-lease origin dev` — so `dev` starts the next version even with it.
 
