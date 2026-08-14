@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { createCustomRange, createPresetRange, todayString } from "../src/dateRanges";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createCustomRange,
+  createPresetRange,
+  resolveDateRange,
+  todayString,
+} from "../src/dateRanges";
 
 // Ranges are built from the machine's own calendar, so the assertions compare calendar
 // days rather than fixed dates.
@@ -9,12 +14,24 @@ function calendarDaysBetween(startDate: string, endDate: string): number {
   return Math.round((end - start) / 86_400_000);
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("preset ranges", () => {
   it("treats today as a single inclusive day", () => {
     const range = createPresetRange("today");
     expect(range.startDate).toBe(todayString());
     expect(range.endDate).toBe(todayString());
     expect(range.label).toBe("Today");
+  });
+
+  it("recomputes a preset after the process crosses midnight", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 11, 23, 59));
+    const range = createPresetRange("today");
+    vi.setSystemTime(new Date(2026, 7, 12, 0, 1));
+    expect(resolveDateRange(range).startDate).toBe("2026-08-12");
   });
 
   it("counts the current day as part of a multi-day preset", () => {

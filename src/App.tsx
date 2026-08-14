@@ -12,7 +12,7 @@ import { QuickPanel } from "./components/QuickPanel";
 import { TaskbarWidget } from "./components/TaskbarWidget";
 import { StatusBar } from "./components/StatusBar";
 import { UsageSummary } from "./components/UsageSummary";
-import { createPresetRange, type DateRangeSelection } from "./dateRanges";
+import { createPresetRange, resolveDateRange, type DateRangeSelection } from "./dateRanges";
 import type {
   DiagnosticsSnapshot,
   ProviderKey,
@@ -62,14 +62,17 @@ function Dashboard() {
   const rangeRequested = useRef(false);
 
   const loadUsageRange = useCallback(async (range: DateRangeSelection, rangeProvider: ProviderKey) => {
+    const resolvedRange = resolveDateRange(range);
+    activeRangeRef.current = resolvedRange;
+    setActiveRange(resolvedRange);
     const requestId = ++rangeRequestId.current;
     setRangeLoading(true);
     setRangeError(null);
     try {
       const next = await invoke<UsageRangeSnapshot>("get_usage_range", {
         provider: rangeProvider,
-        startDate: range.startDate,
-        endDate: range.endDate,
+        startDate: resolvedRange.startDate,
+        endDate: resolvedRange.endDate,
       });
       if (requestId === rangeRequestId.current) setUsageRange(next);
     } catch (error) {
@@ -153,13 +156,9 @@ function Dashboard() {
       .catch((error) => {
         if (!disposed) setCommandError(errorMessage(error));
       });
-    const timer = window.setInterval(() => {
-      if (rangeRequested.current) void loadUsageRange(activeRangeRef.current, providerRef.current);
-    }, 30_000);
     return () => {
       disposed = true;
       stopListening();
-      window.clearInterval(timer);
     };
   }, [loadUsageRange]);
 

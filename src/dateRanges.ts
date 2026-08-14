@@ -42,12 +42,12 @@ export function createCustomRange(startDate: string, endDate: string): DateRange
   };
 }
 
-export function formatRangeDate(value: string): string {
-  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short", year: "numeric" })
-    .format(new Date(`${value}T00:00:00`));
+/** Recomputes calendar presets at query time so a tray process can cross midnight safely. */
+export function resolveDateRange(selection: DateRangeSelection): DateRangeSelection {
+  return selection.preset === "custom" ? selection : createPresetRange(selection.preset);
 }
 
-export function formatShortDate(value: string): string {
-  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short" })
+export function formatRangeDate(value: string): string {
+  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short", year: "numeric" })
     .format(new Date(`${value}T00:00:00`));
 }
