@@ -348,12 +348,16 @@ button { font: inherit; }
    centred against the numbers. Every column has a fixed width, the bar included: a bar
    sized from the space left over drew a different length for a countdown reading "6d 18h"
    than for one reading "3h 18m", so no two rows matched. */
-.taskbar-widget-shell { width: 100vw; height: 100vh; padding: 1px 6px; display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 10px; overflow: hidden; background: transparent; line-height: 1; }
-.taskbar-provider { display: grid; grid-template-columns: 26px auto; align-items: center; gap: 8px; flex: 0 0 auto; }
-.taskbar-provider + .taskbar-provider { padding-left: 10px; border-left: 1px solid rgba(138, 149, 157, 0.32); }
+/* The gap before the divider and the padding after it are the same number, so the rule sits
+   midway between the two providers. The reading column is only as wide as the longest
+   reading it has to hold, because the slack of a wider one is centred with the text and
+   showed up as extra space in front of that divider. */
+.taskbar-widget-shell { width: 100vw; height: 100vh; padding: 1px 5px; display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 8px; overflow: hidden; background: transparent; line-height: 1; }
+.taskbar-provider { display: grid; grid-template-columns: 24px auto; align-items: center; gap: 6px; flex: 0 0 auto; }
+.taskbar-provider + .taskbar-provider { padding-left: 8px; border-left: 1px solid rgba(138, 149, 157, 0.32); }
 .taskbar-name { color: var(--taskbar-status-color); font-size: 10px; font-weight: 750; letter-spacing: 0.04em; }
 .taskbar-windows { display: flex; flex-direction: column; justify-content: center; gap: 3px; }
-.taskbar-quota { display: grid; grid-template-columns: 14px 70px 76px; align-items: center; gap: 5px; }
+.taskbar-quota { display: grid; grid-template-columns: 14px 70px 64px; align-items: center; gap: 4px; }
 /* Not ".taskbar-window": the root element carries that class to make the surface
    transparent, and a bare class selector styled the whole document through it. */
 .taskbar-window-badge { color: #aeb7bd; font-size: 9px; font-weight: 700; text-transform: lowercase; }
