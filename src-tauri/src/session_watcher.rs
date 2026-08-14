@@ -1,4 +1,9 @@
-use std::{collections::{BTreeMap, BTreeSet}, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -19,11 +24,14 @@ enum WatcherMessage {
     Failed,
 }
 
+type WatchKey = (ProviderKind, PathBuf);
+
 pub fn start(app: AppHandle, state: Arc<AppState>) -> Result<()> {
     let (sender, receiver) = mpsc::unbounded_channel();
     let mut watchers = BTreeMap::new();
-    reconcile_watchers(&state, &sender, &mut watchers);
-    let _ = sender.send(WatcherMessage::LocationsChanged(watchers.len()));
+    let failed = Arc::new(StdMutex::new(BTreeSet::new()));
+    let (_, complete) = reconcile_watchers(&state, &sender, &failed, &mut watchers);
+    report_reconcile(&sender, complete, watchers.len());
 
     let manager_state = state.clone();
     std::thread::Builder::new()
@@ -31,8 +39,10 @@ pub fn start(app: AppHandle, state: Arc<AppState>) -> Result<()> {
         .spawn(move || {
             loop {
                 std::thread::park_timeout(Duration::from_secs(60));
-                if reconcile_watchers(&manager_state, &sender, &mut watchers) {
-                    let _ = sender.send(WatcherMessage::LocationsChanged(watchers.len()));
+                let (changed, complete) =
+                    reconcile_watchers(&manager_state, &sender, &failed, &mut watchers);
+                if changed || !complete {
+                    report_reconcile(&sender, complete, watchers.len());
                 }
             }
         })
@@ -45,11 +55,14 @@ pub fn start(app: AppHandle, state: Arc<AppState>) -> Result<()> {
 fn reconcile_watchers(
     state: &AppState,
     sender: &mpsc::UnboundedSender<WatcherMessage>,
-    watchers: &mut BTreeMap<(ProviderKind, PathBuf), RecommendedWatcher>,
-) -> bool {
+    failed: &Arc<StdMutex<BTreeSet<WatchKey>>>,
+    watchers: &mut BTreeMap<WatchKey, RecommendedWatcher>,
+) -> (bool, bool) {
     let mut desired = BTreeSet::new();
+    let mut discovery_complete = true;
     for provider in state.detect_providers() {
         let Ok(locations) = provider.usage_paths() else {
+            discovery_complete = false;
             let _ = sender.send(WatcherMessage::Failed);
             continue;
         };
@@ -60,14 +73,23 @@ fn reconcile_watchers(
     }
 
     let previous = watchers.keys().cloned().collect::<BTreeSet<_>>();
+    let failed_keys = {
+        let mut keys = failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *keys)
+    };
+    for key in &failed_keys {
+        watchers.remove(key);
+    }
     watchers.retain(|key, _| desired.contains(key));
-    for key in desired {
+    for key in desired.iter().cloned() {
         if watchers.contains_key(&key) {
             continue;
         }
         let provider = key.0;
         let location = key.1.clone();
         let event_sender = sender.clone();
+        let event_failed = failed.clone();
+        let failure_key = key.clone();
         let Ok(mut watcher) = notify::recommended_watcher(
             move |result: notify::Result<Event>| match result {
                 Ok(event) if is_history_event(&event) => {
@@ -75,6 +97,10 @@ fn reconcile_watchers(
                 }
                 Ok(_) => {}
                 Err(_) => {
+                    event_failed
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .insert(failure_key.clone());
                     let _ = event_sender.send(WatcherMessage::Failed);
                 }
             },
@@ -88,7 +114,22 @@ fn reconcile_watchers(
         }
         watchers.insert(key, watcher);
     }
-    previous != watchers.keys().cloned().collect()
+    let current = watchers.keys().cloned().collect::<BTreeSet<_>>();
+    let complete = discovery_complete && current == desired;
+    (previous != current || !failed_keys.is_empty(), complete)
+}
+
+fn report_reconcile(
+    sender: &mpsc::UnboundedSender<WatcherMessage>,
+    complete: bool,
+    watched_location_count: usize,
+) {
+    let message = if complete {
+        WatcherMessage::LocationsChanged(watched_location_count)
+    } else {
+        WatcherMessage::Failed
+    };
+    let _ = sender.send(message);
 }
 
 fn is_history_event(event: &Event) -> bool {
@@ -216,5 +257,19 @@ mod tests {
         assert_eq!(diagnostics.status, "active");
         assert_eq!(diagnostics.watched_location_count, 2);
         assert!(diagnostics.error.is_none());
+    }
+
+    #[test]
+    fn incomplete_reconcile_stays_degraded_until_recovery() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+
+        report_reconcile(&sender, false, 1);
+        assert!(matches!(receiver.try_recv(), Ok(WatcherMessage::Failed)));
+
+        report_reconcile(&sender, true, 1);
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WatcherMessage::LocationsChanged(1))
+        ));
     }
 }
