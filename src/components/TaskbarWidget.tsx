@@ -24,42 +24,61 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
       </span>
       <div className="taskbar-windows">
         {snapshot.limits.length > 0 ? (
-          snapshot.limits.map((limit) => (
-            // Written in the order it is drawn — window, bar, remaining, countdown — so the
-            // row stays one grid line. An element placed out of order lands on a line of its
-            // own, and two windows then need four lines the taskbar has no room for.
-            <div className="taskbar-quota" key={limit.kind}>
-              <span>{formatWindowBadge(limit.windowDurationMins, limit.label)}</span>
-              {/* The bar fills with what has been consumed, exactly as the dashboard's meter
-                  does. Filling it with what is left would leave the same quota drawn one way
-                  in the taskbar and the other way in the window above it. */}
-              {limit.usedPercent === null ? (
-                <i className="unknown" aria-hidden="true" />
-              ) : (
-                <i aria-label={`${snapshot.displayName} ${limit.label}: ${limit.usedPercent}% used`}>
-                  <b
-                    style={{
-                      width: `${Math.min(100, Math.max(0, limit.usedPercent))}%`,
-                      background: statusColor,
-                    }}
-                  />
-                </i>
-              )}
-              <strong
-                style={{ color: statusColor }}
-                aria-label={
-                  limit.remainingPercent === null
-                    ? `${snapshot.displayName} ${limit.label}: remaining percentage unavailable`
-                    : undefined
-                }
-              >
-                {limit.remainingPercent === null ? "—" : `${Math.round(limit.remainingPercent)}%`}
-              </strong>
-              <time dateTime={limit.resetsAt === null ? undefined : new Date(limit.resetsAt * 1_000).toISOString()}>
-                {formatCompactCountdown(limit.resetsAt)}
-              </time>
-            </div>
-          ))
+          snapshot.limits.map((limit) => {
+            // Every window draws the same three fixed-width cells — badge, bar, reading — so
+            // the bars of two windows, and of two providers, all start and end on the same
+            // pixel. A proportional bar made each row a different length instead.
+            const percent =
+              limit.remainingPercent === null ? null : `${Math.round(limit.remainingPercent)}%`;
+            const countdown = limit.resetsAt === null ? null : formatCompactCountdown(limit.resetsAt);
+            return (
+              <div className="taskbar-quota" key={limit.kind}>
+                <span className="taskbar-window">
+                  {formatWindowBadge(limit.windowDurationMins, limit.label)}
+                </span>
+                {/* The bar fills with what has been consumed, exactly as the dashboard's meter
+                    does. Filling it with what is left would leave the same quota drawn one way
+                    in the taskbar and the other way in the window above it. */}
+                {limit.usedPercent === null ? (
+                  <i className="unknown" aria-hidden="true" />
+                ) : (
+                  <i aria-label={`${snapshot.displayName} ${limit.label}: ${limit.usedPercent}% used`}>
+                    <b
+                      style={{
+                        width: `${Math.min(100, Math.max(0, limit.usedPercent))}%`,
+                        background: statusColor,
+                      }}
+                    />
+                  </i>
+                )}
+                {/* Remaining and reset share one centred cell so a window still waiting for its
+                    first reading shows a single dash on the same axis as the window below it,
+                    rather than two dashes pushed against the right edge. */}
+                <span className="taskbar-reading">
+                  {percent === null && countdown === null ? (
+                    <em
+                      aria-label={`${snapshot.displayName} ${limit.label}: no reading yet`}
+                      style={{ color: statusColor }}
+                    >
+                      —
+                    </em>
+                  ) : (
+                    <>
+                      {percent !== null && <em style={{ color: statusColor }}>{percent}</em>}
+                      {percent !== null && countdown !== null && (
+                        <span className="taskbar-dot" aria-hidden="true">
+                          ·
+                        </span>
+                      )}
+                      {countdown !== null && limit.resetsAt !== null && (
+                        <time dateTime={new Date(limit.resetsAt * 1_000).toISOString()}>{countdown}</time>
+                      )}
+                    </>
+                  )}
+                </span>
+              </div>
+            );
+          })
         ) : (
           <span className="taskbar-unavailable" style={{ color: statusColor }}>
             unavailable

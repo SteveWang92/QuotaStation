@@ -339,19 +339,22 @@ button { font: inherit; }
    them rather than sitting on a line of its own. */
 /* The taskbar owns this window's height and crops whatever does not fit, so the layout is
    built for the short end: line-height 1, small type, and one line per window with its bar
-   centred against the numbers. Every column except the bar has a fixed width, which is what
-   makes the bars identical — a provider whose countdown reads "6d 18h" would otherwise
-   leave a different amount of room than one reading "3h 18m", and one window would draw a
-   different bar than two. */
+   centred against the numbers. Every column has a fixed width, the bar included: a bar
+   sized from the space left over drew a different length for a countdown reading "6d 18h"
+   than for one reading "3h 18m", so no two rows matched. */
 .taskbar-widget-shell { width: 100vw; height: 100vh; padding: 1px 6px; display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 10px; overflow: hidden; background: transparent; line-height: 1; }
-.taskbar-provider { display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: center; gap: 8px; flex: 0 0 205px; }
+.taskbar-provider { display: grid; grid-template-columns: 26px auto; align-items: center; gap: 8px; flex: 0 0 auto; }
 .taskbar-provider + .taskbar-provider { padding-left: 10px; border-left: 1px solid rgba(138, 149, 157, 0.32); }
 .taskbar-name { color: var(--taskbar-status-color); font-size: 10px; font-weight: 750; letter-spacing: 0.04em; }
-.taskbar-windows { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 3px; }
-.taskbar-quota { min-width: 0; display: grid; grid-template-columns: 14px minmax(0, 1fr) 30px 44px; align-items: center; gap: 5px; }
-.taskbar-quota span { color: #aeb7bd; font-size: 9px; font-weight: 700; text-transform: lowercase; }
-.taskbar-quota strong { color: var(--taskbar-status-color); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
-.taskbar-quota time { color: #aeb7bd; font-size: 9px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.taskbar-windows { display: flex; flex-direction: column; justify-content: center; gap: 3px; }
+.taskbar-quota { display: grid; grid-template-columns: 14px 70px 76px; align-items: center; gap: 5px; }
+.taskbar-window { color: #aeb7bd; font-size: 9px; font-weight: 700; text-transform: lowercase; }
+/* Centred, so a window with no reading yet puts its single dash on the same axis as the
+   numbers of the window below it instead of against the right edge. */
+.taskbar-reading { display: flex; align-items: baseline; justify-content: center; white-space: nowrap; }
+.taskbar-reading em { color: var(--taskbar-status-color); font-size: 10px; font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; }
+.taskbar-dot { color: #6f797f; font-size: 9px; }
+.taskbar-reading time { color: #aeb7bd; font-size: 9px; font-variant-numeric: tabular-nums; }
 .taskbar-quota i { align-self: center; height: 4px; overflow: hidden; border-radius: 2px; background: rgba(138, 149, 157, 0.32); }
 .taskbar-quota i.unknown { background: repeating-linear-gradient(90deg, rgba(138, 149, 157, 0.18) 0 5px, rgba(138, 149, 157, 0.42) 5px 9px); }
 .taskbar-quota b { display: block; height: 100%; border-radius: inherit; background: var(--taskbar-status-color); }
