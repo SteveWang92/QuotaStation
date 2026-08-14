@@ -88,12 +88,20 @@ impl Storage {
         observed_at: &str,
     ) -> Result<()> {
         let provider_id = self.provider_id(provider).await?;
-        // The row about to be overwritten is the only record of what the window looked
-        // like before this reading, so a restart has to be recognised here.
-        let previous = self.load_current_observations(provider_id).await?;
+        // Reset inference is verified only for Codex app-server windows. Claude and future
+        // providers can expose rolling or differently scoped buckets with similar value
+        // changes, so applying the Codex heuristic to them would manufacture reset events.
+        let previous = if provider == ProviderKind::Codex {
+            self.load_current_observations(provider_id).await?
+        } else {
+            BTreeMap::new()
+        };
         let mut tx = self.pool.begin().await?;
         if let Some(now) = epoch_seconds(observed_at) {
             for limit in &live.limits {
+                if provider != ProviderKind::Codex || limit.source != WindowSource::AppServer {
+                    continue;
+                }
                 let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) =
                     (limit.used_percent, limit.window_duration_mins, limit.resets_at)
                 else {
@@ -154,7 +162,7 @@ impl Storage {
     ) -> Result<BTreeMap<String, WindowObservation>> {
         let rows = sqlx::query(
             "SELECT window_kind, used_percent, window_duration_mins, resets_at, observed_at \
-             FROM limit_current WHERE provider_instance_id = ?",
+             FROM limit_current WHERE provider_instance_id = ? AND source = 'app_server'",
         )
         .bind(provider_id)
         .fetch_all(&self.pool)
@@ -967,6 +975,24 @@ mod tests {
         storage.save_live(CODEX, &weekly_live(15.0, expiry), "2026-06-04T10:00:00Z").await.expect("save first");
         storage.save_live(CODEX, &weekly_live(4.0, expiry + 7_200), "2026-06-04T15:00:00Z").await.expect("save second");
         assert!(storage.load_recent_resets(CODEX).await.expect("load resets").is_empty());
+    }
+
+    #[tokio::test]
+    async fn codex_reset_inference_is_not_applied_to_other_providers() {
+        let (storage, _database) = open_storage().await;
+        storage
+            .save_live(ProviderKind::Claude, &weekly_live(52.0, 1_786_800_000), "2026-08-10T15:00:00Z")
+            .await
+            .expect("save the earlier Claude reading");
+        storage
+            .save_live(ProviderKind::Claude, &weekly_live(0.0, 1_787_026_583), "2026-08-11T09:29:00Z")
+            .await
+            .expect("save the later Claude reading");
+
+        assert!(
+            storage.load_recent_resets(ProviderKind::Claude).await.expect("load Claude resets").is_empty(),
+            "a Codex-specific heuristic must not infer resets for Claude"
+        );
     }
 
     #[tokio::test]
