@@ -320,10 +320,66 @@ fn quick_panel_size(providers: usize) -> tauri::PhysicalSize<u32> {
     )
 }
 
+fn quick_panel_placement(
+    work_area: tauri::PhysicalRect<i32, u32>,
+    tray_position: PhysicalPosition<f64>,
+    tray_size: tauri::PhysicalSize<f64>,
+    requested_size: tauri::PhysicalSize<u32>,
+) -> (PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
+    let margin = 12.0;
+    let left = work_area.position.x as f64;
+    let top = work_area.position.y as f64;
+    let right = left + work_area.size.width as f64;
+    let bottom = top + work_area.size.height as f64;
+    let available_width = (work_area.size.width as f64 - margin * 2.0).max(1.0);
+    let available_height = (work_area.size.height as f64 - margin * 2.0).max(1.0);
+    let panel_width = (requested_size.width as f64).min(available_width);
+    let panel_height = (requested_size.height as f64).min(available_height);
+    let panel_size =
+        tauri::PhysicalSize::new(panel_width.round() as u32, panel_height.round() as u32);
+    let anchor = PhysicalPosition::new(
+        tray_position.x + tray_size.width / 2.0,
+        tray_position.y + tray_size.height / 2.0,
+    );
+    let nearest = [
+        (anchor.x - left, "left"),
+        (right - anchor.x, "right"),
+        (anchor.y - top, "top"),
+        (bottom - anchor.y, "bottom"),
+    ]
+    .into_iter()
+    .min_by(|a, b| a.0.total_cmp(&b.0))
+    .map(|(_, edge)| edge)
+    .unwrap_or("bottom");
+    let max_x = (right - panel_width - margin).max(left + margin);
+    let max_y = (bottom - panel_height - margin).max(top + margin);
+    let clamp_x = |value: f64| value.clamp(left + margin, max_x);
+    let clamp_y = |value: f64| value.clamp(top + margin, max_y);
+    let (x, y) = match nearest {
+        "top" => (
+            clamp_x(tray_position.x + tray_size.width - panel_width),
+            clamp_y(tray_position.y + tray_size.height + margin),
+        ),
+        "left" => (
+            clamp_x(tray_position.x + tray_size.width + margin),
+            clamp_y(tray_position.y + tray_size.height - panel_height),
+        ),
+        "right" => (
+            clamp_x(tray_position.x - panel_width - margin),
+            clamp_y(tray_position.y + tray_size.height - panel_height),
+        ),
+        _ => (
+            clamp_x(tray_position.x + tray_size.width - panel_width),
+            clamp_y(tray_position.y - panel_height - margin),
+        ),
+    };
+    (PhysicalPosition::new(x.round() as i32, y.round() as i32), panel_size)
+}
+
 fn toggle_quick_panel(app: &tauri::AppHandle, click: PhysicalPosition<f64>, tray_rect: tauri::Rect) {
     let Some(panel) = app.get_webview_window("quick-panel") else { return };
     let state = app.state::<Arc<AppState>>();
-    let _ = panel.set_size(quick_panel_size(state.enabled_providers().len()));
+    let requested_size = quick_panel_size(state.enabled_providers().len());
     if let Ok(mut focus_lost_at) = state.quick_panel_focus_lost_at.lock()
         && focus_lost_at.is_some_and(|lost_at| lost_at.elapsed() < Duration::from_millis(500))
     {
@@ -335,51 +391,59 @@ fn toggle_quick_panel(app: &tauri::AppHandle, click: PhysicalPosition<f64>, tray
         return;
     }
 
-    let size = panel
-        .outer_size()
-        .unwrap_or_else(|_| quick_panel_size(state.enabled_providers().len()));
     let monitor = app.monitor_from_point(click.x, click.y).ok().flatten();
     let (x, y) = if let Some(monitor) = monitor {
-        let origin = monitor.position();
-        let bounds = monitor.size();
         let scale_factor = monitor.scale_factor();
         let tray_position = tray_rect.position.to_physical::<f64>(scale_factor);
         let tray_size = tray_rect.size.to_physical::<f64>(scale_factor);
-        let anchor = PhysicalPosition::new(
-            tray_position.x + tray_size.width / 2.0,
-            tray_position.y + tray_size.height / 2.0,
-        );
-        let left = origin.x as f64;
-        let top = origin.y as f64;
-        let right = left + bounds.width as f64;
-        let bottom = top + bounds.height as f64;
-        let panel_width = size.width as f64;
-        let panel_height = size.height as f64;
-        let nearest = [
-            (anchor.x - left, "left"),
-            (right - anchor.x, "right"),
-            (anchor.y - top, "top"),
-            (bottom - anchor.y, "bottom"),
-        ]
-        .into_iter()
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, edge)| edge)
-        .unwrap_or("bottom");
-        let margin = 12.0;
-        let clamp_x = |value: f64| value.clamp(left + margin, right - panel_width - margin);
-        let clamp_y = |value: f64| value.clamp(top + margin, bottom - panel_height - margin);
-        match nearest {
-            "top" => (clamp_x(tray_position.x + tray_size.width - panel_width), tray_position.y + tray_size.height + margin),
-            "left" => (tray_position.x + tray_size.width + margin, clamp_y(tray_position.y + tray_size.height - panel_height)),
-            "right" => (tray_position.x - panel_width - margin, clamp_y(tray_position.y + tray_size.height - panel_height)),
-            _ => (clamp_x(tray_position.x + tray_size.width - panel_width), tray_position.y - panel_height - margin),
-        }
+        let (position, fitted_size) =
+            quick_panel_placement(*monitor.work_area(), tray_position, tray_size, requested_size);
+        let _ = panel.set_size(fitted_size);
+        (position.x as f64, position.y as f64)
     } else {
-        (click.x - size.width as f64, click.y - size.height as f64)
+        let _ = panel.set_size(requested_size);
+        (
+            click.x - requested_size.width as f64,
+            click.y - requested_size.height as f64,
+        )
     };
     let _ = panel.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
     let _ = panel.show();
     let _ = panel.set_focus();
+}
+
+#[cfg(test)]
+mod quick_panel_tests {
+    use super::*;
+
+    fn placement(
+        width: u32,
+        height: u32,
+        tray_x: f64,
+        tray_y: f64,
+    ) -> (PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
+        quick_panel_placement(
+            tauri::PhysicalRect {
+                position: PhysicalPosition::new(0, 0),
+                size: tauri::PhysicalSize::new(width, height),
+            },
+            PhysicalPosition::new(tray_x, tray_y),
+            tauri::PhysicalSize::new(40.0, 40.0),
+            tauri::PhysicalSize::new(780, 730),
+        )
+    }
+
+    #[test]
+    fn quick_panel_fits_small_and_common_displays() {
+        for (width, height) in [(800, 600), (1280, 720), (1366, 768)] {
+            for tray_x in [0.0, width as f64 - 40.0] {
+                let (position, size) = placement(width, height, tray_x, height as f64 - 40.0);
+                assert!(position.x >= 0 && position.y >= 0);
+                assert!(position.x as u32 + size.width <= width);
+                assert!(position.y as u32 + size.height <= height);
+            }
+        }
+    }
 }
 
 #[cfg(windows)]

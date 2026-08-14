@@ -60,7 +60,8 @@ impl Storage {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).context("create application data directory")?;
         }
-        let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))?
+        let options = SqliteConnectOptions::new()
+            .filename(path)
             .create_if_missing(true)
             .foreign_keys(true);
         let pool = SqlitePoolOptions::new().max_connections(4).connect_with(options).await?;
@@ -713,6 +714,7 @@ mod tests {
     /// with the write-ahead files SQLite may leave beside it, when it finishes.
     struct TempDatabase {
         path: std::path::PathBuf,
+        directory: Option<std::path::PathBuf>,
     }
 
     impl TempDatabase {
@@ -723,7 +725,20 @@ mod tests {
                 std::process::id(),
                 COUNTER.fetch_add(1, Ordering::Relaxed)
             );
-            Self { path: std::env::temp_dir().join(name) }
+            Self { path: std::env::temp_dir().join(name), directory: None }
+        }
+
+        fn in_unicode_directory() -> Self {
+            static COUNTER: AtomicU32 = AtomicU32::new(0);
+            let directory = std::env::temp_dir().join(format!(
+                "QuotaStation 数据 {} {}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            Self {
+                path: directory.join("quota station.db"),
+                directory: Some(directory),
+            }
         }
     }
 
@@ -734,6 +749,9 @@ mod tests {
                 path.push(suffix);
                 let _ = std::fs::remove_file(path);
             }
+            if let Some(directory) = &self.directory {
+                let _ = std::fs::remove_dir(directory);
+            }
         }
     }
 
@@ -741,6 +759,14 @@ mod tests {
         let database = TempDatabase::new();
         let storage = Storage::open(&database.path).await.expect("open storage");
         (storage, database)
+    }
+
+    #[tokio::test]
+    async fn opens_database_in_unicode_directory_with_spaces() {
+        let database = TempDatabase::in_unicode_directory();
+        let storage = Storage::open(&database.path).await.expect("open unicode database path");
+        drop(storage);
+        assert!(database.path.exists());
     }
 
     fn day(date: &str, model: &str, total: u64) -> HistoryDay {
