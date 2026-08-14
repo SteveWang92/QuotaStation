@@ -4,16 +4,22 @@ use ccusage_core::cli::SharedArgs;
 
 use crate::domain::{DailyModelUsage, HistoryDay, HistorySnapshot, ModelUsage, TokenUsage};
 
-pub async fn read_history() -> Result<HistorySnapshot> {
-    tokio::task::spawn_blocking(read_history_blocking)
+pub async fn read_history(timezone: &str) -> Result<HistorySnapshot> {
+    let timezone = timezone.to_string();
+    tokio::task::spawn_blocking(move || read_history_blocking(&timezone))
         .await
         .context("Claude history parser stopped unexpectedly")?
 }
 
-fn read_history_blocking() -> Result<HistorySnapshot> {
+fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
     // `breakdown` is what populates the per-model rows the dashboard shows.
     let summaries = load_daily_summaries(
-        &SharedArgs { json: true, breakdown: true, ..SharedArgs::default() },
+        &SharedArgs {
+            json: true,
+            breakdown: true,
+            timezone: Some(timezone.to_string()),
+            ..SharedArgs::default()
+        },
         None,
         false,
     )
@@ -90,7 +96,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires local Claude Code session history"]
     async fn claude_history_parses_into_the_shared_daily_shape() {
-        let history = read_history().await.expect("parse Claude history");
+        let system_timezone = jiff::tz::TimeZone::system();
+        let timezone = system_timezone.iana_name().unwrap_or("UTC");
+        let history = read_history(timezone).await.expect("parse Claude history");
         assert!(!history.days.is_empty(), "no Claude usage days were parsed");
         let last = history.days.last().expect("a most recent day");
         println!(

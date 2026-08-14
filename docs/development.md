@@ -132,6 +132,10 @@ Diagnostics tab's **Show activity log** button reveals it.
 Historical range changes query the normalized daily rows in SQLite; they do not trigger a
 new parse of the Codex session logs.
 
+Daily history uses the Windows system IANA time zone. The core records that zone per
+provider; after a system-zone change, the next successful full parse transactionally
+replaces that provider's daily rows so buckets from different zones cannot coexist.
+
 Quota samples remain at their roughly five-minute source granularity for 14 days. SQLite
 then converts them directly into daily summaries retained indefinitely, keeping reset
 windows separate. Daily usage also remains indefinitely. Startup performs this maintenance at

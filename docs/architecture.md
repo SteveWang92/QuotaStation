@@ -118,6 +118,11 @@ SQLite is the planned store for normalized history, refresh metadata, pricing sn
 and schema versioning. Credentials, prompts, source content, and unnecessary raw logs do
 not belong in the database.
 
+Daily usage is bucketed with the Windows system IANA time zone recorded for each provider.
+When that zone changes, the next successful full log parse replaces that provider's daily
+rows transactionally so dates from the old and new zones cannot be mixed. Existing databases
+adopt their current zone without a destructive first-run rebuild.
+
 The schema covers provider instances, current limits and samples, normalized daily usage
 aggregates, refresh runs, quota rollups, and quota reset events. Event-level storage and a database-resident
 pricing catalogue are not part of it: the Codex parser reports daily aggregates and

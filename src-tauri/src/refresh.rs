@@ -156,16 +156,16 @@ async fn apply_history(
     state: &Arc<AppState>,
     provider: ProviderKind,
     started_at: &str,
-    result: Result<crate::domain::HistorySnapshot>,
+    result: Result<(crate::domain::HistorySnapshot, String)>,
 ) {
     let completed_at = now();
     match result {
-        Ok(history) => {
+        Ok((history, aggregation_timezone)) => {
             let today_date = jiff::Zoned::now().date().to_string();
             let today = history.days.iter().find(|day| day.date == today_date).cloned();
             let save_error = state
                 .storage
-                .save_history(provider, &history, &completed_at)
+                .save_history(provider, &history, &aggregation_timezone, &completed_at)
                 .await
                 .err()
                 .map(storage_error);

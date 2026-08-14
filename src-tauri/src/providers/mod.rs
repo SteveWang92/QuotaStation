@@ -100,11 +100,15 @@ pub async fn read_live(kind: ProviderKind) -> Result<LiveSnapshot> {
     }
 }
 
-pub async fn read_history(kind: ProviderKind) -> Result<HistorySnapshot> {
+pub async fn read_history(kind: ProviderKind) -> Result<(HistorySnapshot, String)> {
     let before = usage_file_state(kind)?;
+    let timezone = jiff::tz::TimeZone::system()
+        .iana_name()
+        .unwrap_or("UTC")
+        .to_string();
     let history = match kind {
-        ProviderKind::Codex => codex::read_history().await,
-        ProviderKind::Claude => claude::read_history().await,
+        ProviderKind::Codex => codex::read_history(&timezone).await,
+        ProviderKind::Claude => claude::read_history(&timezone).await,
     }?;
     let quality = inspect_history_quality(kind, before.keys())?;
     let after = usage_file_state(kind)?;
@@ -114,7 +118,7 @@ pub async fn read_history(kind: ProviderKind) -> Result<HistorySnapshot> {
         before.is_empty() || !history.days.is_empty(),
         "Provider session files exist but no usage records could be parsed"
     );
-    Ok(history)
+    Ok((history, timezone))
 }
 
 const QUALITY_TAIL_BYTES: u64 = 256 * 1024;

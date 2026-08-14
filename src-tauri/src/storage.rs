@@ -337,15 +337,28 @@ impl Storage {
         &self,
         provider: ProviderKind,
         history: &HistorySnapshot,
+        aggregation_timezone: &str,
         observed_at: &str,
     ) -> Result<()> {
         let provider_id = self.provider_id(provider).await?;
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "UPDATE provider_instances SET parser_revision = ?, last_history_success_at = ?, \
-             updated_at = ? WHERE id = ?",
+        let previous_timezone: Option<String> = sqlx::query_scalar(
+            "SELECT aggregation_timezone FROM provider_instances WHERE id = ?",
         )
-        .bind(CCUSAGE_REVISION).bind(observed_at).bind(observed_at).bind(provider_id)
+        .bind(provider_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if previous_timezone.as_deref().is_some_and(|previous| previous != aggregation_timezone) {
+            sqlx::query("DELETE FROM daily_usage WHERE provider_instance_id = ?")
+                .bind(provider_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(
+            "UPDATE provider_instances SET parser_revision = ?, aggregation_timezone = ?, \
+             last_history_success_at = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(CCUSAGE_REVISION).bind(aggregation_timezone).bind(observed_at).bind(observed_at).bind(provider_id)
         .execute(&mut *tx).await?;
         // Replace only the days the current parse covers. Sessions Codex has already
         // rotated away are absent from a parse, and their stored days must survive.
@@ -869,11 +882,17 @@ mod tests {
     async fn a_history_refresh_replaces_only_the_days_it_parsed() {
         let (storage, _database) = open_storage().await;
         let first = HistorySnapshot { days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5", 200)] };
-        storage.save_history(CODEX, &first, "2026-08-02T00:00:00Z").await.expect("save first history");
+        storage
+            .save_history(CODEX, &first, "Australia/Brisbane", "2026-08-02T00:00:00Z")
+            .await
+            .expect("save first history");
 
         // A later parse no longer sees the rotated-away session that produced 08-01.
         let second = HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 500)] };
-        storage.save_history(CODEX, &second, "2026-08-02T01:00:00Z").await.expect("save second history");
+        storage
+            .save_history(CODEX, &second, "Australia/Brisbane", "2026-08-02T01:00:00Z")
+            .await
+            .expect("save second history");
 
         let range = storage.load_usage_range(CODEX, "2026-08-01", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 2, "the day outside the parse must survive");
@@ -883,12 +902,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_timezone_change_rebuilds_provider_history_without_old_date_buckets() {
+        let (storage, _database) = open_storage().await;
+        let first = HistorySnapshot {
+            days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5", 200)],
+        };
+        storage
+            .save_history(CODEX, &first, "Australia/Brisbane", "2026-08-02T00:00:00Z")
+            .await
+            .expect("save Brisbane history");
+
+        let rebucketed = HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 250)] };
+        storage
+            .save_history(CODEX, &rebucketed, "America/New_York", "2026-08-02T01:00:00Z")
+            .await
+            .expect("rebuild New York history");
+
+        let range = storage.load_usage_range(CODEX, "2026-08-01", "2026-08-02").await.expect("load range");
+        assert_eq!(range.days.len(), 1, "rows bucketed in the previous timezone must not survive");
+        assert_eq!(range.days[0].date, "2026-08-02");
+        assert_eq!(range.days[0].usage.total, 250);
+    }
+
+    #[tokio::test]
+    async fn migration_adopts_current_timezone_without_dropping_legacy_days() {
+        let (storage, _database) = open_storage().await;
+        let first = HistorySnapshot {
+            days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5", 200)],
+        };
+        storage
+            .save_history(CODEX, &first, "Australia/Brisbane", "2026-08-02T00:00:00Z")
+            .await
+            .expect("save initial history");
+        sqlx::query("UPDATE provider_instances SET aggregation_timezone = NULL WHERE provider = 'codex'")
+            .execute(&storage.pool)
+            .await
+            .expect("simulate an upgraded database");
+
+        let latest = HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 250)] };
+        storage
+            .save_history(CODEX, &latest, "Australia/Brisbane", "2026-08-02T01:00:00Z")
+            .await
+            .expect("adopt the current timezone");
+
+        let range = storage.load_usage_range(CODEX, "2026-08-01", "2026-08-02").await.expect("load range");
+        assert_eq!(range.days.len(), 2, "an unknown legacy timezone must not trigger destructive cleanup");
+        assert_eq!(range.days[0].usage.total, 100);
+        assert_eq!(range.days[1].usage.total, 250);
+    }
+
+    #[tokio::test]
     async fn a_usage_range_reports_only_the_requested_days() {
         let (storage, _database) = open_storage().await;
         let history = HistorySnapshot {
             days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5-codex", 300)],
         };
-        storage.save_history(CODEX, &history, "2026-08-02T00:00:00Z").await.expect("save history");
+        storage
+            .save_history(CODEX, &history, "Australia/Brisbane", "2026-08-02T00:00:00Z")
+            .await
+            .expect("save history");
 
         let range = storage.load_usage_range(CODEX, "2026-08-02", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 1);

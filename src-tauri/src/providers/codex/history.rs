@@ -7,16 +7,17 @@ use ccusage_core::{PricingMap, cli::{AgentReportKind, SharedArgs}};
 
 use crate::domain::{DailyModelUsage, HistoryDay, HistorySnapshot, ModelUsage, TokenUsage};
 
-pub async fn read_history() -> Result<HistorySnapshot> {
-    tokio::task::spawn_blocking(read_history_blocking)
+pub async fn read_history(timezone: &str) -> Result<HistorySnapshot> {
+    let timezone = timezone.to_string();
+    tokio::task::spawn_blocking(move || read_history_blocking(&timezone))
         .await
         .context("Codex history parser stopped unexpectedly")?
 }
 
-fn read_history_blocking() -> Result<HistorySnapshot> {
+fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
     let events = load_codex_events(&SharedArgs { json: true, ..SharedArgs::default() })
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let groups = aggregate_events(&events, AgentReportKind::Daily, None)
+    let groups = aggregate_events(&events, AgentReportKind::Daily, Some(timezone))
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let pricing = PricingMap::load_embedded();
     let speed = CodexSpeedPolicy::Auto(CodexServiceTier::Standard);
