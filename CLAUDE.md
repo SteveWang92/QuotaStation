@@ -29,6 +29,8 @@ QuotaStation and take precedence when they differ.
   first and directly reuse compatible code when practical.
 - Pin every reused implementation to an audited revision and record its license,
   attribution, security behavior, and local changes in `THIRD_PARTY_NOTICES.md`.
+- Do not add vendor hash manifests, whole-tree integrity hashes, or CI hash verification
+  unless Steve explicitly approves that maintenance cost first.
 - Do not reimplement the Codex log parser unless direct use or minimal vendoring of the
   reviewed `ccusage` Rust adapter is blocked by a concrete incompatibility.
 - Keep file, process, provider protocol, credential, and database access in the Rust core;
