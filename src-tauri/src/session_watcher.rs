@@ -115,12 +115,24 @@ async fn run_event_loop(
                         }
                     }
                 }
-                for provider in pending {
+                while let Some(provider) = pending.pop_first() {
                     refresh::refresh_history_for_provider(&app, &state, provider).await;
                     // A provider whose quota window is derived from those same files has
                     // a new window to report as soon as they change.
                     if provider.live_follows_logs() {
                         refresh::refresh_live_for_provider(&app, &state, provider).await;
+                    }
+                    // Parsing can take long enough for more writes to arrive. Fold those
+                    // events into this batch instead of making every queued event open a
+                    // fresh two-second debounce window.
+                    while let Ok(message) = receiver.try_recv() {
+                        match message {
+                            WatcherMessage::HistoryChanged(provider) => {
+                                pending.insert(provider);
+                                mark_event(&state).await;
+                            }
+                            WatcherMessage::Failed => mark_failed(&state).await,
+                        }
                     }
                 }
             }

@@ -645,6 +645,17 @@ pub fn run() {
                     eprintln!("quota reset backfill failed: {error:#}");
                 }
             });
+            let retention_storage = app.state::<Arc<AppState>>().storage.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    if let Err(error) = retention_storage.run_retention_if_due().await {
+                        log::write(format!("normalized data retention failed: {error}"));
+                    }
+                }
+            });
             let app_handle = app.handle().clone();
             let taskbar_state = app.state::<Arc<AppState>>().inner().clone();
             tauri::async_runtime::spawn(async move {
