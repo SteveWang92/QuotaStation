@@ -33,7 +33,7 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
             const countdown = limit.resetsAt === null ? null : formatCompactCountdown(limit.resetsAt);
             return (
               <div className="taskbar-quota" key={limit.kind}>
-                <span className="taskbar-window">
+                <span className="taskbar-window-badge">
                   {formatWindowBadge(limit.windowDurationMins, limit.label)}
                 </span>
                 {/* The bar fills with what has been consumed, exactly as the dashboard's meter

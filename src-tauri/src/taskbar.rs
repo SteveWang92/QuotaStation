@@ -89,14 +89,24 @@ fn dock_widget(app: &tauri::AppHandle) -> Result<(), String> {
 /// windows each — and the content is right-aligned inside it, so a narrower reading simply
 /// leaves transparent space where the taskbar shows through. `place_widget` still narrows
 /// the window when the taskbar is short of room beside the notification area.
+///
+/// The width is the width the layout is drawn at, so it is scaled by the monitor's factor
+/// before the window is sized: asking for 460 device pixels on a 125% display left the
+/// renderer 368 CSS pixels to lay out 441 in, and the columns that overflowed were cropped
+/// off the left edge — the first provider lost its name. The height stays in device pixels
+/// because the taskbar, not the layout, decides it.
 pub const WIDGET_WIDTH: u32 = 460;
 pub const WIDGET_HEIGHT: u32 = 40;
 
 #[cfg(windows)]
 pub fn set_widget_size(app: &tauri::AppHandle) -> Result<(), String> {
     let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
+    let scale = widget.scale_factor().unwrap_or(1.0).max(1.0);
     widget
-        .set_size(PhysicalSize::new(WIDGET_WIDTH, WIDGET_HEIGHT))
+        .set_size(PhysicalSize::new(
+            (f64::from(WIDGET_WIDTH) * scale).round() as u32,
+            WIDGET_HEIGHT,
+        ))
         .map_err(|error| error.to_string())?;
     place_widget(app)
 }

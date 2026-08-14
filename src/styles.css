@@ -354,12 +354,14 @@ button { font: inherit; }
 .taskbar-name { color: var(--taskbar-status-color); font-size: 10px; font-weight: 750; letter-spacing: 0.04em; }
 .taskbar-windows { display: flex; flex-direction: column; justify-content: center; gap: 3px; }
 .taskbar-quota { display: grid; grid-template-columns: 14px 70px 76px; align-items: center; gap: 5px; }
-.taskbar-window { color: #aeb7bd; font-size: 9px; font-weight: 700; text-transform: lowercase; }
+/* Not ".taskbar-window": the root element carries that class to make the surface
+   transparent, and a bare class selector styled the whole document through it. */
+.taskbar-window-badge { color: #aeb7bd; font-size: 9px; font-weight: 700; text-transform: lowercase; }
 /* Centred, so a window with no reading yet puts its single dash on the same axis as the
    numbers of the window below it instead of against the right edge. */
 .taskbar-reading { display: flex; align-items: baseline; justify-content: center; white-space: nowrap; }
 .taskbar-reading em { color: var(--taskbar-status-color); font-size: 10px; font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; }
-.taskbar-dot { color: #6f797f; font-size: 9px; }
+.taskbar-dot { color: #8d979d; font-size: 10px; }
 .taskbar-reading time { color: #aeb7bd; font-size: 9px; font-variant-numeric: tabular-nums; }
 .taskbar-quota i { align-self: center; height: 4px; overflow: hidden; border-radius: 2px; background: rgba(138, 149, 157, 0.32); }
 .taskbar-quota i.unknown { background: repeating-linear-gradient(90deg, rgba(138, 149, 157, 0.18) 0 5px, rgba(138, 149, 157, 0.42) 5px 9px); }
