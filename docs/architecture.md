@@ -165,8 +165,10 @@ begins when monitoring is enabled.
   or first used after QuotaStation starts becomes watched without restarting the app. An
   operating-system watcher error keeps diagnostics degraded until the failed watcher has
   been rebuilt and every currently expected location is watched again.
-- Normalized-data retention runs at startup when its last successful run is at least 24
-  hours old. It never runs during provider refresh and does not automatically vacuum.
+- Normalized-data retention runs at startup, and every 24 hours thereafter, when its last
+  successful run is at least 24 hours old; the periodic pass keeps a process that stays
+  resident for weeks from accumulating samples indefinitely. It never runs during provider
+  refresh and does not automatically vacuum.
 - Each acquisition path fails independently and preserves visibly stale last-known-good
   data.
 - History refresh samples at most the final 256 KiB of each of the 16 most recently modified
