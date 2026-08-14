@@ -316,14 +316,23 @@ fn settings_path() -> Result<PathBuf> {
 }
 
 fn load_settings(path: &Path) -> Result<serde_json::Value> {
-    if !path.is_file() {
-        return Ok(serde_json::Value::Object(serde_json::Map::new()));
-    }
-    let content = std::fs::read_to_string(path).context("read the Claude Code settings")?;
+    Ok(load_settings_with_source(path)?.0)
+}
+
+fn load_settings_with_source(path: &Path) -> Result<(serde_json::Value, Option<Vec<u8>>)> {
+    let source = match std::fs::read(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((serde_json::Value::Object(serde_json::Map::new()), None));
+        }
+        Err(error) => return Err(error).context("read the Claude Code settings"),
+    };
+    let content = std::str::from_utf8(&source).context("decode the Claude Code settings")?;
     if content.trim().is_empty() {
-        return Ok(serde_json::Value::Object(serde_json::Map::new()));
+        return Ok((serde_json::Value::Object(serde_json::Map::new()), Some(source)));
     }
-    serde_json::from_str(&content).context("parse the Claude Code settings")
+    let settings = serde_json::from_str(content).context("parse the Claude Code settings")?;
+    Ok((settings, Some(source)))
 }
 
 fn configured_command() -> Option<String> {
@@ -361,7 +370,7 @@ pub fn remove() -> Result<()> {
 }
 
 fn install_into(path: &Path, command: &str) -> Result<()> {
-    let mut settings = load_settings(path)?;
+    let (mut settings, source) = load_settings_with_source(path)?;
     if let Some(existing) = command_in(&settings)
         && !is_bridge_command(&existing)
     {
@@ -377,24 +386,37 @@ fn install_into(path: &Path, command: &str) -> Result<()> {
         "statusLine".to_string(),
         serde_json::json!({ "type": "command", "command": command, "padding": 0 }),
     );
-    write_settings(path, &settings)
+    write_settings(path, &settings, source.as_deref())
 }
 
 fn remove_from(path: &Path) -> Result<()> {
-    let mut settings = load_settings(path)?;
+    let (mut settings, source) = load_settings_with_source(path)?;
     if !command_in(&settings).is_some_and(|command| is_bridge_command(&command)) {
         return Ok(());
     }
     if let Some(object) = settings.as_object_mut() {
         object.remove("statusLine");
     }
-    write_settings(path, &settings)
+    write_settings(path, &settings, source.as_deref())
 }
 
-fn write_settings(path: &Path, settings: &serde_json::Value) -> Result<()> {
+fn write_settings(
+    path: &Path,
+    settings: &serde_json::Value,
+    original: Option<&[u8]>,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("create the Claude Code configuration directory")?;
     }
+    let current = match std::fs::read(path) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("re-read the Claude Code settings"),
+    };
+    anyhow::ensure!(
+        current.as_deref() == original,
+        "Claude Code settings changed while the status line was being updated; try again"
+    );
     let content = serde_json::to_string_pretty(settings)?;
     // Claude Code reads this file continuously, so it is replaced whole rather than
     // truncated and rewritten in place.
@@ -499,6 +521,11 @@ mod tests {
         assert_eq!(settings["statusLine"]["command"], "\"q.exe\" --claude-statusline");
         assert_eq!(settings["env"]["A"], "1", "unrelated settings survive the write");
         assert_eq!(settings["inputNeededNotifEnabled"], true);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.find("\"env\"").unwrap()
+                < written.find("\"inputNeededNotifEnabled\"").unwrap()
+        );
 
         remove_from(&path).expect("remove the status line");
         let settings: serde_json::Value =
@@ -528,6 +555,18 @@ mod tests {
         let settings: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(settings["statusLine"]["command"], "\"q.exe\" --claude-statusline");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_concurrent_settings_change_is_not_overwritten() {
+        let path = scratch_settings("concurrent");
+        std::fs::write(&path, r#"{"first":true}"#).unwrap();
+        let (_, original) = load_settings_with_source(&path).expect("read original settings");
+        std::fs::write(&path, r#"{"changed":true}"#).unwrap();
+        let replacement = serde_json::json!({ "statusLine": { "command": "q" } });
+        assert!(write_settings(&path, &replacement, original.as_deref()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"changed":true}"#);
         let _ = std::fs::remove_file(&path);
     }
 
