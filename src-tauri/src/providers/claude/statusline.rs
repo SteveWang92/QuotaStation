@@ -26,7 +26,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{LimitKind, LimitWindow};
+use crate::domain::{Freshness, LimitKind, LimitWindow, WindowSource};
 
 use super::{FIVE_HOUR_WINDOW_MINS, SEVEN_DAY_WINDOW_MINS, claude_home};
 
@@ -86,45 +86,73 @@ struct Reading {
 /// A window whose restart has already passed is dropped rather than shown as expired: the
 /// session-log window covers the five-hour case, and a seven-day window that has restarted
 /// says nothing about the one now running.
-pub fn read_windows() -> Vec<LimitWindow> {
-    let Some(reading) = load_reading() else { return Vec::new() };
+pub fn read_windows() -> Result<Vec<LimitWindow>> {
+    let Some(reading) = load_reading()? else { return Ok(Vec::new()) };
     windows_from(&reading, jiff::Timestamp::now().as_second())
 }
 
 /// When the bridge last recorded a reading, for the interface to explain how current the
 /// windows are.
 pub fn last_reading_at() -> Option<i64> {
-    load_reading().map(|reading| reading.observed_at)
+    load_reading().ok().flatten().map(|reading| reading.observed_at)
 }
 
-fn windows_from(reading: &Reading, now: i64) -> Vec<LimitWindow> {
+fn windows_from(reading: &Reading, now: i64) -> Result<Vec<LimitWindow>> {
     if now - reading.observed_at > MAX_READING_AGE_SECS {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    [
+    if reading.observed_at <= 0 || reading.observed_at > now + 300 {
+        bail!("schema_incompatible: invalid status-line observation time");
+    }
+    let mut windows = Vec::new();
+    for (bucket, kind, minutes) in [
         (reading.five_hour, LimitKind::Primary, FIVE_HOUR_WINDOW_MINS),
         (reading.seven_day, LimitKind::Secondary, SEVEN_DAY_WINDOW_MINS),
-    ]
-    .into_iter()
-    .filter_map(|(bucket, kind, minutes)| {
-        let bucket = bucket?;
-        let resets_at = bucket.resets_at.filter(|resets_at| *resets_at > now)?;
-        let used_percent = bucket.used_percentage.map(|value| value.clamp(0.0, 100.0));
-        Some(LimitWindow {
+    ] {
+        let Some(bucket) = bucket else { continue };
+        let Some(used_percent) = bucket.used_percentage else {
+            bail!("schema_incompatible: status-line bucket omitted used percentage");
+        };
+        let Some(resets_at) = bucket.resets_at else {
+            bail!("schema_incompatible: status-line bucket omitted reset time");
+        };
+        if !used_percent.is_finite() || !(0.0..=100.0).contains(&used_percent) {
+            bail!("schema_incompatible: invalid status-line percentage");
+        }
+        if resets_at <= now {
+            continue;
+        }
+        if resets_at > now + minutes * 60 * 2 {
+            bail!("schema_incompatible: invalid status-line reset time");
+        }
+        windows.push(LimitWindow {
             kind,
             label: kind.window_label(Some(minutes)),
-            used_percent,
-            remaining_percent: used_percent.map(|used| (100.0 - used).clamp(0.0, 100.0)),
+            used_percent: Some(used_percent),
+            remaining_percent: Some((100.0 - used_percent).clamp(0.0, 100.0)),
             window_duration_mins: Some(minutes),
             resets_at: Some(resets_at),
-        })
-    })
-    .collect()
+            source: WindowSource::StatusLine,
+            observed_at: reading.observed_at,
+            freshness: Freshness::Fresh,
+        });
+    }
+    if reading.five_hour.is_some() || reading.seven_day.is_some() {
+        return Ok(windows);
+    }
+    bail!("schema_incompatible: status-line rate limits contained no known buckets")
 }
 
-fn load_reading() -> Option<Reading> {
-    let content = std::fs::read_to_string(cache_path()?).ok()?;
-    serde_json::from_str(&content).ok()
+fn load_reading() -> Result<Option<Reading>> {
+    let Some(path) = cache_path() else { return Ok(None) };
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("read status-line cache"),
+    };
+    serde_json::from_str(&content)
+        .map(Some)
+        .context("schema_incompatible: decode status-line cache")
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -179,14 +207,28 @@ pub fn run_bridge_if_requested() -> bool {
         }
     ));
     if let Some(limits) = limits {
-        match store_reading(&Reading {
-            observed_at: jiff::Timestamp::now().as_second(),
+        let now = jiff::Timestamp::now().as_second();
+        let reading = Reading {
+            observed_at: now,
             five_hour: limits.five_hour,
             seven_day: limits.seven_day,
-        }) {
-            Ok(()) => crate::log::write("status line reading stored"),
-            Err(_) => crate::log::write("status line reading not stored"),
+        };
+        match windows_from(&reading, now) {
+            Ok(_) if store_reading(&reading).is_ok() => {
+                crate::log::write("status line reading stored");
+            }
+            Ok(_) => crate::log::write("status line reading not stored"),
+            Err(_) => {
+                // Persist only the normalized quota subset, not the source payload. The
+                // running app can then report schema_incompatible and preserve its LKG.
+                let _ = store_reading(&reading);
+                crate::log::write("status line schema incompatible");
+            }
         }
+    } else if input.is_some()
+        && let Some(cache) = cache_path()
+    {
+        let _ = std::fs::remove_file(cache);
     }
     let model = input
         .as_ref()
@@ -380,7 +422,7 @@ mod tests {
     #[test]
     fn both_reported_windows_map_onto_the_shared_quota_vocabulary() {
         let now = 1_800_000_000;
-        let windows = windows_from(&reading(now), now);
+        let windows = windows_from(&reading(now), now).expect("valid reading");
         assert_eq!(windows.len(), 2);
         assert_eq!(windows[0].label, "5-hour window");
         assert_eq!(windows[0].remaining_percent, Some(76.5));
@@ -394,7 +436,7 @@ mod tests {
         let now = 1_800_000_000;
         let mut stale = reading(now);
         stale.five_hour = Some(Bucket { used_percentage: Some(90.0), resets_at: Some(now - 60) });
-        let windows = windows_from(&stale, now);
+        let windows = windows_from(&stale, now).expect("remaining window is valid");
         assert_eq!(windows.len(), 1, "only the weekly window is still running");
         assert_eq!(windows[0].kind, LimitKind::Secondary);
     }
@@ -403,7 +445,19 @@ mod tests {
     fn a_reading_left_by_a_long_finished_session_is_treated_as_absent() {
         let now = 1_800_000_000;
         let old = Reading { observed_at: now - MAX_READING_AGE_SECS - 1, ..reading(now) };
-        assert!(windows_from(&old, now).is_empty());
+        assert!(windows_from(&old, now).expect("old reading is ignored").is_empty());
+    }
+
+    #[test]
+    fn malformed_known_bucket_is_schema_incompatible() {
+        let now = 1_800_000_000;
+        let malformed = Reading {
+            observed_at: now,
+            five_hour: Some(Bucket { used_percentage: None, resets_at: Some(now + 3_600) }),
+            seven_day: None,
+        };
+        let error = windows_from(&malformed, now).expect_err("missing percentage must fail");
+        assert!(error.to_string().contains("schema_incompatible"));
     }
 
     #[test]

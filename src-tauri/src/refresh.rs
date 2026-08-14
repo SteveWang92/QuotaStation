@@ -125,7 +125,7 @@ async fn apply_live(
                     snapshot.recent_resets = recent_resets;
                     snapshot.live_error = save_error;
                     if snapshot.live_error.is_none() {
-                        snapshot.last_success_at = Some(completed_at.clone());
+                        snapshot.last_live_success_at = Some(completed_at.clone());
                     }
                 })
                 .await;
@@ -183,7 +183,7 @@ async fn apply_history(
                     }
                     snapshot.history_error = save_error;
                     if snapshot.history_error.is_none() {
-                        snapshot.last_success_at = Some(completed_at.clone());
+                        snapshot.last_history_success_at = Some(completed_at.clone());
                     }
                 })
                 .await;

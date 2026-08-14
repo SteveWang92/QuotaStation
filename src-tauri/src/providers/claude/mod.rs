@@ -10,6 +10,9 @@ use anyhow::Result;
 
 use crate::domain::{LimitKind, LimitWindow, LiveSnapshot};
 
+#[cfg(test)]
+use crate::domain::{Freshness, WindowSource};
+
 pub use history::read_history;
 
 /// Claude's rolling session window, in minutes.
@@ -42,7 +45,7 @@ pub fn claude_home() -> Option<PathBuf> {
 /// they give the five-hour window's timing, though never an allowance.
 pub async fn read_live() -> Result<LiveSnapshot> {
     let plan_type = plan::plan_type();
-    let reported = statusline::read_windows();
+    let reported = statusline::read_windows()?;
     crate::log::write(format!(
         "claude live read: status line reported {} window(s), plan {:?}",
         reported.len(),
@@ -99,6 +102,9 @@ mod tests {
             remaining_percent: used_percent.map(|used| 100.0 - used),
             window_duration_mins: Some(FIVE_HOUR_WINDOW_MINS),
             resets_at: Some(resets_at),
+            source: WindowSource::StatusLine,
+            observed_at: 100,
+            freshness: Freshness::Fresh,
         }
     }
 

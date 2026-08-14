@@ -7,7 +7,7 @@ use crate::domain::{
     AcquisitionDiagnostics, CCUSAGE_REVISION, DailyModelUsage, DailyUsagePoint, Freshness,
     HistorySnapshot, LimitKind, LimitResetEvent, LimitWindow, LiveSnapshot, ModelUsage,
     PRICING_CATALOG_REVISION, ProviderSnapshot, ResetClassification, RetentionDiagnostics,
-    TokenUsage, UsageRangeSnapshot,
+    TokenUsage, UsageRangeSnapshot, WindowSource,
 };
 use crate::providers::ProviderKind;
 use crate::resets::{ResetTracker, WindowObservation, detect};
@@ -47,7 +47,10 @@ fn backfill_job_name(provider: ProviderKind) -> String {
 }
 
 fn epoch_seconds(value: &str) -> Option<i64> {
-    value.parse::<jiff::Timestamp>().ok().map(|timestamp| timestamp.as_second())
+    value
+        .parse::<i64>()
+        .ok()
+        .or_else(|| value.parse::<jiff::Timestamp>().ok().map(|timestamp| timestamp.as_second()))
 }
 
 #[derive(Clone)]
@@ -124,14 +127,15 @@ impl Storage {
             let kind = kind_column(limit.kind);
             sqlx::query(
                 "INSERT INTO limit_current \
-                 (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
-                 VALUES (?, ?, ?, ?, ?, ?) \
+                 (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at, source) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(provider_instance_id, window_kind) DO UPDATE SET \
                    used_percent = excluded.used_percent, window_duration_mins = excluded.window_duration_mins, \
-                   resets_at = excluded.resets_at, observed_at = excluded.observed_at",
+                   resets_at = excluded.resets_at, observed_at = excluded.observed_at, source = excluded.source",
             )
             .bind(provider_id).bind(kind).bind(limit.used_percent).bind(limit.window_duration_mins)
-            .bind(limit.resets_at).bind(observed_at).execute(&mut *tx).await?;
+            .bind(limit.resets_at).bind(limit.observed_at.to_string()).bind(limit.source.as_str())
+            .execute(&mut *tx).await?;
             sqlx::query(
                 "INSERT INTO limit_samples \
                  (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
@@ -527,10 +531,11 @@ impl Storage {
         snapshot.earned_reset_count = instance.try_get::<Option<i64>, _>("earned_reset_count")?.map(|v| v as u64);
         let live_success: Option<String> = instance.try_get("last_live_success_at")?;
         let history_success: Option<String> = instance.try_get("last_history_success_at")?;
-        snapshot.last_success_at = [live_success, history_success].into_iter().flatten().max();
+        snapshot.last_live_success_at = live_success;
+        snapshot.last_history_success_at = history_success;
 
         let limits = sqlx::query(
-            "SELECT window_kind, used_percent, window_duration_mins, resets_at \
+            "SELECT window_kind, used_percent, window_duration_mins, resets_at, observed_at, source \
              FROM limit_current WHERE provider_instance_id = ? ORDER BY window_kind",
         ).bind(provider_id).fetch_all(&self.pool).await?;
         snapshot.limits = limits.into_iter().filter_map(|row| {
@@ -543,6 +548,9 @@ impl Storage {
                 remaining_percent: row.try_get::<Option<f64>, _>("used_percent").ok().flatten().map(|used| (100.0 - used).clamp(0.0, 100.0)),
                 window_duration_mins,
                 resets_at: row.try_get("resets_at").ok(),
+                source: WindowSource::parse(&row.try_get::<String, _>("source").ok()?)?,
+                observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
+                freshness: Freshness::Stale,
             })
         }).collect();
 
@@ -552,8 +560,7 @@ impl Storage {
         snapshot.today = today.usage;
         snapshot.models = today.models;
         snapshot.api_equivalent_cost_usd = today.api_equivalent_cost_usd;
-        snapshot.freshness = if snapshot.last_success_at.is_some() { Freshness::Stale } else { Freshness::Unavailable };
-        snapshot.update_compact_status();
+        snapshot.resolve_derived_state();
         snapshot.pricing_catalog_revision = PRICING_CATALOG_REVISION.to_string();
         Ok(snapshot)
     }
@@ -851,6 +858,9 @@ mod tests {
                 remaining_percent: Some(60.0),
                 window_duration_mins: Some(300),
                 resets_at: Some(1_800_000_000),
+                source: WindowSource::AppServer,
+                observed_at: jiff::Timestamp::now().as_second(),
+                freshness: Freshness::Fresh,
             }],
         };
         storage.save_live(CODEX, &live, "2026-08-11T00:00:00Z").await.expect("save live");
@@ -860,7 +870,7 @@ mod tests {
         assert_eq!(snapshot.limits.len(), 1);
         assert_eq!(snapshot.limits[0].label, "5-hour window");
         assert_eq!(snapshot.limits[0].remaining_percent, Some(60.0));
-        assert_eq!(snapshot.freshness, Freshness::Stale, "a restored snapshot is never fresh");
+        assert_eq!(snapshot.freshness, Freshness::Fresh, "freshness follows the stored observation");
     }
 
     const WEEK_MINUTES: i64 = 10_080;
@@ -876,6 +886,9 @@ mod tests {
                 remaining_percent: Some(100.0 - used_percent),
                 window_duration_mins: Some(WEEK_MINUTES),
                 resets_at: Some(resets_at),
+                source: WindowSource::AppServer,
+                observed_at: resets_at - WEEK_MINUTES * 60,
+                freshness: Freshness::Fresh,
             }],
         }
     }

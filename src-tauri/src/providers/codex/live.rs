@@ -14,7 +14,7 @@ use tokio::{
     time::{Duration, timeout},
 };
 
-use crate::domain::{LimitKind, LimitWindow, LiveSnapshot};
+use crate::domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, WindowSource};
 
 const CODEX_EXECUTABLE_OVERRIDE: &str = "QUOTASTATION_CODEX_EXECUTABLE";
 
@@ -176,6 +176,13 @@ mod tests {
         versions.sort_by_key(|path| std::cmp::Reverse(version_key(path)));
         assert_eq!(versions[0], Path::new("v24.18.1"));
     }
+
+    #[test]
+    fn missing_known_rate_limit_buckets_are_schema_incompatible() {
+        let error = normalize(json!({ "account": {} }), json!({ "rateLimits": {} }))
+            .expect_err("empty rate-limit shape must fail");
+        assert!(error.to_string().contains("schema_incompatible"));
+    }
 }
 
 async fn send(stdin: &mut tokio::process::ChildStdin, value: Value) -> Result<()> {
@@ -211,20 +218,55 @@ fn response_result(value: Value) -> Result<Value> {
 
 fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
     let plan_type = account.pointer("/account/planType").and_then(Value::as_str).map(str::to_string);
-    let rate_limits = rate_result.get("rateLimits").unwrap_or(&Value::Null);
+    let rate_limits = rate_result
+        .get("rateLimits")
+        .and_then(Value::as_object)
+        .context("schema_incompatible: rate-limit response omitted rateLimits")?;
     let mut limits = Vec::new();
+    let observed_at = jiff::Timestamp::now().as_second();
     for (field, kind) in [("primary", LimitKind::Primary), ("secondary", LimitKind::Secondary)] {
-        let value = rate_limits.get(field).unwrap_or(&Value::Null);
-        if !value.is_object() { continue; }
-        let minutes = value.get("windowDurationMins").and_then(Value::as_i64);
+        let Some(value) = rate_limits.get(field) else { continue };
+        if value.is_null() {
+            continue;
+        }
+        let value = value
+            .as_object()
+            .with_context(|| format!("schema_incompatible: {field} bucket is not an object"))?;
+        let used_percent = value
+            .get("usedPercent")
+            .and_then(Value::as_f64)
+            .with_context(|| format!("schema_incompatible: {field} bucket omitted usedPercent"))?;
+        let minutes = value
+            .get("windowDurationMins")
+            .and_then(Value::as_i64)
+            .filter(|minutes| *minutes > 0)
+            .with_context(|| {
+                format!("schema_incompatible: {field} bucket omitted a valid window duration")
+            })?;
+        let resets_at = value
+            .get("resetsAt")
+            .and_then(Value::as_i64)
+            .with_context(|| format!("schema_incompatible: {field} bucket omitted resetsAt"))?;
+        if !used_percent.is_finite() || !(0.0..=100.0).contains(&used_percent) {
+            bail!("schema_incompatible: {field} bucket has an invalid percentage");
+        }
+        if resets_at < observed_at - 60 || resets_at > observed_at + minutes * 60 * 2 {
+            bail!("schema_incompatible: {field} bucket has an invalid reset time");
+        }
         limits.push(LimitWindow {
             kind,
-            label: kind.window_label(minutes),
-            used_percent: value.get("usedPercent").and_then(Value::as_f64),
-            remaining_percent: value.get("usedPercent").and_then(Value::as_f64).map(|used| (100.0 - used).clamp(0.0, 100.0)),
-            window_duration_mins: minutes,
-            resets_at: value.get("resetsAt").and_then(Value::as_i64),
+            label: kind.window_label(Some(minutes)),
+            used_percent: Some(used_percent),
+            remaining_percent: Some((100.0 - used_percent).clamp(0.0, 100.0)),
+            window_duration_mins: Some(minutes),
+            resets_at: Some(resets_at),
+            source: WindowSource::AppServer,
+            observed_at,
+            freshness: Freshness::Fresh,
         });
+    }
+    if limits.is_empty() {
+        bail!("schema_incompatible: rate-limit response contained no known buckets");
     }
     Ok(LiveSnapshot {
         plan_type,

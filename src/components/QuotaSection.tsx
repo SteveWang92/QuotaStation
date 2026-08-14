@@ -30,10 +30,18 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
   const used = limit.usedPercent;
   const remaining = limit.remainingPercent;
   return (
-    <div className="quota-row">
+    <div className={`quota-row${limit.freshness === "stale" ? " stale" : ""}`}>
       <div className="quota-label">
         <h2>{limit.label}</h2>
         <p>{formatWindowDuration(limit.windowDurationMins)}</p>
+        <small>
+          {limit.source === "app_server"
+            ? "App server"
+            : limit.source === "status_line"
+              ? "Status line"
+              : "Session log"}{" "}
+          · as of {formatResetTimestamp(limit.observedAt)}
+        </small>
       </div>
       <div className="quota-meter" aria-label={`${limit.label} usage`}>
         <div className="quota-track">

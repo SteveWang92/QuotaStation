@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use ccusage_adapter_claude::load_entries;
 use ccusage_core::cli::SharedArgs;
 
-use crate::domain::{LimitKind, LimitWindow, LiveSnapshot};
+use crate::domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, WindowSource};
 
 use super::FIVE_HOUR_WINDOW_MINS as WINDOW_MINS;
 
@@ -36,6 +36,7 @@ fn read_live_blocking(plan_type: Option<String>) -> Result<LiveSnapshot> {
     }
     let now_ms = jiff::Timestamp::now().as_millisecond();
     let mut timestamps: Vec<i64> = entries.iter().map(|entry| entry.timestamp.as_millis()).collect();
+    let observed_at = timestamps.iter().copied().max().unwrap_or(now_ms).div_euclid(1_000);
     // A limit the account actually reached is the one moment Claude states an exact
     // restart, so it outranks the window this module infers from request times.
     let announced_reset = entries
@@ -57,6 +58,9 @@ fn read_live_blocking(plan_type: Option<String>) -> Result<LiveSnapshot> {
             remaining_percent: None,
             window_duration_mins: Some(WINDOW_MINS),
             resets_at: resets_at_ms.map(|value| value.div_euclid(1_000)),
+            source: WindowSource::SessionLog,
+            observed_at,
+            freshness: Freshness::Fresh,
         }],
         // Claude grants no reset inventory of the kind Codex publishes.
         earned_reset_count: None,

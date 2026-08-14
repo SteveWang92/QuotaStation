@@ -77,6 +77,33 @@ pub enum LimitKind {
     Secondary,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowSource {
+    AppServer,
+    SessionLog,
+    StatusLine,
+}
+
+impl WindowSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AppServer => "app_server",
+            Self::SessionLog => "session_log",
+            Self::StatusLine => "status_line",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "app_server" => Some(Self::AppServer),
+            "session_log" => Some(Self::SessionLog),
+            "status_line" => Some(Self::StatusLine),
+            _ => None,
+        }
+    }
+}
+
 impl LimitKind {
     /// Live acquisition and restored snapshots share this naming so every surface
     /// describes the same quota window identically.
@@ -104,6 +131,9 @@ pub struct LimitWindow {
     pub remaining_percent: Option<f64>,
     pub window_duration_mins: Option<i64>,
     pub resets_at: Option<i64>,
+    pub source: WindowSource,
+    pub observed_at: i64,
+    pub freshness: Freshness,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -176,7 +206,8 @@ pub struct ProviderSnapshot {
     pub stale_age_seconds: Option<u64>,
     pub compact_status: CompactStatus,
     pub last_attempt_at: Option<String>,
-    pub last_success_at: Option<String>,
+    pub last_live_success_at: Option<String>,
+    pub last_history_success_at: Option<String>,
     pub live_error: Option<String>,
     pub history_error: Option<String>,
     pub parser_revision: String,
@@ -199,7 +230,8 @@ impl ProviderSnapshot {
             stale_age_seconds: None,
             compact_status: CompactStatus::unavailable(provider.display_name()),
             last_attempt_at: None,
-            last_success_at: None,
+            last_live_success_at: None,
+            last_history_success_at: None,
             live_error: None,
             history_error: None,
             parser_revision: CCUSAGE_REVISION.to_string(),
@@ -207,24 +239,51 @@ impl ProviderSnapshot {
         }
     }
 
-    /// Freshness follows from the two acquisition paths and the last success, so it is
-    /// derived in one place rather than by whoever last wrote to the snapshot.
+    /// Quota freshness follows only from live acquisition and each window's own source
+    /// timestamp. A successful history parse must never renew an older quota reading.
     pub fn resolve_derived_state(&mut self) {
-        self.freshness = match (
-            &self.live_error,
-            &self.history_error,
-            self.last_success_at.is_some(),
-        ) {
-            (None, None, true) => Freshness::Fresh,
-            (_, _, true) => Freshness::Stale,
-            _ => Freshness::Unavailable,
+        let now = jiff::Timestamp::now().as_second();
+        for limit in &mut self.limits {
+            let age = now.saturating_sub(limit.observed_at);
+            let max_age = match limit.source {
+                WindowSource::AppServer => {
+                    self.provider.live_refresh_interval().as_secs() as i64 * 3
+                }
+                WindowSource::SessionLog => limit.window_duration_mins.unwrap_or(300) * 60,
+                WindowSource::StatusLine => {
+                    limit.window_duration_mins.unwrap_or(300) * 60 / 5
+                }
+            };
+            limit.freshness = if age <= max_age {
+                Freshness::Fresh
+            } else {
+                Freshness::Stale
+            };
+        }
+        self.freshness = if self.last_live_success_at.is_none() || self.limits.is_empty() {
+            Freshness::Unavailable
+        } else if self.live_error.is_some()
+            || self.limits.iter().any(|limit| limit.freshness == Freshness::Stale)
+        {
+            Freshness::Stale
+        } else {
+            Freshness::Fresh
         };
         self.update_compact_status();
     }
 
     pub fn update_compact_status(&mut self) {
         let provider = self.display_name.clone();
-        self.stale_age_seconds = self.last_success_at.as_deref().and_then(age_seconds);
+        self.stale_age_seconds = self
+            .limits
+            .iter()
+            .map(|limit| {
+                jiff::Timestamp::now()
+                    .as_second()
+                    .saturating_sub(limit.observed_at) as u64
+            })
+            .max()
+            .or_else(|| self.last_live_success_at.as_deref().and_then(age_seconds));
         self.compact_status = if self.freshness == Freshness::Unavailable || self.limits.is_empty() {
             CompactStatus::unavailable(&provider)
         } else if self.freshness == Freshness::Stale {
@@ -255,7 +314,7 @@ impl ProviderSnapshot {
                 Some(_) => CompactStatus {
                     level: CompactStatusLevel::Healthy,
                     label: "Quota healthy".to_string(),
-                    message: format!("{provider} quota and local history are current."),
+                    message: format!("{provider} quota data is current."),
                     color: "#b5e835".to_string(),
                 },
                 // A window can be known without its allowance being published, which is
@@ -322,6 +381,9 @@ mod tests {
                 remaining_percent: Some(remaining_percent),
                 window_duration_mins: Some(300),
                 resets_at: None,
+                source: WindowSource::AppServer,
+                observed_at: jiff::Timestamp::now().as_second(),
+                freshness: Freshness::Fresh,
             }],
             ..ProviderSnapshot::new(provider)
         };
@@ -342,6 +404,53 @@ mod tests {
         assert_eq!(fresh_snapshot(31.0).compact_status.level, CompactStatusLevel::Healthy);
         assert_eq!(fresh_snapshot(30.0).compact_status.level, CompactStatusLevel::Warning);
         assert_eq!(fresh_snapshot(10.0).compact_status.level, CompactStatusLevel::Critical);
+    }
+
+    #[test]
+    fn history_success_does_not_renew_an_old_live_window() {
+        let now = jiff::Timestamp::now();
+        let mut snapshot = ProviderSnapshot {
+            limits: vec![LimitWindow {
+                kind: LimitKind::Primary,
+                label: "5-hour window".to_string(),
+                used_percent: Some(20.0),
+                remaining_percent: Some(80.0),
+                window_duration_mins: Some(300),
+                resets_at: Some(now.as_second() + 3_600),
+                source: WindowSource::AppServer,
+                observed_at: now.as_second() - 901,
+                freshness: Freshness::Fresh,
+            }],
+            last_live_success_at: Some(now.to_string()),
+            last_history_success_at: Some(now.to_string()),
+            ..ProviderSnapshot::new(ProviderKind::Codex)
+        };
+        snapshot.resolve_derived_state();
+        assert_eq!(snapshot.freshness, Freshness::Stale);
+        assert_eq!(snapshot.limits[0].freshness, Freshness::Stale);
+    }
+
+    #[test]
+    fn an_old_status_line_reading_is_stale_even_after_a_successful_refresh() {
+        let now = jiff::Timestamp::now();
+        let mut snapshot = ProviderSnapshot {
+            limits: vec![LimitWindow {
+                kind: LimitKind::Primary,
+                label: "5-hour window".to_string(),
+                used_percent: Some(20.0),
+                remaining_percent: Some(80.0),
+                window_duration_mins: Some(300),
+                resets_at: Some(now.as_second() + 600),
+                source: WindowSource::StatusLine,
+                observed_at: now.as_second() - 3_601,
+                freshness: Freshness::Fresh,
+            }],
+            last_live_success_at: Some(now.to_string()),
+            ..ProviderSnapshot::new(ProviderKind::Claude)
+        };
+        snapshot.resolve_derived_state();
+        assert_eq!(snapshot.freshness, Freshness::Stale);
+        assert_eq!(snapshot.limits[0].freshness, Freshness::Stale);
     }
 
     #[test]

@@ -17,6 +17,9 @@ export interface LimitWindow {
   remainingPercent: number | null;
   windowDurationMins: number | null;
   resetsAt: number | null;
+  source: "app_server" | "session_log" | "status_line";
+  observedAt: number;
+  freshness: Freshness;
 }
 
 export interface LimitResetEvent {
@@ -60,7 +63,8 @@ export interface ProviderSnapshot {
   staleAgeSeconds: number | null;
   compactStatus: CompactStatus;
   lastAttemptAt: string | null;
-  lastSuccessAt: string | null;
+  lastLiveSuccessAt: string | null;
+  lastHistorySuccessAt: string | null;
   liveError: string | null;
   historyError: string | null;
   /** Why an optional second quota source could not confirm the reading on display. */

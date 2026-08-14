@@ -94,6 +94,7 @@ button { font: inherit; }
 .quota-track span, .mini-track i { display: block; height: 100%; background: var(--lime); border-radius: inherit; transition: width 320ms ease; }
 .quota-track span { background: var(--quota-status-color); }
 .quota-track span.unknown { width: 100%; background: repeating-linear-gradient(90deg, rgba(138, 149, 157, 0.18) 0 8px, rgba(138, 149, 157, 0.42) 8px 13px); }
+.quota-row.stale { opacity: 0.72; }
 .quota-percent { display: flex; flex-direction: column; align-items: flex-start; }
 .quota-percent strong { color: var(--quota-status-color); font-size: 24px; line-height: 1; font-variant-numeric: tabular-nums; }
 .quota-percent span, .quota-reset span { color: var(--muted); font-size: 12px; margin-top: 7px; }
