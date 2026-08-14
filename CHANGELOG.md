@@ -2,7 +2,10 @@
 
 All notable changes to QuotaStation are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release is tagged `vX.Y.Z`
+on `main`, with the matching section below as its notes.
+
+## [Unreleased]
 
 ## [0.1.0] - 2026-08-15
 
@@ -46,3 +49,6 @@ anything leaving the computer.
   renderer receives only normalized data over narrow commands.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
+
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/SteveWang92/QuotaStation/releases/tag/v0.1.0

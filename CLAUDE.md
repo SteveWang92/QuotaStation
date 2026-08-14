@@ -5,7 +5,8 @@ QuotaStation and take precedence when they differ.
 
 ## Project status
 
-- QuotaStation has a selected architecture and is waiting for implementation approval.
+- QuotaStation is implemented and preparing its first release. Codex and Claude are both
+  covered; the repository is private.
 - Read `docs/PROJECT_PLAN.local.md` when it exists before changing implementation scope.
 - Keep public documentation free of machine-specific paths, account details, credentials,
   and private usage data.
@@ -39,5 +40,55 @@ QuotaStation and take precedence when they differ.
 ## Verification
 
 - Documentation-only work needs only a focused file review.
-- Once the application exists, use the minimum local build or start check required by the
-  global rules.
+- Use the minimum local check required by the global rules. The three gates CI enforces are
+  `npm test`, `npm run build`, and `cargo test --locked --manifest-path src-tauri/Cargo.toml`.
+  There is no lint or format gate.
+
+## Changelog
+
+- `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
+  Semantic Versioning. Notable user-facing changes land in its `## [Unreleased]` section in
+  the same change that makes them, not in a sweep before the release.
+- Record the net user-facing result, not a commit log. Omit pure build, CI, formatting,
+  test, typo, and version-bump churn unless a person using the application perceives it.
+- Use the Keep a Changelog categories in this order — Added, Changed, Deprecated, Removed,
+  Fixed, Security — and omit the empty ones.
+- Compare links live at the bottom of the file and are maintained by hand: this repository
+  has no release script.
+
+## Releasing
+
+Releasing is manual here, and Steve starts it. Never bump a version, tag, create the
+`dev` → `main` pull request, or publish a release without being asked.
+
+- The version appears in three files that must always move together: `package.json`,
+  `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`. `Cargo.lock` records it too, so
+  refresh it in the same commit.
+- `main` holds the released state and nothing deploys from it — QuotaStation is a desktop
+  application, so a release is a tag plus, when asked for, a built bundle. The repository's
+  GitHub default branch is `dev`.
+- Annotated `vX.Y.Z` tags on `main` are the source of truth for released versions. The tag
+  message is the subject line only — `QuotaStation X.Y.Z` — because the notes already live
+  in `CHANGELOG.md` and a second copy would drift. Tags carry no AI attribution, exactly as
+  commits do.
+
+The full sequence, once Steve asks for it:
+
+1. On a clean `dev`: `git fetch origin` then `git merge --ff-only origin/dev`.
+2. Bump the three version fields, refresh `Cargo.lock`, and run the three verification gates.
+3. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, open a fresh empty `[Unreleased]`
+   above it, and update the compare links at the bottom of the file.
+4. Commit that as `chore(release): vX.Y.Z` and push `dev`.
+5. Open the `dev` → `main` pull request titled `chore(release): vX.Y.Z` — the title becomes
+   the squash subject verbatim, so it has to be a Conventional Commit line — with the new
+   changelog section as its body.
+6. Review the release pull request with the `/code-review` skill and resolve what it finds.
+   The global rules require a real review here; a diff scan is not one.
+7. Squash-merge it: `gh pr merge --squash --body ""`.
+8. `git checkout main && git pull origin main`, then
+   `git tag -a vX.Y.Z -m "QuotaStation X.Y.Z"` and `git push origin vX.Y.Z`. Tags do not
+   travel with an ordinary push.
+9. Publish a GitHub release from the tag, with the changelog section as its notes, only when
+   there is a bundle to attach or Steve asks for one.
+10. Reset `dev` to `main` — `git checkout dev && git reset --hard main` and
+    `git push --force-with-lease origin dev` — so `dev` starts the next version even with it.
