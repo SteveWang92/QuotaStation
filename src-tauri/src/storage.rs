@@ -427,7 +427,9 @@ impl Storage {
     async fn run_retention_at(&self, now: &str) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        // Promote hourly data before its 60-day expiry. Reset segments remain separate.
+        // Collapse any hourly rows created by older versions into the long-lived daily
+        // summary before removing that superseded intermediate layer. Reset segments remain
+        // separate so a day's boundary values do not cross a detected restart.
         sqlx::query(
             "INSERT INTO limit_rollups (provider_instance_id, granularity, bucket_start, bucket_end, window_kind, \
                window_duration_mins, resets_at, reset_segment, start_used_percent, end_used_percent, min_used_percent, \
@@ -444,22 +446,20 @@ impl Storage {
                MIN(h.min_used_percent), MAX(h.max_used_percent), \
                SUM(h.average_used_percent * h.sample_count) / NULLIF(SUM(CASE WHEN h.average_used_percent IS NOT NULL THEN h.sample_count ELSE 0 END), 0), \
                SUM(h.sample_count) \
-             FROM limit_rollups h WHERE h.granularity = 'hourly' AND datetime(h.bucket_start) < datetime(?, '-60 days') \
+             FROM limit_rollups h WHERE h.granularity = 'hourly' \
              GROUP BY h.provider_instance_id, date(h.bucket_start), h.window_kind, h.window_duration_mins, h.resets_at, h.reset_segment \
              ON CONFLICT(provider_instance_id, granularity, bucket_start, window_kind, reset_segment) DO UPDATE SET \
                bucket_end=excluded.bucket_end, window_duration_mins=excluded.window_duration_mins, resets_at=excluded.resets_at, \
                start_used_percent=excluded.start_used_percent, end_used_percent=excluded.end_used_percent, \
                min_used_percent=excluded.min_used_percent, max_used_percent=excluded.max_used_percent, \
                average_used_percent=excluded.average_used_percent, sample_count=excluded.sample_count",
-        ).bind(now).execute(&mut *tx).await?;
+        ).execute(&mut *tx).await?;
 
-        // Direct daily promotion handles samples that predate this migration.
-        self.roll_up_samples(&mut tx, "daily", "%Y-%m-%dT00:00:00Z", "%Y-%m-%dT23:59:59.999999999Z", "-60 days", now).await?;
-        self.roll_up_samples(&mut tx, "hourly", "%Y-%m-%dT%H:00:00Z", "%Y-%m-%dT%H:59:59.999999999Z", "-14 days", now).await?;
+        // Keep recent readings at source granularity, then preserve only a daily summary.
+        self.roll_up_samples(&mut tx, "daily", "%Y-%m-%dT00:00:00Z", "%Y-%m-%dT23:59:59.999999999Z", "-14 days", now).await?;
 
         sqlx::query("DELETE FROM limit_samples WHERE datetime(observed_at) < datetime(?, '-14 days')").bind(now).execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM limit_rollups WHERE granularity = 'hourly' AND datetime(bucket_start) < datetime(?, '-60 days')").bind(now).execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM limit_rollups WHERE granularity = 'daily' AND datetime(bucket_start) < datetime(?, '-180 days')").bind(now).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM limit_rollups WHERE granularity = 'hourly'").execute(&mut *tx).await?;
         sqlx::query(
             "DELETE FROM refresh_runs WHERE id NOT IN (SELECT MAX(id) FROM refresh_runs GROUP BY provider_instance_id, acquisition_path) \
              AND ((status = 'succeeded' AND datetime(completed_at) < datetime(?, '-30 days')) \
@@ -496,14 +496,14 @@ impl Storage {
                  AND strftime('{bucket_start}', x.observed_at)=strftime('{bucket_start}', s.observed_at) AND x.window_kind=s.window_kind \
                  AND x.window_duration_mins IS s.window_duration_mins AND x.resets_at IS s.resets_at ORDER BY x.observed_at DESC, x.id DESC LIMIT 1), \
                MIN(s.used_percent), MAX(s.used_percent), AVG(s.used_percent), COUNT(*) FROM limit_samples s \
-             WHERE datetime(s.observed_at) < datetime(?, '{cutoff}') AND datetime(s.observed_at) >= datetime(?, '-180 days') \
+             WHERE datetime(s.observed_at) < datetime(?, '{cutoff}') \
              GROUP BY s.provider_instance_id, strftime('{bucket_start}', s.observed_at), s.window_kind, s.window_duration_mins, s.resets_at \
              ON CONFLICT(provider_instance_id, granularity, bucket_start, window_kind, reset_segment) DO UPDATE SET \
                bucket_end=excluded.bucket_end, window_duration_mins=excluded.window_duration_mins, resets_at=excluded.resets_at, \
                start_used_percent=excluded.start_used_percent, end_used_percent=excluded.end_used_percent, min_used_percent=excluded.min_used_percent, \
                max_used_percent=excluded.max_used_percent, average_used_percent=excluded.average_used_percent, sample_count=excluded.sample_count"
         );
-        sqlx::query(&query).bind(granularity).bind(now).bind(now).execute(&mut **tx).await?;
+        sqlx::query(&query).bind(granularity).bind(now).execute(&mut **tx).await?;
         Ok(())
     }
 
@@ -810,6 +810,51 @@ mod tests {
                 "retention_state",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn retention_keeps_daily_quota_summaries_without_an_hourly_layer() {
+        let (storage, _database) = open_storage().await;
+        let provider_id = storage.provider_id(CODEX).await.expect("read provider id");
+        sqlx::query(
+            "INSERT INTO limit_samples \
+             (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
+             VALUES (?, 'primary', 25.0, 300, 1767301200, '2026-01-01T01:00:00Z')",
+        )
+        .bind(provider_id)
+        .execute(&storage.pool)
+        .await
+        .expect("insert old sample");
+        sqlx::query(
+            "INSERT INTO limit_rollups \
+             (provider_instance_id, granularity, bucket_start, bucket_end, window_kind, window_duration_mins, \
+              resets_at, reset_segment, start_used_percent, end_used_percent, min_used_percent, max_used_percent, \
+              average_used_percent, sample_count) \
+             VALUES (?, 'hourly', '2026-02-01T01:00:00Z', '2026-02-01T01:59:59Z', 'primary', 300, \
+              1769972400, '1769972400', 20.0, 30.0, 20.0, 30.0, 25.0, 2)",
+        )
+        .bind(provider_id)
+        .execute(&storage.pool)
+        .await
+        .expect("insert legacy hourly rollup");
+
+        storage.run_retention_at("2026-08-15T00:00:00Z").await.expect("run retention");
+
+        let samples: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM limit_samples")
+            .fetch_one(&storage.pool)
+            .await
+            .expect("count samples");
+        let hourly: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM limit_rollups WHERE granularity = 'hourly'")
+            .fetch_one(&storage.pool)
+            .await
+            .expect("count hourly rollups");
+        let daily: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM limit_rollups WHERE granularity = 'daily'")
+            .fetch_one(&storage.pool)
+            .await
+            .expect("count daily rollups");
+        assert_eq!(samples, 0);
+        assert_eq!(hourly, 0);
+        assert_eq!(daily, 2, "both old samples and legacy hourly rows become daily summaries");
     }
 
     #[tokio::test]

@@ -14,8 +14,9 @@ interface QuotaSectionProps {
 /**
  * A window whose expiry matches a recorded restart is the window that restart began, so
  * the note explains an expiry that otherwise looks like it moved for no reason. Only an
- * unplanned restart is worth saying anything about; the scheduled ones are the ordinary
- * case and stay in the history below.
+ * possible early restart is worth saying anything about; the scheduled ones are the ordinary
+ * case and stay in the history below. The detector is heuristic, so the UI must not present
+ * this classification as provider-confirmed fact.
  */
 function originOf(limit: LimitWindow, resets: LimitResetEvent[]): LimitResetEvent | undefined {
   return resets.find(
@@ -65,8 +66,8 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
       </div>
       {origin ? (
         <p className="quota-origin">
-          Started by an unplanned reset on {formatResetTimestamp(origin.anchoredAt)} —{" "}
-          {formatEarlyBy(origin.earlyBySeconds)}, at {origin.usedPercentBefore.toFixed(0)}% used.
+          Possibly restarted early on {formatResetTimestamp(origin.anchoredAt)} — estimated{" "}
+          {formatEarlyBy(origin.earlyBySeconds)}, after a {origin.usedPercentBefore.toFixed(0)}% usage reading.
         </p>
       ) : null}
     </div>
@@ -74,11 +75,11 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
 }
 
 function ResetHistory({ resets }: { resets: LimitResetEvent[] }) {
-  const unplanned = resets.filter((event) => event.classification === "unplanned").length;
+  const possibleEarly = resets.filter((event) => event.classification === "unplanned").length;
   return (
     <details className="reset-history">
       <summary>
-        Reset history <span>{resets.length} recorded, {unplanned} unplanned</span>
+        Reset history <span>{resets.length} recorded, {possibleEarly} possibly early</span>
       </summary>
       <ul>
         {resets.map((event) => (
@@ -88,7 +89,11 @@ function ResetHistory({ resets }: { resets: LimitResetEvent[] }) {
             </time>
             <span>{event.windowLabel}</span>
             <strong>{event.usedPercentBefore.toFixed(0)}% used</strong>
-            <em>{event.classification === "unplanned" ? formatEarlyBy(event.earlyBySeconds) : "on schedule"}</em>
+            <em>
+              {event.classification === "unplanned"
+                ? `possibly ${formatEarlyBy(event.earlyBySeconds)}`
+                : "appears on schedule"}
+            </em>
           </li>
         ))}
       </ul>

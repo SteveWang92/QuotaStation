@@ -37,16 +37,10 @@ fn read_live_blocking(plan_type: Option<String>) -> Result<LiveSnapshot> {
     let now_ms = jiff::Timestamp::now().as_millisecond();
     let mut timestamps: Vec<i64> = entries.iter().map(|entry| entry.timestamp.as_millis()).collect();
     let observed_at = timestamps.iter().copied().max().unwrap_or(now_ms).div_euclid(1_000);
-    // A limit the account actually reached is the one moment Claude states an exact
-    // restart, so it outranks the window this module infers from request times.
-    let announced_reset = entries
-        .iter()
-        .filter_map(|entry| entry.usage_limit_reset_time)
-        .map(|reset| reset.as_millis())
-        .filter(|reset| *reset > now_ms)
-        .max();
-
-    let resets_at_ms = announced_reset.or_else(|| current_window_end(&mut timestamps, now_ms));
+    // ccusage exposes usage_limit_reset_time without the limit bucket that produced it.
+    // Until that field's window semantics can be verified, assigning it to the five-hour
+    // window would turn an ambiguous log value into a confident but potentially wrong timer.
+    let resets_at_ms = current_window_end(&mut timestamps, now_ms);
 
     Ok(LiveSnapshot {
         plan_type,

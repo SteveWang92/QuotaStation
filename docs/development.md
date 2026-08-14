@@ -133,8 +133,8 @@ Historical range changes query the normalized daily rows in SQLite; they do not 
 new parse of the Codex session logs.
 
 Quota samples remain at their roughly five-minute source granularity for 14 days. SQLite
-retains hourly rollups through day 60 and daily rollups through day 180, keeping reset
-windows separate. Daily usage remains indefinitely. Startup performs this maintenance at
+then converts them directly into daily summaries retained indefinitely, keeping reset
+windows separate. Daily usage also remains indefinitely. Startup performs this maintenance at
 most once every 24 hours; provider refreshes do not run it, and it does not issue `VACUUM`.
 Successful refresh diagnostics remain for 30 days and failures for 180 days, while the
 newest result for each acquisition path is always preserved.
