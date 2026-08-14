@@ -40,13 +40,12 @@ pub struct WindowObservation {
 
 /// Compares one window against the previous reading of the same window. Every condition
 /// has to hold: usage collapsed, the expiry jumped forward, and the new window is
-/// anchored inside the gap between the two readings.
+/// anchored inside the gap between the two readings. The percentage range check also
+/// rejects a non-finite reading, since no comparison against NaN succeeds.
 pub fn detect(previous: WindowObservation, current: WindowObservation) -> Option<LimitResetEvent> {
     if current.observed_at < previous.observed_at
         || !(0.0..=100.0).contains(&previous.used_percent)
         || !(0.0..=100.0).contains(&current.used_percent)
-        || !previous.used_percent.is_finite()
-        || !current.used_percent.is_finite()
         || !(1..=MAX_WINDOW_DURATION_MINS).contains(&current.window_duration_mins)
     {
         return None;
