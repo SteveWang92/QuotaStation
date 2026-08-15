@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { saveAppSettings, useAppSettings } from "../appSettings";
 import { errorMessage } from "../errors";
 import { formatResetTimestamp } from "../format";
 import type { AppSettings, ClaudeStatusLineStatus, ProviderLabelStyle } from "../types";
@@ -15,7 +16,7 @@ import type { AppSettings, ClaudeStatusLineStatus, ProviderLabelStyle } from "..
  */
 export function ClaudeStatusLine() {
   const [status, setStatus] = useState<ClaudeStatusLineStatus | null>(null);
-  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const settings = useAppSettings();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -25,7 +26,6 @@ export function ClaudeStatusLine() {
     void invoke<ClaudeStatusLineStatus>("get_claude_status_line").then(setStatus).catch(() => {
       // The quota still comes from the session logs; this card is an offer, not a step.
     });
-    void invoke<AppSettings>("get_app_settings").then(setSettings).catch(() => {});
   }, []);
 
   const setInstalled = useCallback(async (installed: boolean) => {
@@ -42,18 +42,16 @@ export function ClaudeStatusLine() {
   }, []);
 
   const change = useCallback(async (patch: Partial<AppSettings>) => {
-    if (!settings) return;
-    const next = { ...settings, ...patch };
     setSavingSettings(true);
     setError(null);
     try {
-      setSettings(await invoke<AppSettings>("set_app_settings", { settings: next }));
+      await saveAppSettings(patch);
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
       setSavingSettings(false);
     }
-  }, [settings]);
+  }, []);
 
   if (!status) return null;
 

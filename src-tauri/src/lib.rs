@@ -28,7 +28,7 @@ pub fn run_claude_hook() -> bool {
 }
 use tauri::{
     Manager, PhysicalPosition, State,
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tokio::sync::{Mutex, RwLock};
@@ -621,7 +621,7 @@ mod quick_panel_tests {
 }
 
 #[cfg(windows)]
-fn create_desktop_shortcut(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn write_desktop_shortcut(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let shortcut_path = app
         .path()
@@ -638,57 +638,46 @@ fn create_desktop_shortcut(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 #[cfg(not(windows))]
-fn create_desktop_shortcut(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn write_desktop_shortcut(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Err("Desktop shortcuts are currently supported on Windows only.".to_string())
 }
 
+/// Whether Windows starts QuotaStation on sign-in. The plugin owns the registration, so
+/// this reports what it holds rather than a copy kept in the settings file.
+#[tauri::command]
+fn get_autostart(app: tauri::AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let manager = app.autolaunch();
+    let result = if enabled { manager.enable() } else { manager.disable() };
+    result.map_err(|error| {
+        sanitize::sanitize_error(&error.to_string(), "Start-with-Windows update failed")
+    })?;
+    Ok(manager.is_enabled().unwrap_or(enabled))
+}
+
+/// Puts a shortcut on the desktop. The location is the user's own desktop, so the path is
+/// neither reported back nor worth reporting.
+#[tauri::command]
+fn create_desktop_shortcut(app: tauri::AppHandle) -> Result<(), String> {
+    write_desktop_shortcut(&app)
+        .map(|_| ())
+        .map_err(|error| sanitize::sanitize_error(&error, "Desktop shortcut creation failed"))
+}
+
+/// The tray menu carries what has to work when no window is open: showing the dashboard,
+/// a manual refresh, and quitting. Every preference lives in the settings dialog instead,
+/// so a setting is changed in one place rather than in whichever surface found it first.
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show QuotaStation", true, None::<&str>)?;
     let refresh = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-    let autostart = CheckMenuItem::with_id(
-        app,
-        "autostart",
-        "Start with Windows",
-        true,
-        autostart_enabled,
-        None::<&str>,
-    )?;
-    let desktop_shortcut = MenuItem::with_id(
-        app,
-        "desktop_shortcut",
-        "Create desktop shortcut",
-        true,
-        None::<&str>,
-    )?;
-    let taskbar_widget_enabled = app.state::<Arc<AppState>>().settings().taskbar_widget_enabled;
-    let taskbar_widget = CheckMenuItem::with_id(
-        app,
-        "taskbar_widget",
-        "Show taskbar status",
-        true,
-        taskbar_widget_enabled,
-        None::<&str>,
-    )?;
     let separator_before_quit = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(
-        app,
-        &[
-            &show,
-            &refresh,
-            &separator,
-            &autostart,
-            &desktop_shortcut,
-            &taskbar_widget,
-            &separator_before_quit,
-            &quit,
-        ],
-    )?;
+    let menu = Menu::with_items(app, &[&show, &refresh, &separator_before_quit, &quit])?;
     let icon = app.default_window_icon().cloned().expect("application icon must be configured");
-    let autostart_menu_item = autostart.clone();
-    let taskbar_widget_menu_item = taskbar_widget.clone();
     TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
@@ -699,32 +688,6 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let app = app.clone();
                 let state = app.state::<Arc<AppState>>().inner().clone();
                 tauri::async_runtime::spawn(async move { refresh::refresh_all(&app, &state).await; });
-            }
-            "autostart" => {
-                let manager = app.autolaunch();
-                let enabled = manager.is_enabled().unwrap_or(false);
-                let result = if enabled { manager.disable() } else { manager.enable() };
-                match result {
-                    Ok(()) => {
-                        let _ = autostart_menu_item.set_checked(!enabled);
-                    }
-                    Err(error) => {
-                        log::write(format!("failed to update start-with-Windows setting: {error}"));
-                        let _ = autostart_menu_item.set_checked(enabled);
-                    }
-                }
-            }
-            "desktop_shortcut" => match create_desktop_shortcut(app) {
-                // The location is the user's own desktop and naming it adds nothing the
-                // person who clicked the item does not already know.
-                Ok(_) => log::write("desktop shortcut created"),
-                Err(error) => log::write(format!("failed to create desktop shortcut: {error}")),
-            },
-            "taskbar_widget" => {
-                let state = app.state::<Arc<AppState>>();
-                let enabled = !state.settings().taskbar_widget_enabled;
-                set_taskbar_widget_visible(app, enabled);
-                let _ = taskbar_widget_menu_item.set_checked(enabled);
             }
             "quit" => app.exit(0),
             _ => {}
@@ -873,7 +836,10 @@ pub fn run() {
             set_taskbar_widget_size,
             set_quick_panel_height,
             get_app_settings,
-            set_app_settings
+            set_app_settings,
+            get_autostart,
+            set_autostart,
+            create_desktop_shortcut
         ])
         .on_window_event(|window, event| {
             if window.label() == "quick-panel" && matches!(event, tauri::WindowEvent::Focused(false)) {

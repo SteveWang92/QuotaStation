@@ -2,6 +2,7 @@ import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { ClaudeFinishedNotifications, ClaudeStatusLine } from "./ClaudeStatusLine";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
+import { GeneralSettings } from "./GeneralSettings";
 import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
 
 interface SettingsDialogProps {
@@ -15,13 +16,14 @@ interface SettingsDialogProps {
 }
 
 /**
- * Where the quota sources are configured and where the acquisition paths report. Both are
- * occasional: they are read when something needs setting up or explaining, not while the
- * quota is being watched, so they belong behind one control rather than above the panels
- * the dashboard exists to show.
+ * Every setting the application has, and where the acquisition paths report. All of it is
+ * occasional: it is read when something needs setting up or explaining, not while the quota
+ * is being watched, so it belongs behind one control rather than above the panels the
+ * dashboard exists to show.
  *
- * They are also read together — a source is set up and then checked — so the dialog is one
- * page that scrolls rather than two tabs that hide each other.
+ * It is also read together — a source is set up and then checked — so the dialog is one page
+ * that scrolls rather than tabs that hide each other. The tray menu keeps only what has to
+ * work with no window open, so no preference has two homes.
  */
 export function SettingsDialog({
   open,
@@ -65,6 +67,9 @@ export function SettingsDialog({
           </button>
         </header>
         <div className="settings-body">
+          <section aria-label="Application">
+            <GeneralSettings />
+          </section>
           <section aria-label="Quota sources">
             {showClaude ? (
               <>

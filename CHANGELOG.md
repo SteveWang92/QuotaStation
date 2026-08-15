@@ -26,6 +26,7 @@ on `main`, with the matching section below as its notes.
 - Each quota window's source and observation time moved to the diagnostics section.
 - Installing the Claude Code status line now asks in a confirmation instead of a long note.
 - The status bar keeps only the settings button; each provider panel already states its own status.
+- Start with Windows, the taskbar status and the desktop shortcut moved into settings.
 
 ### Removed
 
