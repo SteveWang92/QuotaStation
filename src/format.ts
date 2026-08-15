@@ -2,6 +2,10 @@
  * The interface is English-only, so every surface formats numbers and dates the same way
  * instead of following whatever locale the machine reports. This single constant is the
  * place to revisit once the interface offers a language choice of its own.
+ *
+ * Clock times are always 24-hour. Quota windows restart at arbitrary times of day and the
+ * surfaces sit beside countdowns, so an am/pm marker is one more thing to read before two
+ * timestamps can be compared.
  */
 export const LOCALE = "en-AU";
 
@@ -24,6 +28,7 @@ export function formatTimestamp(value: string | null): string {
   return new Intl.DateTimeFormat(LOCALE, {
     dateStyle: "medium",
     timeStyle: "medium",
+    hour12: false,
   }).format(new Date(value));
 }
 
@@ -64,6 +69,7 @@ export function formatResetTimestamp(epochSeconds: number | null): string {
   return new Intl.DateTimeFormat(LOCALE, {
     dateStyle: "medium",
     timeStyle: "short",
+    hour12: false,
   }).format(new Date(epochSeconds * 1_000));
 }
 
@@ -86,13 +92,7 @@ function windowParts(durationMins: number) {
   return { value: durationMins, unit: "minute" };
 }
 
-export function formatWindowDuration(durationMins: number | null): string {
-  if (durationMins === null) return "Window duration unavailable";
-  const { value, unit } = windowParts(durationMins);
-  return `${value}-${unit} quota window`;
-}
-
-/** Badge form of the same duration for the taskbar surface, for example 5H or 7D. */
+/** Badge form of a window's duration for the taskbar surface, for example 5H or 7D. */
 export function formatWindowBadge(durationMins: number | null, fallback: string): string {
   if (durationMins === null) return fallback.slice(0, 2).toUpperCase();
   const { value, unit } = windowParts(durationMins);

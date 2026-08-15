@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "./errors";
 import { useSnapshot } from "./useSnapshot";
 import { ProviderSetup } from "./components/ProviderSetup";
-import { SettingsDialog, type SettingsTab } from "./components/SettingsDialog";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { QuotaSection } from "./components/QuotaSection";
 import { QuickPanel } from "./components/QuickPanel";
 import { TaskbarWidget } from "./components/TaskbarWidget";
@@ -48,6 +48,7 @@ const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
 const CURRENT_WINDOW_LABEL = getCurrentWindow().label;
 document.documentElement.classList.toggle("compact-window", CURRENT_WINDOW_LABEL !== "main");
 document.documentElement.classList.toggle("taskbar-window", CURRENT_WINDOW_LABEL === "taskbar-widget");
+document.documentElement.classList.toggle("quick-panel-window", CURRENT_WINDOW_LABEL === "quick-panel");
 
 /**
  * The two reads behind a provider fail independently — the quota windows can be current
@@ -70,7 +71,6 @@ function Dashboard() {
   const [commandError, setCommandError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("settings");
   const activeRangeRef = useRef(INITIAL_RANGE);
   // The usage history is long, so it shows one provider at a time while the quota
   // sections above show them all.
@@ -196,12 +196,10 @@ function Dashboard() {
   return (
     <main className="app-shell">
       <header className="app-header">
+        {/* Each provider names itself on its own panel below, so the header does not list
+            them a second time. */}
         <div className="identity">
           <h1>QuotaStation</h1>
-          <span className="provider-name">
-            {workspace.providers.map((provider) => provider.displayName).join(" · ")}
-          </span>
-          <p>Local quota and usage data from the installed provider clients.</p>
         </div>
         <div className="header-actions">
           <button type="button" onClick={() => void refresh()} disabled={refreshing}>
@@ -253,11 +251,10 @@ function Dashboard() {
       />
       <SettingsDialog
         open={settingsOpen}
-        tab={settingsTab}
-        onSelectTab={setSettingsTab}
         onClose={() => setSettingsOpen(false)}
         showClaude={showClaudeSettings}
         diagnostics={diagnostics}
+        providers={workspace.providers}
         interfaceError={interfaceError}
       />
     </main>

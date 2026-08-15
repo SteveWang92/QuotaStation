@@ -1,19 +1,27 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { formatRevision, formatTimestamp } from "../format";
-import type { DiagnosticsSnapshot } from "../types";
+import { formatResetTimestamp, formatRevision, formatTimestamp } from "../format";
+import type { DiagnosticsSnapshot, LimitWindow, ProviderSnapshot } from "../types";
 
 interface DiagnosticsPanelProps {
   diagnostics: DiagnosticsSnapshot;
+  /** The providers on screen, so each quota window can say where its reading came from. */
+  providers: ProviderSnapshot[];
   interfaceError: string | null;
 }
+
+const SOURCE_LABELS: Record<LimitWindow["source"], string> = {
+  app_server: "App server",
+  session_log: "Session log",
+  status_line: "Status line",
+};
 
 /**
  * Every acquisition path reports separately, because they fail separately: a provider that
  * answered and a watcher that stopped are two different problems, and the panel is where
  * the difference is visible. It shows no full paths and no session content.
  */
-export function DiagnosticsPanel({ diagnostics, interfaceError }: DiagnosticsPanelProps) {
+export function DiagnosticsPanel({ diagnostics, providers, interfaceError }: DiagnosticsPanelProps) {
   // A built application has no console, and the status-line bridge is a process that lives
   // for milliseconds inside Claude Code. The log is where both of them report, so the panel
   // has to be able to point at it.
@@ -62,6 +70,22 @@ export function DiagnosticsPanel({ diagnostics, interfaceError }: DiagnosticsPan
           {diagnostics.watcher.error ? <small className="diagnostic-error">{diagnostics.watcher.error}</small> : null}
         </div>
       </div>
+      {/* The quota rows themselves show the numbers and nothing about where they came
+          from. A window read from a session log is as current as the last session, one read
+          from a status line as current as the last turn, so which source produced it is
+          what explains an unexpected reading — and that belongs here. */}
+      {providers.some((provider) => provider.limits.length > 0) ? (
+        <div className="diagnostic-sources">
+          {providers.flatMap((provider) =>
+            provider.limits.map((limit) => (
+              <span key={`${provider.provider}-${limit.kind}`}>
+                {provider.displayName} {limit.label.toLowerCase()} · {SOURCE_LABELS[limit.source]} ·
+                as of {formatResetTimestamp(limit.observedAt)}
+              </span>
+            )),
+          )}
+        </div>
+      ) : null}
       <div className="diagnostic-revisions">
         <span>ccusage <code>{formatRevision(diagnostics.parserRevision)}</code></span>
         <span>Pricing <code>{formatRevision(diagnostics.pricingCatalogRevision)}</code></span>

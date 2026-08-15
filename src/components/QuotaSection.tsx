@@ -1,5 +1,5 @@
 import type { LimitResetEvent, LimitWindow } from "../types";
-import { formatCountdown, formatEarlyBy, formatResetTimestamp, formatWindowDuration } from "../format";
+import { formatCountdown, formatEarlyBy, formatResetTimestamp } from "../format";
 
 interface QuotaSectionProps {
   /** Display name of the provider these windows belong to, for labels and empty copy. */
@@ -32,17 +32,11 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
   const remaining = limit.remainingPercent;
   return (
     <div className={`quota-row${limit.freshness === "stale" ? " stale" : ""}`}>
+      {/* The label already names the duration, and which source produced the reading is a
+          diagnostic rather than something to read at a glance, so it lives in the settings
+          dialog beside the acquisition paths it belongs to. */}
       <div className="quota-label">
         <h2>{limit.label}</h2>
-        <p>{formatWindowDuration(limit.windowDurationMins)}</p>
-        <small>
-          {limit.source === "app_server"
-            ? "App server"
-            : limit.source === "status_line"
-              ? "Status line"
-              : "Session log"}{" "}
-          · as of {formatResetTimestamp(limit.observedAt)}
-        </small>
       </div>
       <div className="quota-meter" aria-label={`${limit.label} usage`}>
         <div className="quota-track">

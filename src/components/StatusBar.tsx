@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, SlidersHorizontal } from "lucide-react";
+import { AlertTriangle, SlidersHorizontal } from "lucide-react";
 import type { CompactStatus } from "../types";
 
 interface StatusBarProps {
@@ -9,14 +9,23 @@ interface StatusBarProps {
   onOpenSettings: () => void;
 }
 
+/**
+ * The provider panels already carry each provider's own status, so a healthy workspace has
+ * nothing left for the bar to add and it keeps only the control. Anything else is worth a
+ * sentence, because that is the case the panels above cannot fully explain on their own.
+ */
 export function StatusBar({ status, attention, onOpenSettings }: StatusBarProps) {
   const healthy = status.level === "healthy";
   return (
     <footer className={`status-bar ${status.level}`} style={{ "--status-color": status.color } as React.CSSProperties}>
       <div className="status-summary">
-        {healthy ? <CheckCircle2 aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}
-        <strong>{status.label}</strong>
-        <span className="status-message">{status.message}</span>
+        {healthy ? null : (
+          <>
+            <AlertTriangle aria-hidden="true" />
+            <strong>{status.label}</strong>
+            <span className="status-message">{status.message}</span>
+          </>
+        )}
         <button
           type="button"
           className={`settings-toggle${attention ? " attention" : ""}`}

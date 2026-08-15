@@ -320,13 +320,74 @@ fn show_main(app: &tauri::AppHandle) {
 /// The panel shows one column per provider, so its width follows how many are enabled.
 /// Sizing it as it opens keeps the edge anchoring below working from the real size.
 const QUICK_PANEL_COLUMN_WIDTH: u32 = 390;
+/// Only what the window opens at before the renderer has measured anything. Every height
+/// after the first render comes from [`set_quick_panel_height`].
 const QUICK_PANEL_HEIGHT: u32 = 730;
+/// The gap the panel keeps from every edge of the work area, shared by the placement and
+/// the growth below so a panel that grows stops exactly where one that opens would.
+const QUICK_PANEL_MARGIN: f64 = 12.0;
 
-fn quick_panel_size(providers: usize) -> tauri::PhysicalSize<u32> {
-    tauri::PhysicalSize::new(
-        QUICK_PANEL_COLUMN_WIDTH * providers.clamp(1, 2) as u32,
-        QUICK_PANEL_HEIGHT,
+fn quick_panel_size(providers: usize, height: u32) -> tauri::PhysicalSize<u32> {
+    tauri::PhysicalSize::new(QUICK_PANEL_COLUMN_WIDTH * providers.clamp(1, 2) as u32, height)
+}
+
+/// Where the panel sits once the renderer reports a different content height.
+///
+/// The bottom edge is the fixed one: the placement anchored it beside the tray, so the
+/// panel grows away from that edge rather than sliding out from under the pointer. Content
+/// taller than the work area is clamped to it, and the panel scrolls its own contents from
+/// there — there is nowhere left to grow.
+fn quick_panel_growth(
+    work_area: tauri::PhysicalRect<i32, u32>,
+    position: PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+    requested_height: u32,
+) -> (PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
+    let margin = QUICK_PANEL_MARGIN as i32;
+    let available = (work_area.size.height as f64 - QUICK_PANEL_MARGIN * 2.0).max(1.0) as u32;
+    let height = requested_height.clamp(1, available);
+    let top_limit = work_area.position.y + margin;
+    let bottom_limit = work_area.position.y + work_area.size.height as i32 - margin;
+    let bottom = (position.y + size.height as i32).min(bottom_limit);
+    let y = (bottom - height as i32).max(top_limit);
+    (
+        PhysicalPosition::new(position.x, y),
+        tauri::PhysicalSize::new(size.width, height),
     )
+}
+
+/// The height the renderer measured, in CSS pixels, for a window that has no frame to
+/// trim it to its contents.
+#[tauri::command]
+fn set_quick_panel_height(app: tauri::AppHandle, height: f64) -> Result<(), String> {
+    let Some(panel) = app.get_webview_window("quick-panel") else { return Ok(()) };
+    if !height.is_finite() || height <= 0.0 {
+        return Ok(());
+    }
+    let scale_factor = panel.scale_factor().map_err(|error| error.to_string())?;
+    let size = panel.outer_size().map_err(|error| error.to_string())?;
+    let position = panel.outer_position().map_err(|error| error.to_string())?;
+    let requested = (height * scale_factor).round().clamp(1.0, u32::MAX as f64) as u32;
+    let work_area = panel
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| *monitor.work_area());
+    let (next_position, next_size) = match work_area {
+        Some(work_area) => quick_panel_growth(work_area, position, size, requested),
+        // Without a monitor there is nothing to clamp against, so the request stands and
+        // the bottom edge still holds.
+        None => (
+            PhysicalPosition::new(position.x, position.y + size.height as i32 - requested as i32),
+            tauri::PhysicalSize::new(size.width, requested),
+        ),
+    };
+    if next_size == size && next_position == position {
+        return Ok(());
+    }
+    panel.set_size(next_size).map_err(|error| error.to_string())?;
+    panel.set_position(next_position).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn quick_panel_placement(
@@ -335,7 +396,7 @@ fn quick_panel_placement(
     tray_size: tauri::PhysicalSize<f64>,
     requested_size: tauri::PhysicalSize<u32>,
 ) -> (PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
-    let margin = 12.0;
+    let margin = QUICK_PANEL_MARGIN;
     let left = work_area.position.x as f64;
     let top = work_area.position.y as f64;
     let right = left + work_area.size.width as f64;
@@ -388,7 +449,10 @@ fn quick_panel_placement(
 fn toggle_quick_panel(app: &tauri::AppHandle, click: PhysicalPosition<f64>, tray_rect: tauri::Rect) {
     let Some(panel) = app.get_webview_window("quick-panel") else { return };
     let state = app.state::<Arc<AppState>>();
-    let requested_size = quick_panel_size(state.enabled_providers().len());
+    // The renderer has already sized the window to its contents, so the panel opens at the
+    // height it currently holds rather than at the height it was configured with.
+    let current_height = panel.outer_size().map(|size| size.height).unwrap_or(QUICK_PANEL_HEIGHT);
+    let requested_size = quick_panel_size(state.enabled_providers().len(), current_height);
     if let Ok(mut focus_lost_at) = state.quick_panel_focus_lost_at.lock()
         && focus_lost_at.is_some_and(|lost_at| lost_at.elapsed() < Duration::from_millis(500))
     {
@@ -440,6 +504,39 @@ mod quick_panel_tests {
             tauri::PhysicalSize::new(40.0, 40.0),
             tauri::PhysicalSize::new(780, 730),
         )
+    }
+
+    fn work_area(height: u32) -> tauri::PhysicalRect<i32, u32> {
+        tauri::PhysicalRect {
+            position: PhysicalPosition::new(0, 0),
+            size: tauri::PhysicalSize::new(1280, height),
+        }
+    }
+
+    #[test]
+    fn a_shorter_panel_keeps_its_bottom_edge_and_a_taller_one_grows_upwards() {
+        let position = PhysicalPosition::new(400, 300);
+        let size = tauri::PhysicalSize::new(390, 400);
+        let bottom = position.y + size.height as i32;
+        for requested in [200, 400, 620] {
+            let (next_position, next_size) = quick_panel_growth(work_area(1000), position, size, requested);
+            assert_eq!(next_size.height, requested);
+            assert_eq!(next_size.width, size.width, "only the height follows the contents");
+            assert_eq!(next_position.x, position.x);
+            assert_eq!(next_position.y + next_size.height as i32, bottom);
+        }
+    }
+
+    #[test]
+    fn a_panel_taller_than_the_work_area_is_clamped_inside_it() {
+        let (position, size) = quick_panel_growth(
+            work_area(720),
+            PhysicalPosition::new(400, 300),
+            tauri::PhysicalSize::new(390, 400),
+            2_000,
+        );
+        assert!(position.y >= 12, "the top margin is kept");
+        assert!(position.y + size.height as i32 <= 720 - 12, "so is the bottom one");
     }
 
     #[test]
@@ -704,7 +801,8 @@ pub fn run() {
             get_claude_status_line,
             set_claude_status_line,
             open_dashboard,
-            set_taskbar_widget_size
+            set_taskbar_widget_size,
+            set_quick_panel_height
         ])
         .on_window_event(|window, event| {
             if window.label() == "quick-panel" && matches!(event, tauri::WindowEvent::Focused(false)) {

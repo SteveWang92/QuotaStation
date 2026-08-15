@@ -2,18 +2,15 @@ import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { ClaudeStatusLine } from "./ClaudeStatusLine";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
-import type { DiagnosticsSnapshot } from "../types";
-
-export type SettingsTab = "settings" | "diagnostics";
+import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
 
 interface SettingsDialogProps {
   open: boolean;
-  tab: SettingsTab;
-  onSelectTab: (tab: SettingsTab) => void;
   onClose: () => void;
   /** Whether Claude Code left anything on this machine; its settings are pointless if not. */
   showClaude: boolean;
   diagnostics: DiagnosticsSnapshot;
+  providers: ProviderSnapshot[];
   interfaceError: string | null;
 }
 
@@ -22,14 +19,16 @@ interface SettingsDialogProps {
  * occasional: they are read when something needs setting up or explaining, not while the
  * quota is being watched, so they belong behind one control rather than above the panels
  * the dashboard exists to show.
+ *
+ * They are also read together — a source is set up and then checked — so the dialog is one
+ * page that scrolls rather than two tabs that hide each other.
  */
 export function SettingsDialog({
   open,
-  tab,
-  onSelectTab,
   onClose,
   showClaude,
   diagnostics,
+  providers,
   interfaceError,
 }: SettingsDialogProps) {
   const panel = useRef<HTMLDivElement | null>(null);
@@ -60,43 +59,30 @@ export function SettingsDialog({
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="settings-header">
-          <div className="settings-tabs" role="tablist">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "settings"}
-              className={tab === "settings" ? "active" : ""}
-              onClick={() => onSelectTab("settings")}
-            >
-              Settings
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "diagnostics"}
-              className={tab === "diagnostics" ? "active" : ""}
-              onClick={() => onSelectTab("diagnostics")}
-            >
-              Diagnostics
-            </button>
-          </div>
+          <h2>Settings and diagnostics</h2>
           <button type="button" className="settings-close" onClick={onClose} aria-label="Close settings">
             <X aria-hidden="true" />
           </button>
         </header>
         <div className="settings-body">
-          {tab === "settings" ? (
-            showClaude ? (
+          <section aria-label="Quota sources">
+            {showClaude ? (
               <ClaudeStatusLine />
             ) : (
               <p className="settings-empty">
                 QuotaStation reads whichever provider clients this machine has. Nothing here
                 needs setting up for the ones it found.
               </p>
-            )
-          ) : (
-            <DiagnosticsPanel diagnostics={diagnostics} interfaceError={interfaceError} />
-          )}
+            )}
+          </section>
+          <section aria-label="Diagnostics">
+            <h3 className="settings-section-heading">Diagnostics</h3>
+            <DiagnosticsPanel
+              diagnostics={diagnostics}
+              providers={providers}
+              interfaceError={interfaceError}
+            />
+          </section>
         </div>
       </div>
     </div>

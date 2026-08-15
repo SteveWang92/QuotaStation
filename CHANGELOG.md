@@ -7,6 +7,22 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Changed
+
+- The quick panel sizes itself to its contents, growing upwards from the tray, and only
+  scrolls once it has filled the available screen height.
+- Clock times are written on a 24-hour clock everywhere.
+- Settings and diagnostics are one taller scrolling page instead of two tabs.
+- Each quota window's source and observation time moved from the quota rows to the
+  diagnostics section, beside the acquisition paths they describe.
+
+### Removed
+
+- Duplicated status text: the workspace status bar now speaks only when something needs
+  attention, and the quick panel reports each provider's status once rather than three
+  times. The dashboard header no longer restates the provider names listed below it, and
+  the usage summary no longer counts models above the card that already lists them.
+
 ## [0.1.0] - 2026-08-15
 
 First release. QuotaStation reads the quota and usage data that the AI provider clients
