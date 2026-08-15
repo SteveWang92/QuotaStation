@@ -55,6 +55,11 @@ pub struct QuotaWindow {
     pub label: String,
     pub used_percent: f64,
     pub resets_at: Option<i64>,
+    /// How long the window runs, which is what turns a restart time into how far through it
+    /// the reading is. Defaulted rather than required so a summary written before this
+    /// existed still loads, one column poorer.
+    #[serde(default)]
+    pub window_minutes: Option<i64>,
 }
 
 /// The same duration vocabulary the taskbar badge uses, in lower case: `5h`, `7d`.
@@ -91,6 +96,7 @@ fn summarize(workspace: &WorkspaceSnapshot, now: i64) -> QuotaSummary {
                             label: short_window_label(limit.window_duration_mins, limit.kind),
                             used_percent: limit.used_percent?,
                             resets_at: limit.resets_at,
+                            window_minutes: limit.window_duration_mins,
                         })
                     })
                     .collect(),

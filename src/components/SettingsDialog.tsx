@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
-import { ClaudeStatusLine } from "./ClaudeStatusLine";
+import { ClaudeFinishedNotifications, ClaudeStatusLine } from "./ClaudeStatusLine";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
 
@@ -67,7 +67,10 @@ export function SettingsDialog({
         <div className="settings-body">
           <section aria-label="Quota sources">
             {showClaude ? (
-              <ClaudeStatusLine />
+              <>
+                <ClaudeStatusLine />
+                <ClaudeFinishedNotifications />
+              </>
             ) : (
               <p className="settings-empty">
                 QuotaStation reads whichever provider clients this machine has. Nothing here

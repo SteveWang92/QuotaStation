@@ -1,30 +1,19 @@
-import { AlertTriangle, SlidersHorizontal } from "lucide-react";
-import type { CompactStatus } from "../types";
+import { SlidersHorizontal } from "lucide-react";
 
 interface StatusBarProps {
-  /** The workspace status, so the bar reads the same whether one provider is shown or two. */
-  status: CompactStatus;
   attention: boolean;
   onOpenSettings: () => void;
 }
 
 /**
- * The provider panels already carry each provider's own status, so a healthy workspace has
- * nothing left for the bar to add and it keeps only the control. Anything else is worth a
- * sentence, because that is the case the panels above cannot fully explain on their own.
+ * Only the control. Every provider panel above already carries its own status in its own
+ * header, so anything this bar said about quota was the same sentence a second time — and
+ * a bar that reports nothing has no reason to be tinted either.
  */
-export function StatusBar({ status, attention, onOpenSettings }: StatusBarProps) {
-  const healthy = status.level === "healthy";
+export function StatusBar({ attention, onOpenSettings }: StatusBarProps) {
   return (
-    <footer className={`status-bar ${status.level}`} style={{ "--status-color": status.color } as React.CSSProperties}>
+    <footer className="status-bar">
       <div className="status-summary">
-        {healthy ? null : (
-          <>
-            <AlertTriangle aria-hidden="true" />
-            <strong>{status.label}</strong>
-            <span className="status-message">{status.message}</span>
-          </>
-        )}
         <button
           type="button"
           className={`settings-toggle${attention ? " attention" : ""}`}

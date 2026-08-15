@@ -28,16 +28,14 @@ pub enum CompactStatusLevel {
 pub struct CompactStatus {
     pub level: CompactStatusLevel,
     pub label: String,
-    pub message: String,
     pub color: String,
 }
 
 impl CompactStatus {
-    fn unavailable(provider: &str) -> Self {
+    fn unavailable() -> Self {
         Self {
             level: CompactStatusLevel::Unavailable,
             label: "Provider unavailable".to_string(),
-            message: format!("No current {provider} quota data is available."),
             color: "#ff7469".to_string(),
         }
     }
@@ -59,15 +57,14 @@ impl CompactStatusLevel {
 }
 
 /// The single status the tray icon, the taskbar accent, and the panel header show when
-/// several providers are on screen at once. It is the loudest provider's own status, so
-/// the wording still names which provider raised it.
+/// several providers are on screen at once. It is the loudest provider's own status.
 pub fn aggregate_status(snapshots: &[ProviderSnapshot]) -> CompactStatus {
     snapshots
         .iter()
         .map(|snapshot| &snapshot.compact_status)
         .max_by_key(|status| status.level.severity())
         .cloned()
-        .unwrap_or_else(|| CompactStatus::unavailable("provider"))
+        .unwrap_or(CompactStatus::unavailable())
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -230,7 +227,7 @@ impl ProviderSnapshot {
             models: Vec::new(),
             freshness: Freshness::Unavailable,
             stale_age_seconds: None,
-            compact_status: CompactStatus::unavailable(provider.display_name()),
+            compact_status: CompactStatus::unavailable(),
             last_attempt_at: None,
             last_live_success_at: None,
             last_history_success_at: None,
@@ -275,7 +272,6 @@ impl ProviderSnapshot {
     }
 
     pub fn update_compact_status(&mut self) {
-        let provider = self.display_name.clone();
         self.stale_age_seconds = self
             .limits
             .iter()
@@ -287,15 +283,11 @@ impl ProviderSnapshot {
             .max()
             .or_else(|| self.last_live_success_at.as_deref().and_then(age_seconds));
         self.compact_status = if self.freshness == Freshness::Unavailable || self.limits.is_empty() {
-            CompactStatus::unavailable(&provider)
+            CompactStatus::unavailable()
         } else if self.freshness == Freshness::Stale {
             CompactStatus {
                 level: CompactStatusLevel::Stale,
                 label: "Data stale".to_string(),
-                message: match self.stale_age_seconds {
-                    Some(age) => format!("{provider}'s last successful update was {} ago.", format_age(age)),
-                    None => format!("{provider}'s last successful update time is unknown."),
-                },
                 color: "#f0b84b".to_string(),
             }
         } else {
@@ -304,19 +296,16 @@ impl ProviderSnapshot {
                 Some(value) if value >= 90.0 => CompactStatus {
                     level: CompactStatusLevel::Critical,
                     label: "Quota critical".to_string(),
-                    message: format!("A {provider} quota window is 90% or more used."),
                     color: "#ff7469".to_string(),
                 },
                 Some(value) if value >= 70.0 => CompactStatus {
                     level: CompactStatusLevel::Warning,
                     label: "Quota running low".to_string(),
-                    message: format!("A {provider} quota window is 70% or more used."),
                     color: "#f0b84b".to_string(),
                 },
                 Some(_) => CompactStatus {
                     level: CompactStatusLevel::Healthy,
                     label: "Quota healthy".to_string(),
-                    message: format!("{provider} quota data is current."),
                     color: "#b5e835".to_string(),
                 },
                 // A window can be known without its allowance being published, which is
@@ -325,9 +314,6 @@ impl ProviderSnapshot {
                 None => CompactStatus {
                     level: CompactStatusLevel::Healthy,
                     label: "Window tracked".to_string(),
-                    message: format!(
-                        "{provider} publishes no usage percentage; the window timing comes from local history."
-                    ),
                     color: "#b5e835".to_string(),
                 },
             }
@@ -356,13 +342,6 @@ fn age_seconds(value: &str) -> Option<u64> {
     let observed = value.parse::<jiff::Timestamp>().ok()?;
     let elapsed = jiff::Timestamp::now().duration_since(observed);
     Some(elapsed.as_secs().max(0) as u64)
-}
-
-fn format_age(seconds: u64) -> String {
-    if seconds < 60 { return "less than a minute".to_string(); }
-    if seconds < 3_600 { return format!("{}m", seconds / 60); }
-    if seconds < 86_400 { return format!("{}h {}m", seconds / 3_600, seconds % 3_600 / 60); }
-    format!("{}d {}h", seconds / 86_400, seconds % 86_400 / 3_600)
 }
 
 #[cfg(test)]
@@ -460,10 +439,6 @@ mod tests {
         assert_eq!(snapshot.compact_status.level, CompactStatusLevel::Stale);
     }
 
-    #[test]
-    fn compact_status_names_the_provider_that_raised_it() {
-        assert!(fresh_snapshot(95.0).compact_status.message.contains("Codex"));
-    }
 
     #[test]
     fn the_aggregate_reports_the_loudest_provider() {

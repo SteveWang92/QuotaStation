@@ -143,6 +143,7 @@ button { font: inherit; }
 .provider-setup.compact { padding: 16px; }
 .provider-setup.compact h2 { font-size: 13px; }
 .provider-setup.compact p { font-size: 11px; }
+.provider-consent + .provider-consent { margin-top: 12px; }
 .provider-consent h2 { margin: 0 0 5px; font-size: 14px; font-weight: 650; }
 .provider-consent p { margin: 0; max-width: 78ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .provider-consent p + p { margin-top: 8px; }
@@ -238,17 +239,8 @@ button { font: inherit; }
   background: rgba(16, 23, 29, 0.78);
   font-size: 13px;
 }
-/* The status text is only present when something is wrong, so the row lays itself out
-   rather than reserving columns for text that is usually absent. */
-.status-summary { min-height: 56px; display: flex; align-items: center; gap: 14px; padding: 0 16px 0 20px; }
+.status-summary { min-height: 56px; display: flex; align-items: center; padding: 0 16px 0 20px; }
 .status-summary .settings-toggle { margin-left: auto; }
-.status-summary > svg { flex: none; width: 21px; height: 21px; }
-.status-summary > strong { flex: none; }
-/* A healthy bar holds nothing but the control, so tinting its border would draw a green
-   frame around a button that is not reporting anything. */
-.status-bar:not(.healthy) { border-color: color-mix(in srgb, var(--status-color) 48%, var(--line)); }
-.status-bar .status-summary > svg, .status-bar .status-summary > strong { color: var(--status-color); }
-.status-message { min-width: 0; color: #c8cdd0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-toggle { height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #4b5861; border-radius: 4px; color: #d4d8da; background: transparent; cursor: pointer; font-size: 12px; }
 .settings-toggle:hover { border-color: #76838d; background: #182129; }
 .settings-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }

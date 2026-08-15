@@ -130,6 +130,51 @@ export function ClaudeStatusLine() {
 }
 
 /**
+ * Claude Code's own completion notice reaches a handful of terminals, none of them the
+ * ordinary Windows ones, so a long turn finishes in silence and is found by going back to
+ * look. Claude Code will however run a command when the agent stops, which is enough.
+ */
+export function ClaudeFinishedNotifications() {
+  const [installed, setInstalled] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void invoke<boolean>("get_claude_notifications").then(setInstalled).catch(() => {});
+  }, []);
+
+  const change = useCallback(async (wanted: boolean) => {
+    setInstalled(wanted);
+    setError(null);
+    try {
+      setInstalled(await invoke<boolean>("set_claude_notifications", { installed: wanted }));
+    } catch (cause) {
+      setError(errorMessage(cause));
+      setInstalled(!wanted);
+    }
+  }, []);
+
+  if (installed === null) return null;
+
+  return (
+    <section className="provider-consent" aria-label="Claude Code completion notifications">
+      <div className="provider-consent-body">
+        <h2>Notify me when Claude Code finishes</h2>
+        <p>
+          A desktop notification when a turn ends, so a long one can be left running. This
+          adds a <code>Stop</code> hook to Claude Code's settings and leaves every other hook
+          alone. Nothing from the conversation is read or stored — the notification names the
+          project directory and nothing else.
+        </p>
+        {error ? <p className="provider-consent-error">{error}</p> : null}
+      </div>
+      <button type="button" onClick={() => void change(!installed)}>
+        {installed ? "Turn off notifications" : "Turn on notifications"}
+      </button>
+    </section>
+  );
+}
+
+/**
  * What installing actually does, at the moment it is being decided. The same words sat
  * permanently on the card before, where they were a wall of text in front of a setting
  * most people had already made up their mind about.

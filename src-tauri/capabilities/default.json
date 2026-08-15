@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default capability for every QuotaStation window",
   "windows": ["main", "quick-panel", "taskbar-widget"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "notification:default"]
 }

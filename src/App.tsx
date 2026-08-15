@@ -244,11 +244,7 @@ function Dashboard() {
           onSelectRange={selectRange}
         />
       ) : null}
-      <StatusBar
-        status={workspace.aggregate}
-        attention={diagnosticsAttention}
-        onOpenSettings={() => setSettingsOpen(true)}
-      />
+      <StatusBar attention={diagnosticsAttention} onOpenSettings={() => setSettingsOpen(true)} />
       <SettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}

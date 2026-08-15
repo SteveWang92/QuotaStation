@@ -18,13 +18,13 @@ use domain::{
     DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot, WatcherDiagnostics,
     WorkspaceSnapshot,
 };
-use providers::{ProviderKind, claude::statusline};
+use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
 
-/// Runs Claude Code's status-line command when this process was started as one, and reports
-/// whether it did. Exposed so `main` can return before any window exists.
-pub fn run_claude_status_line() -> bool {
-    statusline::run_bridge_if_requested()
+/// Runs whichever Claude Code hook this process was started as, and reports whether it ran
+/// one. Exposed so `main` can return before any window exists.
+pub fn run_claude_hook() -> bool {
+    statusline::run_bridge_if_requested() || notifications::run_hook_if_requested()
 }
 use tauri::{
     Manager, PhysicalPosition, State,
@@ -256,6 +256,55 @@ async fn set_claude_status_line(
     // one that is already there; the session watcher and the poll carry the rest.
     refresh::refresh_live_for_provider(&app, state.inner(), ProviderKind::Claude).await;
     Ok(statusline::bridge_status())
+}
+
+/// Whether Claude Code tells QuotaStation that a turn has finished.
+#[tauri::command]
+fn get_claude_notifications() -> bool {
+    notifications::installed()
+}
+
+/// Registers or removes QuotaStation as Claude Code's Stop hook, which is the only way to
+/// learn that a turn finished: Claude Code's own notification channel reaches a handful of
+/// terminals, and none of them are the ones this runs beside.
+#[tauri::command]
+fn set_claude_notifications(installed: bool) -> Result<bool, String> {
+    let result = if installed { notifications::install() } else { notifications::remove() };
+    result.map_err(|error| {
+        sanitize::sanitize_error(&error.to_string(), "Notification hook update failed")
+    })?;
+    Ok(notifications::installed())
+}
+
+/// Raises the desktop notification a finished Claude Code turn left behind.
+///
+/// The hook process cannot show one itself — it has no window, no event loop, and a few
+/// milliseconds to live — so it writes an event and this picks it up. Polling one path is
+/// what that costs; the alternative is a filesystem watcher for a file written a handful of
+/// times an hour.
+fn watch_for_finished_turns(app: tauri::AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+    tauri::async_runtime::spawn(async move {
+        let mut ticks = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            ticks.tick().await;
+            let Some(event) = notifications::take_pending(jiff::Timestamp::now().as_second())
+            else {
+                continue;
+            };
+            let body = match event.project {
+                Some(project) => format!("{project} · Claude Code finished responding"),
+                None => "Claude Code finished responding".to_string(),
+            };
+            if let Err(error) = app.notification().builder().title("QuotaStation").body(body).show()
+            {
+                // Windows refuses a toast from an application it cannot identify, which is
+                // silent from the user's side: the hook fires, nothing appears, and there is
+                // nowhere to look. The log is that place.
+                log::write(format!("desktop notification failed: {error}"));
+            }
+        }
+    });
 }
 
 #[tauri::command]
@@ -679,6 +728,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app);
         }))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -724,6 +774,7 @@ pub fn run() {
             state.detect_providers();
             app.manage(state.clone());
             build_tray(app)?;
+            watch_for_finished_turns(app.handle().clone());
             if state.settings().taskbar_widget_enabled {
                 set_taskbar_widget_visible(app.handle(), true);
             }
@@ -801,6 +852,8 @@ pub fn run() {
             reveal_log_file,
             get_claude_status_line,
             set_claude_status_line,
+            get_claude_notifications,
+            set_claude_notifications,
             open_dashboard,
             set_taskbar_widget_size,
             set_quick_panel_height,

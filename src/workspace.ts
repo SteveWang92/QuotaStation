@@ -26,7 +26,6 @@ export function emptySnapshot(
     compactStatus: {
       level: "unavailable",
       label: "Provider unavailable",
-      message: `No current ${displayName} quota data is available.`,
       color: "#ff7469",
     },
     lastAttemptAt: null,
@@ -58,7 +57,6 @@ export const EMPTY_WORKSPACE: WorkspaceSnapshot = {
   aggregate: {
     level: "unavailable",
     label: "Starting",
-    message: "Reading local provider data.",
     color: "#9aa4ad",
   },
 };

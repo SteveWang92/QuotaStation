@@ -59,6 +59,26 @@ struct StatusLineInput {
     worktree: Option<Worktree>,
     context_window: Option<ContextWindow>,
     cost: Option<Cost>,
+    effort: Option<Effort>,
+    thinking: Option<Thinking>,
+    fast_mode: Option<bool>,
+    pr: Option<PullRequest>,
+}
+
+#[derive(Deserialize)]
+struct Effort {
+    level: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Thinking {
+    enabled: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct PullRequest {
+    number: Option<u64>,
+    review_state: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -86,6 +106,16 @@ struct ContextWindow {
     total_input_tokens: Option<u64>,
     total_output_tokens: Option<u64>,
     context_window_size: Option<u64>,
+    current_usage: Option<CurrentUsage>,
+}
+
+/// The most recent API response's own token counts, which is the only place the cache is
+/// broken out from the rest of the input.
+#[derive(Deserialize)]
+struct CurrentUsage {
+    input_tokens: Option<u64>,
+    cache_creation_input_tokens: Option<u64>,
+    cache_read_input_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -303,6 +333,18 @@ fn view_of<'a>(input: Option<&'a StatusLineInput>, limits: Option<&RateLimits>) 
             let input = context.total_input_tokens?;
             Some((input + context.total_output_tokens.unwrap_or(0), size))
         }),
+        cache_hit: context.and_then(|context| cache_hit(context.current_usage.as_ref()?)),
+        effort: input
+            .and_then(|input| input.effort.as_ref())
+            .and_then(|effort| effort.level.as_deref()),
+        thinking: input
+            .and_then(|input| input.thinking.as_ref())
+            .and_then(|thinking| thinking.enabled)
+            .unwrap_or(false),
+        fast_mode: input.and_then(|input| input.fast_mode).unwrap_or(false),
+        pull_request: input
+            .and_then(|input| input.pr.as_ref())
+            .and_then(|pr| Some((pr.number?, pr.review_state.as_deref()))),
         session_cost_usd: input
             .and_then(|input| input.cost.as_ref())
             .and_then(|cost| cost.total_cost_usd),
@@ -325,6 +367,13 @@ struct StatusLineView<'a> {
     context_used: Option<f64>,
     /// Tokens in the window and the window's size, so the share has a magnitude beside it.
     context_tokens: Option<(u64, u64)>,
+    /// The share of the last response's input that was served from cache.
+    cache_hit: Option<f64>,
+    effort: Option<&'a str>,
+    thinking: bool,
+    fast_mode: bool,
+    /// The open pull request's number and, when it has one, its review state.
+    pull_request: Option<(u64, Option<&'a str>)>,
     session_cost_usd: Option<f64>,
     /// One entry per provider, this client's own first.
     quotas: Vec<QuotaSegment>,
@@ -351,14 +400,56 @@ const RESET: &str = "\u{1b}[0m";
 /// readings is scanned rather than read, and an uncoloured reading is one the eye has to
 /// stop and parse before it can rule it out.
 fn percent(used: f64) -> String {
+    marked_percent(used, None)
+}
+
+/// The same reading with its pace marker inside the colour, so the arrow reads as part of
+/// the number rather than as a symbol standing between two columns.
+fn marked_percent(used: f64, marker: Option<&str>) -> String {
     let value = used.clamp(0.0, 100.0);
-    let text = format!("{value:.0}%");
     let colour = match value {
         value if value >= 90.0 => RED,
         value if value >= 70.0 => YELLOW,
         _ => GREEN,
     };
-    format!("{colour}{text}{RESET}")
+    format!("{colour}{value:.0}%{}{RESET}", marker.unwrap_or(""))
+}
+
+/// How much of the last response's input came from cache rather than being sent again.
+///
+/// Cache reads are the cheap part of an expensive turn, so a session whose share has
+/// collapsed has just paid to rebuild a prefix — worth knowing while it is happening rather
+/// than in the bill afterwards.
+fn cache_hit(usage: &CurrentUsage) -> Option<f64> {
+    let read = usage.cache_read_input_tokens.unwrap_or(0);
+    let total =
+        read + usage.cache_creation_input_tokens.unwrap_or(0) + usage.input_tokens.unwrap_or(0);
+    (total > 0).then(|| read as f64 / total as f64 * 100.0)
+}
+
+/// How wide a lead or a lag has to be before the pace is worth marking. A burst of work
+/// early in a window is ordinary, and a marker that appears constantly says nothing.
+const PACE_BAND: f64 = 10.0;
+
+/// Whether a window is being spent faster or slower than it is elapsing.
+///
+/// This is deliberately the cheap comparison: the share consumed against the share of the
+/// window that has passed. It needs no history and no rate estimate, and it answers the one
+/// question worth a character here — at this pace, does the allowance outlast the window?
+fn pace(
+    used: f64,
+    resets_at: Option<i64>,
+    window_minutes: Option<i64>,
+    now: i64,
+) -> Option<&'static str> {
+    let minutes = window_minutes.filter(|minutes| *minutes > 0)? as f64;
+    let remaining = (resets_at? - now) as f64 / 60.0;
+    let elapsed = (minutes - remaining).clamp(0.0, minutes);
+    match used - elapsed / minutes * 100.0 {
+        difference if difference > PACE_BAND => Some("\u{2191}"),
+        difference if difference < -PACE_BAND => Some("\u{2193}"),
+        _ => None,
+    }
 }
 
 /// A token count in the width a status line can spare, written the way `/context` writes it
@@ -405,11 +496,26 @@ fn status_line(view: &StatusLineView) -> String {
         session.push(model.to_string());
     }
     if view.full_details {
+        if let Some(effort) = view.effort.filter(|level| !level.is_empty()) {
+            session.push(effort.to_string());
+        }
+        if view.fast_mode {
+            session.push("fast".to_string());
+        }
+        if view.thinking {
+            session.push("think".to_string());
+        }
         if let Some(directory) = &view.directory {
             session.push(directory.clone());
         }
         if let Some(branch) = &view.branch {
             session.push(branch.clone());
+        }
+        if let Some((number, state)) = view.pull_request {
+            session.push(match state.filter(|state| !state.is_empty()) {
+                Some(state) => format!("PR #{number} {state}"),
+                None => format!("PR #{number}"),
+            });
         }
         if let Some(used) = view.context_used {
             let share = percent(used);
@@ -419,6 +525,9 @@ fn status_line(view: &StatusLineView) -> String {
                 }
                 None => format!("ctx {share}"),
             });
+        }
+        if let Some(hit) = view.cache_hit {
+            session.push(format!("cache {hit:.0}%"));
         }
         // A session that has spent nothing yet has no figure worth a column.
         if let Some(cost) = view.session_cost_usd.filter(|cost| *cost > 0.0) {
@@ -441,7 +550,10 @@ fn status_line(view: &StatusLineView) -> String {
             // A window that has already restarted describes nothing that is running now.
             .filter(|window| window.resets_at.is_none_or(|resets_at| resets_at > view.now))
             .map(|window| {
-                let used = percent(window.used_percent);
+                let used = marked_percent(
+                    window.used_percent,
+                    pace(window.used_percent, window.resets_at, window.window_minutes, view.now),
+                );
                 match window.resets_at.and_then(|resets_at| countdown(resets_at, view.now)) {
                     Some(left) => format!("{} {used} ({left})", window.label),
                     None => format!("{} {used}", window.label),
@@ -478,16 +590,20 @@ fn status_line(view: &StatusLineView) -> String {
 /// disk: they describe the turn being rendered.
 fn windows_from_payload(limits: Option<&RateLimits>) -> Vec<QuotaWindow> {
     let Some(limits) = limits else { return Vec::new() };
-    [(limits.five_hour, "5h"), (limits.seven_day, "7d")]
-        .into_iter()
-        .filter_map(|(bucket, label)| {
-            let bucket = bucket?;
-            Some(QuotaWindow {
-                label: label.to_string(),
-                used_percent: bucket.used_percentage?.clamp(0.0, 100.0),
-                resets_at: bucket.resets_at,
-            })
+    [
+        (limits.five_hour, "5h", FIVE_HOUR_WINDOW_MINS),
+        (limits.seven_day, "7d", SEVEN_DAY_WINDOW_MINS),
+    ]
+    .into_iter()
+    .filter_map(|(bucket, label, minutes)| {
+        let bucket = bucket?;
+        Some(QuotaWindow {
+            label: label.to_string(),
+            used_percent: bucket.used_percentage?.clamp(0.0, 100.0),
+            resets_at: bucket.resets_at,
+            window_minutes: Some(minutes),
         })
+    })
         .collect()
 }
 
@@ -607,7 +723,7 @@ pub fn bridge_status() -> BridgeStatus {
     }
 }
 
-fn settings_path() -> Result<PathBuf> {
+pub(super) fn settings_path() -> Result<PathBuf> {
     Ok(claude_home()
         .context("locate the Claude Code configuration directory")?
         .join("settings.json"))
@@ -617,7 +733,7 @@ fn load_settings(path: &Path) -> Result<serde_json::Value> {
     Ok(load_settings_with_source(path)?.0)
 }
 
-fn load_settings_with_source(path: &Path) -> Result<(serde_json::Value, Option<Vec<u8>>)> {
+pub(super) fn load_settings_with_source(path: &Path) -> Result<(serde_json::Value, Option<Vec<u8>>)> {
     let source = match std::fs::read(path) {
         Ok(source) => source,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -698,7 +814,7 @@ fn remove_from(path: &Path) -> Result<()> {
     write_settings(path, &settings, source.as_deref())
 }
 
-fn write_settings(
+pub(super) fn write_settings(
     path: &Path,
     settings: &serde_json::Value,
     original: Option<&[u8]>,
@@ -788,6 +904,11 @@ mod tests {
             branch: None,
             context_used: None,
             context_tokens: None,
+            cache_hit: None,
+            effort: None,
+            thinking: false,
+            fast_mode: false,
+            pull_request: None,
             session_cost_usd: None,
             quotas,
             full_details: true,
@@ -800,6 +921,7 @@ mod tests {
             label: label.to_string(),
             used_percent: used,
             resets_at: resets_in.map(|seconds| NOW + seconds),
+            window_minutes: None,
         }
     }
 
@@ -903,6 +1025,47 @@ mod tests {
         assert_eq!(windows.len(), 1, "a bucket with no percentage renders nothing");
         assert_eq!(windows[0].label, "5h");
         assert_eq!(windows[0].used_percent, 23.5);
+    }
+
+    #[test]
+    fn the_session_row_carries_what_the_session_is_set_to_do() {
+        let mut session = view(Some("Opus"), Vec::new());
+        session.effort = Some("high");
+        session.thinking = true;
+        session.fast_mode = true;
+        session.pull_request = Some((1234, Some("pending")));
+        session.cache_hit = Some(78.4);
+        assert_eq!(
+            plain(&status_line(&session)),
+            "Opus · high · fast · think · PR #1234 pending · cache 78%"
+        );
+    }
+
+    #[test]
+    fn the_cache_share_counts_every_input_token_the_response_reported() {
+        let usage = CurrentUsage {
+            input_tokens: Some(1_000),
+            cache_creation_input_tokens: Some(1_000),
+            cache_read_input_tokens: Some(8_000),
+        };
+        assert_eq!(cache_hit(&usage), Some(80.0));
+        let empty = CurrentUsage {
+            input_tokens: None,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        };
+        assert_eq!(cache_hit(&empty), None, "nothing reported is not a zero hit rate");
+    }
+
+    #[test]
+    fn the_pace_marker_compares_the_share_used_against_the_share_elapsed() {
+        // Half of a five-hour window has passed.
+        let halfway = Some(NOW + 150 * 60);
+        assert_eq!(pace(80.0, halfway, Some(300), NOW), Some("↑"), "spent well ahead of time");
+        assert_eq!(pace(20.0, halfway, Some(300), NOW), Some("↓"), "spent well behind time");
+        assert_eq!(pace(55.0, halfway, Some(300), NOW), None, "inside the band");
+        assert_eq!(pace(80.0, None, Some(300), NOW), None, "no restart time, no pace");
+        assert_eq!(pace(80.0, halfway, None, NOW), None, "no duration, no pace");
     }
 
     #[test]

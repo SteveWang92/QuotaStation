@@ -12,6 +12,9 @@ on `main`, with the matching section below as its notes.
 - Claude Code's status line now shows every provider's quota, not only Claude's own.
 - Settings for the status line: how much it reports, and how providers are named in it.
 - The status line names the tokens in the context window beside the share used.
+- A desktop notification when Claude Code finishes a turn, offered in settings.
+- The status line reports cache hits, effort, thinking, fast mode and the open pull request.
+- Quota windows in the status line mark whether they are being spent faster than they elapse.
 
 ### Changed
 
@@ -21,6 +24,7 @@ on `main`, with the matching section below as its notes.
 - Settings and diagnostics are one taller scrolling page instead of two tabs.
 - Each quota window's source and observation time moved to the diagnostics section.
 - Installing the Claude Code status line now asks in a confirmation instead of a long note.
+- The status bar keeps only the settings button; each provider panel already states its own status.
 
 ### Removed
 

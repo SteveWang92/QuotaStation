@@ -6,7 +6,6 @@ export type ProviderKey = "codex" | "claude";
 export interface CompactStatus {
   level: "healthy" | "warning" | "critical" | "stale" | "unavailable";
   label: string;
-  message: string;
   color: string;
 }
 

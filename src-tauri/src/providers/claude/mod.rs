@@ -1,4 +1,5 @@
 mod history;
+pub mod notifications;
 mod plan;
 mod session;
 mod sessions;
