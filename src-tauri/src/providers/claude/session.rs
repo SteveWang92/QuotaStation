@@ -54,6 +54,7 @@ fn read_live_blocking(plan_type: Option<String>) -> Result<LiveSnapshot> {
             source: WindowSource::SessionLog,
             observed_at,
             freshness: Freshness::Fresh,
+            status_color: String::new(),
         }],
         // Claude grants no reset inventory of the kind Codex publishes.
         earned_reset_count: None,

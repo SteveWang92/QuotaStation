@@ -15,6 +15,7 @@ on `main`, with the matching section below as its notes.
 - A desktop notification when Claude Code finishes a turn, offered in settings.
 - The status line reports cache hits, effort, thinking, fast mode and the open pull request.
 - Quota windows in the status line mark whether they are being spent faster than they elapse.
+- Diagnostics name the running version and which build it is.
 
 ### Changed
 
@@ -32,6 +33,7 @@ on `main`, with the matching section below as its notes.
 
 ### Fixed
 
+- Each quota window is coloured by its own reading rather than the provider's loudest one.
 - The settings button no longer sits inside an empty bordered strip.
 - The settings dialog is tall enough for its own contents.
 

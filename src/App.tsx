@@ -43,6 +43,8 @@ const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
   retention: { status: "pending", lastCompletedAt: null, error: null },
   parserRevision: "",
   pricingCatalogRevision: "",
+  appVersion: "",
+  buildKind: "",
 };
 
 const CURRENT_WINDOW_LABEL = getCurrentWindow().label;
@@ -226,7 +228,6 @@ function Dashboard() {
               limits={provider.limits}
               earnedResetCount={provider.earnedResetCount}
               resets={provider.recentResets}
-              statusColor={provider.compactStatus.color}
             />
           </section>
         ))}

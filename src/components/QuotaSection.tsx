@@ -7,7 +7,6 @@ interface QuotaSectionProps {
   limits: LimitWindow[];
   earnedResetCount: number | null;
   resets: LimitResetEvent[];
-  statusColor: string;
   compact?: boolean;
 }
 
@@ -30,7 +29,12 @@ function originOf(limit: LimitWindow, resets: LimitResetEvent[]): LimitResetEven
 function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEvent }) {
   const used = limit.usedPercent;
   return (
-    <div className={`quota-row${limit.freshness === "stale" ? " stale" : ""}`}>
+    // Each window is coloured by its own reading: the provider's status is the loudest of
+    // them, and inheriting it would paint an untouched window in the colour of a spent one.
+    <div
+      className={`quota-row${limit.freshness === "stale" ? " stale" : ""}`}
+      style={{ "--quota-status-color": limit.statusColor } as React.CSSProperties}
+    >
       {/* The label already names the duration, and which source produced the reading is a
           diagnostic rather than something to read at a glance, so it lives in the settings
           dialog beside the acquisition paths it belongs to. */}
@@ -94,12 +98,11 @@ function ResetHistory({ resets }: { resets: LimitResetEvent[] }) {
   );
 }
 
-export function QuotaSection({ provider, limits, earnedResetCount, resets, statusColor, compact = false }: QuotaSectionProps) {
+export function QuotaSection({ provider, limits, earnedResetCount, resets, compact = false }: QuotaSectionProps) {
   return (
     <section
       className={`quota-section${compact ? " compact" : ""}`}
       aria-label={`${provider} quota windows`}
-      style={{ "--quota-status-color": statusColor } as React.CSSProperties}
     >
       {limits.length > 0 ? (
         limits.map((limit) => <QuotaRow key={limit.kind} limit={limit} origin={originOf(limit, resets)} />)

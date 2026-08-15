@@ -168,6 +168,7 @@ mod tests {
                 source: WindowSource::AppServer,
                 observed_at: 1_800_000_000,
                 freshness: Freshness::Fresh,
+                status_color: String::new(),
             },
             // Reported but unreadable: no percentage, so there is nothing to render.
             LimitWindow {
@@ -179,6 +180,7 @@ mod tests {
                 source: WindowSource::AppServer,
                 observed_at: 1_800_000_000,
                 freshness: Freshness::Fresh,
+                status_color: String::new(),
             },
         ];
         codex.today.total = 1_234;

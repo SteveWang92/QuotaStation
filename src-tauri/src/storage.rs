@@ -571,6 +571,7 @@ impl Storage {
                 source: WindowSource::parse(&row.try_get::<String, _>("source").ok()?)?,
                 observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
                 freshness: Freshness::Stale,
+                status_color: String::new(),
             })
         }).collect();
 
@@ -984,6 +985,7 @@ mod tests {
                 source: WindowSource::AppServer,
                 observed_at: jiff::Timestamp::now().as_second(),
                 freshness: Freshness::Fresh,
+                status_color: String::new(),
             }],
         };
         storage.save_live(CODEX, &live, "2026-08-11T00:00:00Z").await.expect("save live");
@@ -1011,6 +1013,7 @@ mod tests {
                 source: WindowSource::AppServer,
                 observed_at: resets_at - WEEK_MINUTES * 60,
                 freshness: Freshness::Fresh,
+                status_color: String::new(),
             }],
         }
     }

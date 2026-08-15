@@ -199,6 +199,7 @@ fn windows_from(reading: &Reading, now: i64) -> Result<Vec<LimitWindow>> {
             source: WindowSource::StatusLine,
             observed_at: reading.observed_at,
             freshness: Freshness::Fresh,
+            status_color: String::new(),
         });
     }
     if reading.five_hour.is_some() || reading.seven_day.is_some() {

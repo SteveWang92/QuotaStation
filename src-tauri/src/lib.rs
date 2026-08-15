@@ -307,8 +307,22 @@ fn watch_for_finished_turns(app: tauri::AppHandle) {
     });
 }
 
+/// Which build is running, told apart the way the machine can tell them apart: the compiler
+/// knows debug from release, and an installer leaves an uninstaller beside the executable
+/// while a portable copy does not.
+fn build_kind() -> String {
+    if cfg!(debug_assertions) {
+        return "debug".to_string();
+    }
+    let installed = std::env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(|dir| dir.join("uninstall.exe")))
+        .is_some_and(|uninstaller| uninstaller.exists());
+    if installed { "release, installed".to_string() } else { "release, portable".to_string() }
+}
+
 #[tauri::command]
-async fn get_diagnostics(state: State<'_, Arc<AppState>>) -> Result<DiagnosticsSnapshot, String> {
+async fn get_diagnostics(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<DiagnosticsSnapshot, String> {
     let mut acquisitions = Vec::new();
     for provider in state.enabled_providers() {
         acquisitions.extend(
@@ -334,6 +348,8 @@ async fn get_diagnostics(state: State<'_, Arc<AppState>>) -> Result<DiagnosticsS
         retention,
         parser_revision: domain::CCUSAGE_REVISION.to_string(),
         pricing_catalog_revision: domain::PRICING_CATALOG_REVISION.to_string(),
+        app_version: app.package_info().version.to_string(),
+        build_kind: build_kind(),
     })
 }
 

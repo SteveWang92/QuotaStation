@@ -38,7 +38,7 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
                     <b
                       style={{
                         width: `${Math.min(100, Math.max(0, limit.usedPercent))}%`,
-                        background: statusColor,
+                        background: limit.statusColor,
                       }}
                     />
                   </i>
@@ -56,7 +56,7 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
                     </em>
                   ) : (
                     <>
-                      {percent !== null && <em style={{ color: statusColor }}>{percent}</em>}
+                      {percent !== null && <em style={{ color: limit.statusColor }}>{percent}</em>}
                       {percent !== null && countdown !== null && (
                         <span className="taskbar-dot" aria-hidden="true">
                           ·

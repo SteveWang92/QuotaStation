@@ -105,6 +105,7 @@ mod tests {
             source: WindowSource::StatusLine,
             observed_at: 100,
             freshness: Freshness::Fresh,
+            status_color: String::new(),
         }
     }
 

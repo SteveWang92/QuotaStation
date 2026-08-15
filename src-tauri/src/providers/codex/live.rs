@@ -262,6 +262,7 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
             source: WindowSource::AppServer,
             observed_at,
             freshness: Freshness::Fresh,
+            status_color: String::new(),
         });
     }
     if limits.is_empty() {

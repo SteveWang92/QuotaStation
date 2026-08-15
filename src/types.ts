@@ -12,6 +12,8 @@ export interface CompactStatus {
 export interface LimitWindow {
   kind: "primary" | "secondary";
   label: string;
+  /** This window's own colour, from the same thresholds the provider status uses. */
+  statusColor: string;
   usedPercent: number | null;
   windowDurationMins: number | null;
   resetsAt: number | null;
@@ -140,6 +142,9 @@ export interface DiagnosticsSnapshot {
   retention: { status: string; lastCompletedAt: string | null; error: string | null };
   parserRevision: string;
   pricingCatalogRevision: string;
+  appVersion: string;
+  /** debug, release portable, or release installed — which copy of QuotaStation this is. */
+  buildKind: string;
 }
 
 /** How a provider is named where the name sits beside a reading rather than above one. */

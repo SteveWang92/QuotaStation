@@ -21,7 +21,6 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
         limits={snapshot.limits}
         earnedResetCount={snapshot.earnedResetCount}
         resets={snapshot.recentResets}
-        statusColor={snapshot.compactStatus.color}
       />
       <section className="quick-usage" aria-label={`${snapshot.displayName} usage today`}>
         <div><span>Today</span><strong>{formatNumber(snapshot.today.total)}</strong><small>tokens</small></div>
