@@ -27,6 +27,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{Freshness, LimitKind, LimitWindow, WindowSource};
+use crate::summary::QuotaWindow;
 
 use super::{FIVE_HOUR_WINDOW_MINS, SEVEN_DAY_WINDOW_MINS, claude_home};
 
@@ -51,11 +52,38 @@ const MAX_READING_AGE_SECS: i64 = 14 * 24 * 60 * 60;
 struct StatusLineInput {
     rate_limits: Option<RateLimits>,
     model: Option<Model>,
+    cwd: Option<String>,
+    workspace: Option<Workspace>,
+    worktree: Option<Worktree>,
+    context_window: Option<ContextWindow>,
+    cost: Option<Cost>,
 }
 
 #[derive(Deserialize)]
 struct Model {
     display_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Workspace {
+    current_dir: Option<String>,
+    git_worktree: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Worktree {
+    branch: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ContextWindow {
+    used_percentage: Option<f64>,
+    remaining_percentage: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct Cost {
+    total_cost_usd: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -230,40 +258,233 @@ pub fn run_bridge_if_requested() -> bool {
     {
         let _ = std::fs::remove_file(cache);
     }
-    let model = input
-        .as_ref()
-        .and_then(|input| input.model.as_ref())
-        .and_then(|model| model.display_name.clone());
-    println!(
-        "{}",
-        status_line(
-            model.as_deref(),
-            limits.and_then(|limits| limits.five_hour),
-            limits.and_then(|limits| limits.seven_day),
-        )
-    );
+    println!("{}", status_line(&view_of(input.as_ref(), limits)));
     true
 }
 
-/// What Claude Code shows while the bridge is installed. It reports the same two windows
-/// QuotaStation now has, so installing the bridge adds a status line rather than taking the
-/// row for nothing.
-fn status_line(model: Option<&str>, five_hour: Option<Bucket>, seven_day: Option<Bucket>) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(model) = model.filter(|model| !model.is_empty()) {
-        parts.push(model.to_string());
+/// Reads the payload once into the shape the renderer draws from. Every field is optional
+/// in the payload and stays optional here: a missing one costs its column and nothing else.
+fn view_of<'a>(input: Option<&'a StatusLineInput>, limits: Option<&RateLimits>) -> StatusLineView<'a> {
+    let now = jiff::Timestamp::now().as_second();
+    let workspace = input.and_then(|input| input.workspace.as_ref());
+    let current_dir = workspace
+        .and_then(|workspace| workspace.current_dir.as_deref())
+        .or_else(|| input.and_then(|input| input.cwd.as_deref()))
+        .map(Path::new);
+    let context = input.and_then(|input| input.context_window.as_ref());
+    StatusLineView {
+        model: input
+            .and_then(|input| input.model.as_ref())
+            .and_then(|model| model.display_name.as_deref()),
+        // The last segment only: the full path is this machine's business, and the status
+        // line has room for the part that identifies the project.
+        directory: current_dir
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned()),
+        branch: input
+            .and_then(|input| input.worktree.as_ref())
+            .and_then(|worktree| worktree.branch.clone())
+            .or_else(|| workspace.and_then(|workspace| workspace.git_worktree.clone()))
+            .or_else(|| current_dir.and_then(branch_at)),
+        context_remaining: context.and_then(|context| {
+            context
+                .remaining_percentage
+                .or_else(|| context.used_percentage.map(|used| 100.0 - used))
+        }),
+        session_cost_usd: input
+            .and_then(|input| input.cost.as_ref())
+            .and_then(|cost| cost.total_cost_usd),
+        quotas: quota_segments(windows_from_payload(limits), now),
+        now,
     }
-    for (bucket, label) in [(five_hour, "5h"), (seven_day, "7d")] {
-        if let Some(used) = bucket.and_then(|bucket| bucket.used_percentage) {
-            parts.push(format!("{label} {:.0}% used", used.clamp(0.0, 100.0)));
+}
+
+/// Everything the status line is drawn from, gathered before anything is rendered so the
+/// rendering itself touches neither the payload nor the disk.
+struct StatusLineView<'a> {
+    model: Option<&'a str>,
+    directory: Option<String>,
+    branch: Option<String>,
+    /// Percentage of the context window still free, which is the figure Claude Code's own
+    /// footer reports and the one a status line replacing that row has to carry.
+    context_remaining: Option<f64>,
+    session_cost_usd: Option<f64>,
+    /// One entry per provider, this client's own first.
+    quotas: Vec<QuotaSegment>,
+    now: i64,
+}
+
+struct QuotaSegment {
+    short_name: String,
+    windows: Vec<QuotaWindow>,
+}
+
+const RED: &str = "\u{1b}[31m";
+const YELLOW: &str = "\u{1b}[33m";
+const RESET: &str = "\u{1b}[0m";
+
+/// A percentage remaining, coloured on the same two thresholds the interface uses for its
+/// warning and critical statuses, so the status line and the application never disagree
+/// about when a window has become worth acting on.
+fn percent(remaining: f64) -> String {
+    let value = remaining.clamp(0.0, 100.0);
+    let text = format!("{value:.0}%");
+    match value {
+        value if value <= 10.0 => format!("{RED}{text}{RESET}"),
+        value if value <= 30.0 => format!("{YELLOW}{text}{RESET}"),
+        _ => text,
+    }
+}
+
+/// How long a window has left, in the width a status line can spare. Whole days carry the
+/// point on their own; below a day the minutes are what decide whether to keep working.
+fn countdown(resets_at: i64, now: i64) -> Option<String> {
+    let minutes = (resets_at - now) / 60;
+    if minutes <= 0 {
+        return None;
+    }
+    let (days, hours, minutes) = (minutes / 1_440, (minutes % 1_440) / 60, minutes % 60);
+    Some(match (days, hours) {
+        (0, 0) => format!("{minutes}m"),
+        (0, hours) => format!("{hours}h{minutes:02}m"),
+        (days, _) => format!("{days}d"),
+    })
+}
+
+/// What Claude Code shows while the bridge is installed.
+///
+/// Two rows: what this session is, and what is left across every provider QuotaStation
+/// watches. The second row is the whole reason the bridge is worth its screen — Claude Code
+/// knows its own quota and nothing about anyone else's, and this is the one place both can
+/// be read without leaving the terminal.
+fn status_line(view: &StatusLineView) -> String {
+    let mut session: Vec<String> = Vec::new();
+    if let Some(model) = view.model.filter(|model| !model.is_empty()) {
+        session.push(model.to_string());
+    }
+    if let Some(directory) = &view.directory {
+        session.push(directory.clone());
+    }
+    if let Some(branch) = &view.branch {
+        session.push(branch.clone());
+    }
+    if let Some(remaining) = view.context_remaining {
+        session.push(format!("ctx {}", percent(remaining)));
+    }
+    // A session that has spent nothing yet has no figure worth a column.
+    if let Some(cost) = view.session_cost_usd.filter(|cost| *cost > 0.0) {
+        session.push(format!("${cost:.2}"));
+    }
+
+    let mut quotas: Vec<String> = Vec::new();
+    for segment in &view.quotas {
+        let windows: Vec<String> = segment
+            .windows
+            .iter()
+            // A window that has already restarted describes nothing that is running now.
+            .filter(|window| window.resets_at.is_none_or(|resets_at| resets_at > view.now))
+            .map(|window| {
+                let remaining = percent(window.remaining_percent);
+                match window.resets_at.and_then(|resets_at| countdown(resets_at, view.now)) {
+                    Some(left) => format!("{} {remaining} ({left})", window.label),
+                    None => format!("{} {remaining}", window.label),
+                }
+            })
+            .collect();
+        if !windows.is_empty() {
+            quotas.push(format!("{} {}", segment.short_name, windows.join(" ")));
         }
     }
-    if parts.is_empty() {
+
+    let lines: Vec<String> = [session.join(" · "), quotas.join(" · ")]
+        .into_iter()
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
         // Claude Code hands out no rate limits on API-key and enterprise sign-ins, and an
         // empty line would read as a broken status line rather than an absent quota.
         return "QuotaStation".to_string();
     }
-    parts.join(" · ")
+    lines.join("\n")
+}
+
+/// The quota windows this very payload reported, which are always newer than anything on
+/// disk: they describe the turn being rendered.
+fn windows_from_payload(limits: Option<&RateLimits>) -> Vec<QuotaWindow> {
+    let Some(limits) = limits else { return Vec::new() };
+    [(limits.five_hour, "5h"), (limits.seven_day, "7d")]
+        .into_iter()
+        .filter_map(|(bucket, label)| {
+            let bucket = bucket?;
+            Some(QuotaWindow {
+                label: label.to_string(),
+                remaining_percent: (100.0 - bucket.used_percentage?).clamp(0.0, 100.0),
+                resets_at: bucket.resets_at,
+            })
+        })
+        .collect()
+}
+
+/// Every provider's quota, this client's first.
+///
+/// Claude's own windows come from the payload when it carried them, because those describe
+/// this turn while the summary describes the last refresh. Everything else can only come
+/// from the summary, and an absent or stale summary simply leaves those providers out —
+/// the row says less rather than saying something no longer true.
+fn quota_segments(payload_windows: Vec<QuotaWindow>, now: i64) -> Vec<QuotaSegment> {
+    let summary = crate::summary::load_fresh(now);
+    let mut recorded = summary.map(|summary| summary.providers).unwrap_or_default();
+    let claude = recorded.iter().position(|provider| provider.provider == "claude");
+    let mut segments = Vec::new();
+    match (payload_windows.is_empty(), claude) {
+        (false, index) => {
+            let short_name = index
+                .map(|index| recorded.remove(index).short_name)
+                .unwrap_or_else(|| "cc".to_string());
+            segments.push(QuotaSegment { short_name, windows: payload_windows });
+        }
+        (true, Some(index)) => {
+            let provider = recorded.remove(index);
+            segments.push(QuotaSegment {
+                short_name: provider.short_name,
+                windows: provider.windows,
+            });
+        }
+        (true, None) => {}
+    }
+    segments.extend(recorded.into_iter().map(|provider| QuotaSegment {
+        short_name: provider.short_name,
+        windows: provider.windows,
+    }));
+    segments
+}
+
+/// The checked-out branch, read straight from `.git/HEAD`.
+///
+/// Claude Code renders the status line on every turn, so this must not spawn a process: a
+/// `git` invocation per render is a cost the client would pay for a monitor's convenience.
+/// One short file read is not. A detached head names no branch and reports none.
+fn branch_at(start: &Path) -> Option<String> {
+    let mut directory = Some(start);
+    while let Some(current) = directory {
+        let git = current.join(".git");
+        let head = if git.is_dir() {
+            git.join("HEAD")
+        } else if git.is_file() {
+            // A worktree or a submodule leaves a `gitdir:` pointer here instead.
+            let pointer = std::fs::read_to_string(&git).ok()?;
+            PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim()).join("HEAD")
+        } else {
+            directory = current.parent();
+            continue;
+        };
+        return std::fs::read_to_string(head)
+            .ok()?
+            .trim()
+            .strip_prefix("ref: refs/heads/")
+            .map(str::to_string);
+    }
+    None
 }
 
 fn store_reading(reading: &Reading) -> Result<()> {
@@ -482,20 +703,88 @@ mod tests {
         assert!(error.to_string().contains("schema_incompatible"));
     }
 
-    #[test]
-    fn a_payload_without_rate_limits_still_produces_a_status_line() {
-        assert_eq!(status_line(None, None, None), "QuotaStation");
-        assert_eq!(status_line(Some("Opus"), None, None), "Opus");
+    const NOW: i64 = 1_800_000_000;
+
+    fn view<'a>(model: Option<&'a str>, quotas: Vec<QuotaSegment>) -> StatusLineView<'a> {
+        StatusLineView {
+            model,
+            directory: None,
+            branch: None,
+            context_remaining: None,
+            session_cost_usd: None,
+            quotas,
+            now: NOW,
+        }
+    }
+
+    fn window(label: &str, remaining: f64, resets_in: Option<i64>) -> QuotaWindow {
+        QuotaWindow {
+            label: label.to_string(),
+            remaining_percent: remaining,
+            resets_at: resets_in.map(|seconds| NOW + seconds),
+        }
     }
 
     #[test]
-    fn the_status_line_reports_the_windows_it_stored() {
-        let line = status_line(
-            Some("Opus"),
-            Some(Bucket { used_percentage: Some(23.5), resets_at: Some(1) }),
-            Some(Bucket { used_percentage: Some(41.2), resets_at: Some(2) }),
+    fn a_payload_without_rate_limits_still_produces_a_status_line() {
+        assert_eq!(status_line(&view(None, Vec::new())), "QuotaStation");
+        assert_eq!(status_line(&view(Some("Opus"), Vec::new())), "Opus");
+    }
+
+    #[test]
+    fn the_second_row_reports_every_provider_and_the_first_reports_the_session() {
+        let mut session = view(Some("Opus"), vec![
+            QuotaSegment {
+                short_name: "cc".to_string(),
+                windows: vec![
+                    window("5h", 76.5, Some(4 * 3_600 + 120)),
+                    window("7d", 59.0, Some(5 * 86_400)),
+                ],
+            },
+            QuotaSegment {
+                short_name: "cx".to_string(),
+                windows: vec![window("5h", 38.0, Some(2 * 3_600 + 600))],
+            },
+        ]);
+        session.directory = Some("QuotaStation".to_string());
+        session.branch = Some("dev".to_string());
+        session.context_remaining = Some(92.0);
+        session.session_cost_usd = Some(0.1234);
+        assert_eq!(
+            status_line(&session),
+            "Opus · QuotaStation · dev · ctx 92% · $0.12\n\
+             cc 5h 76% (4h02m) 7d 59% (5d) · cx 5h 38% (2h10m)"
         );
-        assert_eq!(line, "Opus · 5h 24% used · 7d 41% used");
+    }
+
+    #[test]
+    fn a_window_low_enough_to_act_on_is_coloured_on_the_thresholds_the_interface_uses() {
+        let line = status_line(&view(None, vec![QuotaSegment {
+            short_name: "cx".to_string(),
+            windows: vec![window("5h", 28.0, None), window("7d", 9.0, None)],
+        }]));
+        assert_eq!(line, format!("cx 5h {YELLOW}28%{RESET} 7d {RED}9%{RESET}"));
+        assert!(!percent(31.0).contains('\u{1b}'), "an ordinary window is left uncoloured");
+    }
+
+    #[test]
+    fn a_provider_whose_windows_have_all_restarted_is_left_out_rather_than_shown_empty() {
+        let line = status_line(&view(Some("Opus"), vec![QuotaSegment {
+            short_name: "cx".to_string(),
+            windows: vec![window("5h", 38.0, Some(-60))],
+        }]));
+        assert_eq!(line, "Opus", "no second row at all");
+    }
+
+    #[test]
+    fn the_payload_windows_are_read_as_the_remaining_share() {
+        let windows = windows_from_payload(Some(&RateLimits {
+            five_hour: Some(Bucket { used_percentage: Some(23.5), resets_at: Some(NOW + 60) }),
+            seven_day: Some(Bucket { used_percentage: None, resets_at: Some(NOW + 60) }),
+        }));
+        assert_eq!(windows.len(), 1, "a bucket with no percentage renders nothing");
+        assert_eq!(windows[0].label, "5h");
+        assert_eq!(windows[0].remaining_percent, 76.5);
     }
 
     #[test]

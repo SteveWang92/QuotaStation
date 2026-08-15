@@ -7,6 +7,16 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Added
+
+- **Every provider's quota in Claude Code's status line.** The status line QuotaStation
+  installs now reports two rows: the session — model, project directory, git branch,
+  context window remaining, and cost so far — and the remaining quota with a restart
+  countdown for every provider QuotaStation watches, not only Claude's own. Percentages
+  low enough to act on are coloured on the same thresholds the application uses. Codex's
+  figures come from a summary the application records on each refresh; when the
+  application is not running they are left out rather than shown out of date.
+
 ### Changed
 
 - The quick panel sizes itself to its contents, growing upwards from the tray, and only

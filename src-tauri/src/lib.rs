@@ -6,6 +6,7 @@ mod resets;
 mod sanitize;
 mod session_watcher;
 mod storage;
+mod summary;
 mod taskbar;
 
 use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex as StdMutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};

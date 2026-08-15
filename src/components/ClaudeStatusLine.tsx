@@ -55,7 +55,8 @@ export function ClaudeStatusLine() {
           <>
             <p>
               QuotaStation is registered as Claude Code's status line, which is how Claude
-              Code hands over its five-hour and seven-day windows.{" "}
+              Code hands over its five-hour and seven-day windows — and where QuotaStation
+              reports every other provider's quota back to it.{" "}
               {status.lastReadingAt === null
                 ? "No reading has arrived yet — the first one comes with the next Claude Code turn in a terminal."
                 : `Last reading ${formatResetTimestamp(status.lastReadingAt)}.`}
@@ -78,8 +79,9 @@ export function ClaudeStatusLine() {
             allowance, and they say nothing at all about the seven-day window. Claude Code
             does report both, with the percentage consumed and the exact restart, to whatever
             command is set as its status line. Installing this registers QuotaStation as that
-            command: no credential is read, nothing leaves this machine, and Claude Code
-            shows the same two windows in its own status line. Only terminal sessions render
+            command: no credential is read, nothing leaves this machine, and Claude Code's
+            own status line gains what it cannot know on its own — every provider's
+            remaining quota, not only its own. Only terminal sessions render
             a status line — the desktop application draws its own interface and runs no such
             command — so the readings arrive while <code>claude</code> is running in a
             terminal, and between those the windows above stay as last reported.
