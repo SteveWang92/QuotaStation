@@ -63,6 +63,11 @@ QuotaStation and take precedence when they differ.
   the same change that makes them, not in a sweep before the release.
 - Record the net user-facing result, not a commit log. Omit pure build, CI, formatting,
   test, typo, and version-bump churn unless a person using the application perceives it.
+- **One entry is one line — a single sentence naming the result, and nothing else.** No
+  second sentence, no wrapped continuation line, no reason, no mechanism, no before-and-after,
+  no list of what stayed the same. If an entry does not fit on one line it is carrying
+  explanation that belongs in the code comment or the commit, not here. The reader wants to
+  know what changed for them, and every extra clause is one more line they read to find it.
 - Use the Keep a Changelog categories in this order — Added, Changed, Deprecated, Removed,
   Fixed, Security — and omit the empty ones.
 - Compare links live at the bottom of the file and are maintained by hand: this repository
