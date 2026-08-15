@@ -385,6 +385,9 @@ struct StatusLineView<'a> {
 
 struct QuotaSegment {
     label: String,
+    /// Whether this is the client the line is being rendered inside. Only its own quota can
+    /// go unnamed, because only its own quota is what an unnamed reading would be read as.
+    own: bool,
     windows: Vec<QuotaWindow>,
 }
 
@@ -558,12 +561,11 @@ fn status_line(view: &StatusLineView) -> String {
     }
 
     // Without the session rows there is only one row, so this client's own quota joins it
-    // rather than being left alone on a line that says less than the one above.
-    let segments: &[QuotaSegment] = if view.full_details {
-        &view.quotas
-    } else {
-        &view.quotas[..view.quotas.len().min(1)]
-    };
+    // rather than being left alone on a line that says less than the one above. Nothing
+    // else may join it: the readings are unnamed there, and an unnamed reading beside
+    // Claude Code's own model is read as Claude Code's own quota.
+    let segments: Vec<&QuotaSegment> =
+        view.quotas.iter().filter(|segment| view.full_details || segment.own).collect();
     let mut quotas: Vec<Vec<String>> = Vec::new();
     for segment in segments {
         let mut windows: Vec<String> = segment
@@ -661,16 +663,21 @@ fn quota_segments(
                     ProviderLabelStyle::Full => ProviderKind::Claude.display_name().to_string(),
                 }
             });
-            segments.push(QuotaSegment { label, windows: payload_windows });
+            segments.push(QuotaSegment { label, own: true, windows: payload_windows });
         }
         (true, Some(index)) => {
             let provider = recorded.remove(index);
-            segments.push(QuotaSegment { label: name(&provider), windows: provider.windows });
+            segments.push(QuotaSegment {
+                label: name(&provider),
+                own: true,
+                windows: provider.windows,
+            });
         }
         (true, None) => {}
     }
     segments.extend(recorded.into_iter().map(|provider| QuotaSegment {
         label: name(&provider),
+        own: false,
         windows: provider.windows,
     }));
     segments
@@ -975,6 +982,7 @@ mod tests {
         vec![
             QuotaSegment {
                 label: "CLD".to_string(),
+                own: true,
                 windows: vec![
                     window("5h", 23.5, Some(4 * 3_600 + 120)),
                     window("7d", 41.0, Some(5 * 86_400)),
@@ -982,6 +990,7 @@ mod tests {
             },
             QuotaSegment {
                 label: "CDX".to_string(),
+                own: false,
                 windows: vec![window("5h", 62.0, Some(2 * 3_600 + 600))],
             },
         ]
@@ -1020,6 +1029,7 @@ mod tests {
     fn usage_is_coloured_on_the_thresholds_the_interface_uses() {
         let line = status_line(&view(None, vec![QuotaSegment {
             label: "CDX".to_string(),
+            own: false,
             windows: vec![
                 window("5h", 12.0, None),
                 window("7d", 72.0, None),
@@ -1036,9 +1046,24 @@ mod tests {
     fn a_provider_whose_windows_have_all_restarted_is_left_out_rather_than_shown_empty() {
         let line = status_line(&view(Some("Opus"), vec![QuotaSegment {
             label: "CDX".to_string(),
+            own: false,
             windows: vec![window("5h", 62.0, Some(-60))],
         }]));
         assert_eq!(line, "Opus", "no second row at all");
+    }
+
+    /// Claude Code hands out no rate limits on an API-key sign-in, and the application may
+    /// never have recorded the provider either, which leaves another provider's quota first
+    /// in the list. Unnamed beside this client's own model it would be read as this client's.
+    #[test]
+    fn the_one_row_carries_only_this_client_however_the_list_begins() {
+        let mut session = view(Some("Opus"), vec![QuotaSegment {
+            label: "CDX".to_string(),
+            own: false,
+            windows: vec![window("5h", 62.0, Some(2 * 3_600))],
+        }]);
+        session.full_details = false;
+        assert_eq!(plain(&status_line(&session)), "Opus", "no unnamed foreign quota");
     }
 
     #[test]

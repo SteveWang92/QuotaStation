@@ -35,6 +35,7 @@ on `main`, with the matching section below as its notes.
 
 - Each quota window is coloured by its own reading rather than the provider's loudest one.
 - Claude Code's status line omits stale cross-provider quota instead of presenting it as current.
+- The status line's one-row form never shows another provider's quota where Claude's own would be read.
 - Removing the Claude completion hook preserves other handlers in the same Stop group.
 - A failed settings write no longer changes the running application's preferences.
 - The settings button no longer sits inside an empty bordered strip.
