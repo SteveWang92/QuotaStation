@@ -27,6 +27,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{Freshness, LimitKind, LimitWindow, WindowSource};
+use crate::providers::ProviderKind;
+use crate::settings::ProviderLabelStyle;
 use crate::summary::QuotaWindow;
 
 use super::{FIVE_HOUR_WINDOW_MINS, SEVEN_DAY_WINDOW_MINS, claude_home};
@@ -157,7 +159,6 @@ fn windows_from(reading: &Reading, now: i64) -> Result<Vec<LimitWindow>> {
             kind,
             label: kind.window_label(Some(minutes)),
             used_percent: Some(used_percent),
-            remaining_percent: Some((100.0 - used_percent).clamp(0.0, 100.0)),
             window_duration_mins: Some(minutes),
             resets_at: Some(resets_at),
             source: WindowSource::StatusLine,
@@ -266,6 +267,7 @@ pub fn run_bridge_if_requested() -> bool {
 /// in the payload and stays optional here: a missing one costs its column and nothing else.
 fn view_of<'a>(input: Option<&'a StatusLineInput>, limits: Option<&RateLimits>) -> StatusLineView<'a> {
     let now = jiff::Timestamp::now().as_second();
+    let settings = crate::settings::load_default();
     let workspace = input.and_then(|input| input.workspace.as_ref());
     let current_dir = workspace
         .and_then(|workspace| workspace.current_dir.as_deref())
@@ -286,15 +288,20 @@ fn view_of<'a>(input: Option<&'a StatusLineInput>, limits: Option<&RateLimits>) 
             .and_then(|worktree| worktree.branch.clone())
             .or_else(|| workspace.and_then(|workspace| workspace.git_worktree.clone()))
             .or_else(|| current_dir.and_then(branch_at)),
-        context_remaining: context.and_then(|context| {
+        context_used: context.and_then(|context| {
             context
-                .remaining_percentage
-                .or_else(|| context.used_percentage.map(|used| 100.0 - used))
+                .used_percentage
+                .or_else(|| context.remaining_percentage.map(|free| 100.0 - free))
         }),
         session_cost_usd: input
             .and_then(|input| input.cost.as_ref())
             .and_then(|cost| cost.total_cost_usd),
-        quotas: quota_segments(windows_from_payload(limits), now),
+        quotas: quota_segments(
+            windows_from_payload(limits),
+            settings.status_line_provider_labels,
+            now,
+        ),
+        full_details: settings.status_line_full_details,
         now,
     }
 }
@@ -305,35 +312,42 @@ struct StatusLineView<'a> {
     model: Option<&'a str>,
     directory: Option<String>,
     branch: Option<String>,
-    /// Percentage of the context window still free, which is the figure Claude Code's own
-    /// footer reports and the one a status line replacing that row has to carry.
-    context_remaining: Option<f64>,
+    /// How much of the context window this session has consumed.
+    context_used: Option<f64>,
     session_cost_usd: Option<f64>,
     /// One entry per provider, this client's own first.
     quotas: Vec<QuotaSegment>,
+    /// Whether the session row and the other providers are wanted at all.
+    full_details: bool,
     now: i64,
 }
 
 struct QuotaSegment {
-    short_name: String,
+    label: String,
     windows: Vec<QuotaWindow>,
 }
 
+const GREEN: &str = "\u{1b}[32m";
 const RED: &str = "\u{1b}[31m";
 const YELLOW: &str = "\u{1b}[33m";
 const RESET: &str = "\u{1b}[0m";
 
-/// A percentage remaining, coloured on the same two thresholds the interface uses for its
-/// warning and critical statuses, so the status line and the application never disagree
-/// about when a window has become worth acting on.
-fn percent(remaining: f64) -> String {
-    let value = remaining.clamp(0.0, 100.0);
+/// A percentage consumed, always coloured.
+///
+/// The thresholds are the ones the interface uses for its warning and critical statuses, so
+/// the status line and the application never disagree about when a window has become worth
+/// acting on. Everything below them is green rather than left plain: a row carrying four
+/// readings is scanned rather than read, and an uncoloured reading is one the eye has to
+/// stop and parse before it can rule it out.
+fn percent(used: f64) -> String {
+    let value = used.clamp(0.0, 100.0);
     let text = format!("{value:.0}%");
-    match value {
-        value if value <= 10.0 => format!("{RED}{text}{RESET}"),
-        value if value <= 30.0 => format!("{YELLOW}{text}{RESET}"),
-        _ => text,
-    }
+    let colour = match value {
+        value if value >= 90.0 => RED,
+        value if value >= 70.0 => YELLOW,
+        _ => GREEN,
+    };
+    format!("{colour}{text}{RESET}")
 }
 
 /// How long a window has left, in the width a status line can spare. Whole days carry the
@@ -362,44 +376,62 @@ fn status_line(view: &StatusLineView) -> String {
     if let Some(model) = view.model.filter(|model| !model.is_empty()) {
         session.push(model.to_string());
     }
-    if let Some(directory) = &view.directory {
-        session.push(directory.clone());
-    }
-    if let Some(branch) = &view.branch {
-        session.push(branch.clone());
-    }
-    if let Some(remaining) = view.context_remaining {
-        session.push(format!("ctx {}", percent(remaining)));
-    }
-    // A session that has spent nothing yet has no figure worth a column.
-    if let Some(cost) = view.session_cost_usd.filter(|cost| *cost > 0.0) {
-        session.push(format!("${cost:.2}"));
+    if view.full_details {
+        if let Some(directory) = &view.directory {
+            session.push(directory.clone());
+        }
+        if let Some(branch) = &view.branch {
+            session.push(branch.clone());
+        }
+        if let Some(used) = view.context_used {
+            session.push(format!("ctx {}", percent(used)));
+        }
+        // A session that has spent nothing yet has no figure worth a column.
+        if let Some(cost) = view.session_cost_usd.filter(|cost| *cost > 0.0) {
+            session.push(format!("${cost:.2}"));
+        }
     }
 
+    // Without the session row there is only one row, so this client's own quota joins it
+    // rather than being left alone on a second line that says less than the first.
+    let segments: &[QuotaSegment] = if view.full_details {
+        &view.quotas
+    } else {
+        &view.quotas[..view.quotas.len().min(1)]
+    };
     let mut quotas: Vec<String> = Vec::new();
-    for segment in &view.quotas {
+    for segment in segments {
         let windows: Vec<String> = segment
             .windows
             .iter()
             // A window that has already restarted describes nothing that is running now.
             .filter(|window| window.resets_at.is_none_or(|resets_at| resets_at > view.now))
             .map(|window| {
-                let remaining = percent(window.remaining_percent);
+                let used = percent(window.used_percent);
                 match window.resets_at.and_then(|resets_at| countdown(resets_at, view.now)) {
-                    Some(left) => format!("{} {remaining} ({left})", window.label),
-                    None => format!("{} {remaining}", window.label),
+                    Some(left) => format!("{} {used} ({left})", window.label),
+                    None => format!("{} {used}", window.label),
                 }
             })
             .collect();
-        if !windows.is_empty() {
-            quotas.push(format!("{} {}", segment.short_name, windows.join(" ")));
+        if windows.is_empty() {
+            continue;
         }
+        // Naming the provider only matters once there is a second one to tell it apart
+        // from; alone inside Claude Code it says what the row is already running in.
+        quotas.push(if view.full_details {
+            format!("{} {}", segment.label, windows.join(" "))
+        } else {
+            windows.join(" ")
+        });
     }
 
-    let lines: Vec<String> = [session.join(" · "), quotas.join(" · ")]
-        .into_iter()
-        .filter(|line| !line.is_empty())
-        .collect();
+    let rows = if view.full_details {
+        vec![session.join(" · "), quotas.join(" · ")]
+    } else {
+        vec![session.into_iter().chain(quotas).collect::<Vec<_>>().join(" · ")]
+    };
+    let lines: Vec<String> = rows.into_iter().filter(|line| !line.is_empty()).collect();
     if lines.is_empty() {
         // Claude Code hands out no rate limits on API-key and enterprise sign-ins, and an
         // empty line would read as a broken status line rather than an absent quota.
@@ -418,7 +450,7 @@ fn windows_from_payload(limits: Option<&RateLimits>) -> Vec<QuotaWindow> {
             let bucket = bucket?;
             Some(QuotaWindow {
                 label: label.to_string(),
-                remaining_percent: (100.0 - bucket.used_percentage?).clamp(0.0, 100.0),
+                used_percent: bucket.used_percentage?.clamp(0.0, 100.0),
                 resets_at: bucket.resets_at,
             })
         })
@@ -431,29 +463,40 @@ fn windows_from_payload(limits: Option<&RateLimits>) -> Vec<QuotaWindow> {
 /// this turn while the summary describes the last refresh. Everything else can only come
 /// from the summary, and an absent or stale summary simply leaves those providers out —
 /// the row says less rather than saying something no longer true.
-fn quota_segments(payload_windows: Vec<QuotaWindow>, now: i64) -> Vec<QuotaSegment> {
-    let summary = crate::summary::load_fresh(now);
-    let mut recorded = summary.map(|summary| summary.providers).unwrap_or_default();
+fn quota_segments(
+    payload_windows: Vec<QuotaWindow>,
+    labels: ProviderLabelStyle,
+    now: i64,
+) -> Vec<QuotaSegment> {
+    let name = |provider: &crate::summary::ProviderQuota| match labels {
+        ProviderLabelStyle::Short => provider.short_name.clone(),
+        ProviderLabelStyle::Full => provider.display_name.clone(),
+    };
+    let mut recorded = crate::summary::load_fresh(now)
+        .map(|summary| summary.providers)
+        .unwrap_or_default();
     let claude = recorded.iter().position(|provider| provider.provider == "claude");
     let mut segments = Vec::new();
     match (payload_windows.is_empty(), claude) {
         (false, index) => {
-            let short_name = index
-                .map(|index| recorded.remove(index).short_name)
-                .unwrap_or_else(|| "cc".to_string());
-            segments.push(QuotaSegment { short_name, windows: payload_windows });
+            let label = index.map(|index| name(&recorded.remove(index))).unwrap_or_else(|| {
+                // The application has never recorded this provider, so the name has to come
+                // from the one place that always knows it.
+                match labels {
+                    ProviderLabelStyle::Short => ProviderKind::Claude.short_name().to_string(),
+                    ProviderLabelStyle::Full => ProviderKind::Claude.display_name().to_string(),
+                }
+            });
+            segments.push(QuotaSegment { label, windows: payload_windows });
         }
         (true, Some(index)) => {
             let provider = recorded.remove(index);
-            segments.push(QuotaSegment {
-                short_name: provider.short_name,
-                windows: provider.windows,
-            });
+            segments.push(QuotaSegment { label: name(&provider), windows: provider.windows });
         }
         (true, None) => {}
     }
     segments.extend(recorded.into_iter().map(|provider| QuotaSegment {
-        short_name: provider.short_name,
+        label: name(&provider),
         windows: provider.windows,
     }));
     segments
@@ -668,7 +711,6 @@ mod tests {
         let windows = windows_from(&reading(now), now).expect("valid reading");
         assert_eq!(windows.len(), 2);
         assert_eq!(windows[0].label, "5-hour window");
-        assert_eq!(windows[0].remaining_percent, Some(76.5));
         assert_eq!(windows[0].resets_at, Some(now + 3_600));
         assert_eq!(windows[1].label, "Weekly window");
         assert_eq!(windows[1].kind, LimitKind::Secondary);
@@ -710,19 +752,36 @@ mod tests {
             model,
             directory: None,
             branch: None,
-            context_remaining: None,
+            context_used: None,
             session_cost_usd: None,
             quotas,
+            full_details: true,
             now: NOW,
         }
     }
 
-    fn window(label: &str, remaining: f64, resets_in: Option<i64>) -> QuotaWindow {
+    fn window(label: &str, used: f64, resets_in: Option<i64>) -> QuotaWindow {
         QuotaWindow {
             label: label.to_string(),
-            remaining_percent: remaining,
+            used_percent: used,
             resets_at: resets_in.map(|seconds| NOW + seconds),
         }
+    }
+
+    /// Percentages without their colour, which is what the assertions are about.
+    fn plain(line: &str) -> String {
+        let mut out = String::new();
+        let mut rest = line;
+        while let Some(start) = rest.find('\u{1b}') {
+            out.push_str(&rest[..start]);
+            rest = &rest[start..];
+            match rest.find('m') {
+                Some(end) => rest = &rest[end + 1..],
+                None => break,
+            }
+        }
+        out.push_str(rest);
+        out
     }
 
     #[test]
@@ -731,60 +790,83 @@ mod tests {
         assert_eq!(status_line(&view(Some("Opus"), Vec::new())), "Opus");
     }
 
-    #[test]
-    fn the_second_row_reports_every_provider_and_the_first_reports_the_session() {
-        let mut session = view(Some("Opus"), vec![
+    fn two_providers() -> Vec<QuotaSegment> {
+        vec![
             QuotaSegment {
-                short_name: "cc".to_string(),
+                label: "CLD".to_string(),
                 windows: vec![
-                    window("5h", 76.5, Some(4 * 3_600 + 120)),
-                    window("7d", 59.0, Some(5 * 86_400)),
+                    window("5h", 23.5, Some(4 * 3_600 + 120)),
+                    window("7d", 41.0, Some(5 * 86_400)),
                 ],
             },
             QuotaSegment {
-                short_name: "cx".to_string(),
-                windows: vec![window("5h", 38.0, Some(2 * 3_600 + 600))],
+                label: "CDX".to_string(),
+                windows: vec![window("5h", 62.0, Some(2 * 3_600 + 600))],
             },
-        ]);
+        ]
+    }
+
+    #[test]
+    fn the_second_row_reports_every_provider_and_the_first_reports_the_session() {
+        let mut session = view(Some("Opus"), two_providers());
         session.directory = Some("QuotaStation".to_string());
         session.branch = Some("dev".to_string());
-        session.context_remaining = Some(92.0);
+        session.context_used = Some(19.0);
         session.session_cost_usd = Some(0.1234);
         assert_eq!(
-            status_line(&session),
-            "Opus · QuotaStation · dev · ctx 92% · $0.12\n\
-             cc 5h 76% (4h02m) 7d 59% (5d) · cx 5h 38% (2h10m)"
+            plain(&status_line(&session)),
+            "Opus · QuotaStation · dev · ctx 19% · $0.12\n\
+             CLD 5h 24% (4h02m) 7d 41% (5d) · CDX 5h 62% (2h10m)"
         );
     }
 
     #[test]
-    fn a_window_low_enough_to_act_on_is_coloured_on_the_thresholds_the_interface_uses() {
+    fn without_the_details_only_this_client_reports_and_it_shares_the_one_row() {
+        let mut session = view(Some("Opus"), two_providers());
+        session.directory = Some("QuotaStation".to_string());
+        session.context_used = Some(19.0);
+        session.full_details = false;
+        assert_eq!(
+            plain(&status_line(&session)),
+            "Opus · 5h 24% (4h02m) 7d 41% (5d)",
+            "no directory, no context, and nothing about the other provider"
+        );
+    }
+
+    #[test]
+    fn usage_is_coloured_on_the_thresholds_the_interface_uses() {
         let line = status_line(&view(None, vec![QuotaSegment {
-            short_name: "cx".to_string(),
-            windows: vec![window("5h", 28.0, None), window("7d", 9.0, None)],
+            label: "CDX".to_string(),
+            windows: vec![
+                window("5h", 12.0, None),
+                window("7d", 72.0, None),
+                window("30d", 91.0, None),
+            ],
         }]));
-        assert_eq!(line, format!("cx 5h {YELLOW}28%{RESET} 7d {RED}9%{RESET}"));
-        assert!(!percent(31.0).contains('\u{1b}'), "an ordinary window is left uncoloured");
+        assert_eq!(
+            line,
+            format!("CDX 5h {GREEN}12%{RESET} 7d {YELLOW}72%{RESET} 30d {RED}91%{RESET}")
+        );
     }
 
     #[test]
     fn a_provider_whose_windows_have_all_restarted_is_left_out_rather_than_shown_empty() {
         let line = status_line(&view(Some("Opus"), vec![QuotaSegment {
-            short_name: "cx".to_string(),
-            windows: vec![window("5h", 38.0, Some(-60))],
+            label: "CDX".to_string(),
+            windows: vec![window("5h", 62.0, Some(-60))],
         }]));
         assert_eq!(line, "Opus", "no second row at all");
     }
 
     #[test]
-    fn the_payload_windows_are_read_as_the_remaining_share() {
+    fn the_payload_windows_are_read_as_the_share_consumed() {
         let windows = windows_from_payload(Some(&RateLimits {
             five_hour: Some(Bucket { used_percentage: Some(23.5), resets_at: Some(NOW + 60) }),
             seven_day: Some(Bucket { used_percentage: None, resets_at: Some(NOW + 60) }),
         }));
         assert_eq!(windows.len(), 1, "a bucket with no percentage renders nothing");
         assert_eq!(windows[0].label, "5h");
-        assert_eq!(windows[0].remaining_percent, 76.5);
+        assert_eq!(windows[0].used_percent, 23.5);
     }
 
     #[test]

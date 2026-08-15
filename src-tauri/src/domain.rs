@@ -128,7 +128,6 @@ pub struct LimitWindow {
     pub kind: LimitKind,
     pub label: String,
     pub used_percent: Option<f64>,
-    pub remaining_percent: Option<f64>,
     pub window_duration_mins: Option<i64>,
     pub resets_at: Option<i64>,
     pub source: WindowSource,
@@ -193,6 +192,8 @@ pub struct ModelUsage {
 pub struct ProviderSnapshot {
     pub provider: ProviderKind,
     pub display_name: String,
+    /// The same name in the three characters a crowded row can spare.
+    pub short_name: String,
     pub plan_type: Option<String>,
     pub limits: Vec<LimitWindow>,
     pub earned_reset_count: Option<u64>,
@@ -219,6 +220,7 @@ impl ProviderSnapshot {
         Self {
             provider,
             display_name: provider.display_name().to_string(),
+            short_name: provider.short_name().to_string(),
             plan_type: None,
             limits: Vec::new(),
             earned_reset_count: None,
@@ -297,18 +299,18 @@ impl ProviderSnapshot {
                 color: "#f0b84b".to_string(),
             }
         } else {
-            let minimum = self.limits.iter().filter_map(|limit| limit.remaining_percent).reduce(f64::min);
-            match minimum {
-                Some(value) if value <= 10.0 => CompactStatus {
+            let peak = self.limits.iter().filter_map(|limit| limit.used_percent).reduce(f64::max);
+            match peak {
+                Some(value) if value >= 90.0 => CompactStatus {
                     level: CompactStatusLevel::Critical,
                     label: "Quota critical".to_string(),
-                    message: format!("A {provider} quota window has 10% or less remaining."),
+                    message: format!("A {provider} quota window is 90% or more used."),
                     color: "#ff7469".to_string(),
                 },
-                Some(value) if value <= 30.0 => CompactStatus {
+                Some(value) if value >= 70.0 => CompactStatus {
                     level: CompactStatusLevel::Warning,
                     label: "Quota running low".to_string(),
-                    message: format!("A {provider} quota window has 30% or less remaining."),
+                    message: format!("A {provider} quota window is 70% or more used."),
                     color: "#f0b84b".to_string(),
                 },
                 Some(_) => CompactStatus {
@@ -324,7 +326,7 @@ impl ProviderSnapshot {
                     level: CompactStatusLevel::Healthy,
                     label: "Window tracked".to_string(),
                     message: format!(
-                        "{provider} publishes no remaining percentage; the window timing comes from local history."
+                        "{provider} publishes no usage percentage; the window timing comes from local history."
                     ),
                     color: "#b5e835".to_string(),
                 },
@@ -367,18 +369,17 @@ fn format_age(seconds: u64) -> String {
 mod tests {
     use super::*;
 
-    fn fresh_snapshot(remaining_percent: f64) -> ProviderSnapshot {
-        provider_snapshot(ProviderKind::Codex, remaining_percent)
+    fn fresh_snapshot(used_percent: f64) -> ProviderSnapshot {
+        provider_snapshot(ProviderKind::Codex, used_percent)
     }
 
-    fn provider_snapshot(provider: ProviderKind, remaining_percent: f64) -> ProviderSnapshot {
+    fn provider_snapshot(provider: ProviderKind, used_percent: f64) -> ProviderSnapshot {
         let mut snapshot = ProviderSnapshot {
             freshness: Freshness::Fresh,
             limits: vec![LimitWindow {
                 kind: LimitKind::Primary,
                 label: "Primary window".to_string(),
-                used_percent: Some(100.0 - remaining_percent),
-                remaining_percent: Some(remaining_percent),
+                used_percent: Some(used_percent),
                 window_duration_mins: Some(300),
                 resets_at: None,
                 source: WindowSource::AppServer,
@@ -401,9 +402,9 @@ mod tests {
 
     #[test]
     fn compact_status_uses_shared_quota_thresholds() {
-        assert_eq!(fresh_snapshot(31.0).compact_status.level, CompactStatusLevel::Healthy);
-        assert_eq!(fresh_snapshot(30.0).compact_status.level, CompactStatusLevel::Warning);
-        assert_eq!(fresh_snapshot(10.0).compact_status.level, CompactStatusLevel::Critical);
+        assert_eq!(fresh_snapshot(69.0).compact_status.level, CompactStatusLevel::Healthy);
+        assert_eq!(fresh_snapshot(70.0).compact_status.level, CompactStatusLevel::Warning);
+        assert_eq!(fresh_snapshot(90.0).compact_status.level, CompactStatusLevel::Critical);
     }
 
     #[test]
@@ -414,7 +415,6 @@ mod tests {
                 kind: LimitKind::Primary,
                 label: "5-hour window".to_string(),
                 used_percent: Some(20.0),
-                remaining_percent: Some(80.0),
                 window_duration_mins: Some(300),
                 resets_at: Some(now.as_second() + 3_600),
                 source: WindowSource::AppServer,
@@ -438,7 +438,6 @@ mod tests {
                 kind: LimitKind::Primary,
                 label: "5-hour window".to_string(),
                 used_percent: Some(20.0),
-                remaining_percent: Some(80.0),
                 window_duration_mins: Some(300),
                 resets_at: Some(now.as_second() + 600),
                 source: WindowSource::StatusLine,
@@ -455,7 +454,7 @@ mod tests {
 
     #[test]
     fn stale_status_takes_priority_over_quota_thresholds() {
-        let mut snapshot = fresh_snapshot(5.0);
+        let mut snapshot = fresh_snapshot(95.0);
         snapshot.freshness = Freshness::Stale;
         snapshot.update_compact_status();
         assert_eq!(snapshot.compact_status.level, CompactStatusLevel::Stale);
@@ -463,21 +462,21 @@ mod tests {
 
     #[test]
     fn compact_status_names_the_provider_that_raised_it() {
-        assert!(fresh_snapshot(5.0).compact_status.message.contains("Codex"));
+        assert!(fresh_snapshot(95.0).compact_status.message.contains("Codex"));
     }
 
     #[test]
     fn the_aggregate_reports_the_loudest_provider() {
-        let healthy = provider_snapshot(ProviderKind::Codex, 80.0);
-        let critical = provider_snapshot(ProviderKind::Codex, 5.0);
+        let healthy = provider_snapshot(ProviderKind::Codex, 20.0);
+        let critical = provider_snapshot(ProviderKind::Codex, 95.0);
         let aggregate = aggregate_status(&[healthy.clone(), critical]);
         assert_eq!(aggregate.level, CompactStatusLevel::Critical);
 
         // An unreadable provider outranks one that is merely running low.
-        let mut unavailable = provider_snapshot(ProviderKind::Codex, 80.0);
+        let mut unavailable = provider_snapshot(ProviderKind::Codex, 20.0);
         unavailable.freshness = Freshness::Unavailable;
         unavailable.update_compact_status();
-        let warning = provider_snapshot(ProviderKind::Codex, 20.0);
+        let warning = provider_snapshot(ProviderKind::Codex, 80.0);
         assert_eq!(
             aggregate_status(&[warning, unavailable]).level,
             CompactStatusLevel::Unavailable

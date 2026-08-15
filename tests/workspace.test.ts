@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { emptySnapshot, resolveProviderKey } from "../src/workspace";
 
 describe("resolveProviderKey", () => {
-  const codex = emptySnapshot("codex", "Codex");
-  const claude = emptySnapshot("claude", "Claude Code");
+  const codex = emptySnapshot("codex", "Codex", "CDX");
+  const claude = emptySnapshot("claude", "Claude Code", "CLD");
 
   it("keeps a preferred provider that is still detected", () => {
     expect(resolveProviderKey([codex, claude], "claude")).toBe("claude");

@@ -49,7 +49,6 @@ fn read_live_blocking(plan_type: Option<String>) -> Result<LiveSnapshot> {
             label: LimitKind::Primary.window_label(Some(WINDOW_MINS)),
             // The logs record what was spent, never what the allowance was.
             used_percent: None,
-            remaining_percent: None,
             window_duration_mins: Some(WINDOW_MINS),
             resets_at: resets_at_ms.map(|value| value.div_euclid(1_000)),
             source: WindowSource::SessionLog,

@@ -136,7 +136,7 @@ button { font: inherit; }
 .provider-tabs button:hover { color: var(--text); background: #1a242c; }
 .provider-tabs button.active { color: #10150c; background: var(--lime); }
 
-.provider-consent { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.provider-consent { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .provider-setup { padding: 22px; border: 1px dashed var(--line); border-radius: 8px; background: var(--surface); }
 .provider-setup h2 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
 .provider-setup p { margin: 0; max-width: 70ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -151,6 +151,24 @@ button { font: inherit; }
 .provider-consent button { flex: none; height: 36px; padding: 0 16px; border: 1px solid #6f7d87; border-radius: 5px; color: var(--text); background: #172129; cursor: pointer; font-weight: 650; }
 .provider-consent button:hover:not(:disabled) { background: #202c35; }
 .provider-consent button:disabled { opacity: 0.55; cursor: wait; }
+.provider-consent-body { min-width: 0; }
+.provider-consent-note { margin-top: 6px !important; }
+.consent-options { display: flex; flex-direction: column; gap: 7px; margin-top: 11px; color: var(--muted); font-size: 12px; }
+.consent-options label { display: flex; align-items: center; gap: 8px; }
+.consent-options input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--lime); }
+.consent-options select { height: 26px; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: #0d1419; font: inherit; font-size: 12px; }
+
+.confirm-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 32px; background: rgba(6, 10, 13, 0.72); }
+.confirm-dialog { width: min(520px, 100%); padding: 20px 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55); }
+.confirm-dialog h3 { margin: 0 0 12px; font-size: 15px; font-weight: 660; }
+.confirm-dialog p { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.confirm-dialog code { padding: 0 3px; border-radius: 3px; background: #1c2730; color: #cbd2d6; font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.confirm-actions button { height: 34px; padding: 0 16px; border: 1px solid #6f7d87; border-radius: 5px; color: var(--text); background: transparent; cursor: pointer; font-weight: 650; }
+.confirm-actions button:hover:not(:disabled) { background: #202c35; }
+.confirm-actions button:disabled { opacity: 0.55; cursor: wait; }
+.confirm-actions .confirm-primary { border-color: var(--lime); color: #0b1014; background: var(--lime); }
+.confirm-actions .confirm-primary:hover:not(:disabled) { background: #c6f24a; }
 
 .history-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
 .history-heading h2 { margin: 3px 0 0; font-size: 24px; }

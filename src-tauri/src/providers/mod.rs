@@ -44,6 +44,16 @@ impl ProviderKind {
         }
     }
 
+    /// The name for a row that has to fit several readings beside it — the taskbar widget
+    /// and the status line. Three characters, so two providers stay distinguishable where
+    /// a full name would not fit at all.
+    pub fn short_name(self) -> &'static str {
+        match self {
+            ProviderKind::Codex => "CDX",
+            ProviderKind::Claude => "CLD",
+        }
+    }
+
     /// How often live quota may be read. Codex answers from a local process; Claude is
     /// read from its session logs, which means parsing them, and a five-hour window that
     /// only moves when a new one opens does not repay doing that every five minutes.

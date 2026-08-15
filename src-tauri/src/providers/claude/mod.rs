@@ -99,7 +99,6 @@ mod tests {
             kind,
             label: kind.window_label(Some(FIVE_HOUR_WINDOW_MINS)),
             used_percent,
-            remaining_percent: used_percent.map(|used| 100.0 - used),
             window_duration_mins: Some(FIVE_HOUR_WINDOW_MINS),
             resets_at: Some(resets_at),
             source: WindowSource::StatusLine,

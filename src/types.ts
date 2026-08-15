@@ -14,7 +14,6 @@ export interface LimitWindow {
   kind: "primary" | "secondary";
   label: string;
   usedPercent: number | null;
-  remainingPercent: number | null;
   windowDurationMins: number | null;
   resetsAt: number | null;
   source: "app_server" | "session_log" | "status_line";
@@ -52,6 +51,8 @@ export interface TokenUsage {
 export interface ProviderSnapshot {
   provider: ProviderKey;
   displayName: string;
+  /** The same name in the three characters a crowded row can spare. */
+  shortName: string;
   planType: string | null;
   limits: LimitWindow[];
   earnedResetCount: number | null;
@@ -140,4 +141,13 @@ export interface DiagnosticsSnapshot {
   retention: { status: string; lastCompletedAt: string | null; error: string | null };
   parserRevision: string;
   pricingCatalogRevision: string;
+}
+
+/** How a provider is named where the name sits beside a reading rather than above one. */
+export type ProviderLabelStyle = "short" | "full";
+
+export interface AppSettings {
+  taskbarWidgetEnabled: boolean;
+  statusLineProviderLabels: ProviderLabelStyle;
+  statusLineFullDetails: boolean;
 }

@@ -9,29 +9,21 @@ on `main`, with the matching section below as its notes.
 
 ### Added
 
-- **Every provider's quota in Claude Code's status line.** The status line QuotaStation
-  installs now reports two rows: the session — model, project directory, git branch,
-  context window remaining, and cost so far — and the remaining quota with a restart
-  countdown for every provider QuotaStation watches, not only Claude's own. Percentages
-  low enough to act on are coloured on the same thresholds the application uses. Codex's
-  figures come from a summary the application records on each refresh; when the
-  application is not running they are left out rather than shown out of date.
+- Claude Code's status line now shows every provider's quota, not only Claude's own.
+- Settings for the status line: how much it reports, and how providers are named in it.
 
 ### Changed
 
-- The quick panel sizes itself to its contents, growing upwards from the tray, and only
-  scrolls once it has filled the available screen height.
+- Every quota percentage is now the share used, not the share remaining.
+- The quick panel sizes itself to its contents and grows upwards from the tray.
 - Clock times are written on a 24-hour clock everywhere.
 - Settings and diagnostics are one taller scrolling page instead of two tabs.
-- Each quota window's source and observation time moved from the quota rows to the
-  diagnostics section, beside the acquisition paths they describe.
+- Each quota window's source and observation time moved to the diagnostics section.
+- Installing the Claude Code status line now asks in a confirmation instead of a long note.
 
 ### Removed
 
-- Duplicated status text: the workspace status bar now speaks only when something needs
-  attention, and the quick panel reports each provider's status once rather than three
-  times. The dashboard header no longer restates the provider names listed below it, and
-  the usage summary no longer counts models above the card that already lists them.
+- Status text, provider names and a model count that each appeared twice on a surface.
 
 ## [0.1.0] - 2026-08-15
 

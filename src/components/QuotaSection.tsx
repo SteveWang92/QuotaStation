@@ -29,7 +29,6 @@ function originOf(limit: LimitWindow, resets: LimitResetEvent[]): LimitResetEven
 
 function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEvent }) {
   const used = limit.usedPercent;
-  const remaining = limit.remainingPercent;
   return (
     <div className={`quota-row${limit.freshness === "stale" ? " stale" : ""}`}>
       {/* The label already names the duration, and which source produced the reading is a
@@ -48,8 +47,8 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
         </div>
       </div>
       <div className="quota-percent">
-        <strong>{remaining === null ? "—" : `${remaining.toFixed(1)}%`}</strong>
-        <span>{remaining === null ? "unavailable" : "remaining"}</span>
+        <strong>{used === null ? "—" : `${used.toFixed(1)}%`}</strong>
+        <span>{used === null ? "unavailable" : "used"}</span>
       </div>
       <div className="quota-reset">
         <span>Resets in</span>

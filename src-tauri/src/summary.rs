@@ -40,8 +40,9 @@ pub struct QuotaSummary {
 pub struct ProviderQuota {
     /// The database's provider key, so a reader can tell the providers apart.
     pub provider: String,
-    /// How the provider is named where there is room for two characters and no more.
+    /// Both names, because the reader's own setting decides which of them it draws.
     pub short_name: String,
+    pub display_name: String,
     pub windows: Vec<QuotaWindow>,
     pub today_tokens: u64,
     pub api_equivalent_cost_usd: Option<f64>,
@@ -52,20 +53,8 @@ pub struct ProviderQuota {
 pub struct QuotaWindow {
     /// The window's duration in the shortest form that still names it, such as `5h`.
     pub label: String,
-    pub remaining_percent: f64,
+    pub used_percent: f64,
     pub resets_at: Option<i64>,
-}
-
-/// The two-character provider name. Long enough to tell Codex and Claude apart in a status
-/// line already carrying two windows for each of them, and short enough to leave room.
-fn short_name(key: &str) -> String {
-    match key {
-        "codex" => "cx".to_string(),
-        "claude" => "cc".to_string(),
-        // Every provider gets a name rather than being dropped, so a provider added later
-        // appears in the status line before anyone remembers to name it here.
-        other => other.chars().take(2).collect(),
-    }
 }
 
 /// The same duration vocabulary the taskbar badge uses, in lower case: `5h`, `7d`.
@@ -90,7 +79,8 @@ fn summarize(workspace: &WorkspaceSnapshot, now: i64) -> QuotaSummary {
             .iter()
             .map(|snapshot| ProviderQuota {
                 provider: snapshot.provider.key().to_string(),
-                short_name: short_name(snapshot.provider.key()),
+                short_name: snapshot.short_name.clone(),
+                display_name: snapshot.display_name.clone(),
                 windows: snapshot
                     .limits
                     .iter()
@@ -99,7 +89,7 @@ fn summarize(workspace: &WorkspaceSnapshot, now: i64) -> QuotaSummary {
                     .filter_map(|limit| {
                         Some(QuotaWindow {
                             label: short_window_label(limit.window_duration_mins, limit.kind),
-                            remaining_percent: limit.remaining_percent?,
+                            used_percent: limit.used_percent?,
                             resets_at: limit.resets_at,
                         })
                     })
@@ -167,7 +157,6 @@ mod tests {
                 kind: LimitKind::Primary,
                 label: "5-hour window".to_string(),
                 used_percent: Some(62.0),
-                remaining_percent: Some(38.0),
                 window_duration_mins: Some(300),
                 resets_at: Some(1_800_007_800),
                 source: WindowSource::AppServer,
@@ -179,7 +168,6 @@ mod tests {
                 kind: LimitKind::Secondary,
                 label: "Weekly window".to_string(),
                 used_percent: None,
-                remaining_percent: None,
                 window_duration_mins: Some(10_080),
                 resets_at: None,
                 source: WindowSource::AppServer,
@@ -199,10 +187,10 @@ mod tests {
         let summary = summarize(&workspace(), 1_800_000_000);
         assert_eq!(summary.schema, SCHEMA);
         let codex = &summary.providers[0];
-        assert_eq!(codex.short_name, "cx");
+        assert_eq!(codex.short_name, "CDX");
         assert_eq!(codex.windows.len(), 1, "the unreadable window is left out");
         assert_eq!(codex.windows[0].label, "5h");
-        assert_eq!(codex.windows[0].remaining_percent, 38.0);
+        assert_eq!(codex.windows[0].used_percent, 62.0);
         assert_eq!(codex.today_tokens, 1_234);
     }
 

@@ -5,11 +5,14 @@ mod refresh;
 mod resets;
 mod sanitize;
 mod session_watcher;
+mod settings;
 mod storage;
 mod summary;
 mod taskbar;
 
-use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex as StdMutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use crate::settings::AppSettings;
+
+use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex as StdMutex}, time::{Duration, Instant}};
 
 use domain::{
     DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot, WatcherDiagnostics,
@@ -30,41 +33,6 @@ use tauri::{
 };
 use tokio::sync::{Mutex, RwLock};
 
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AppSettings {
-    #[serde(default = "default_taskbar_widget_enabled")]
-    taskbar_widget_enabled: bool,
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            taskbar_widget_enabled: default_taskbar_widget_enabled(),
-        }
-    }
-}
-
-fn default_taskbar_widget_enabled() -> bool { true }
-
-fn load_settings(path: &std::path::Path) -> AppSettings {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|content| serde_json::from_str(&content).ok())
-        .unwrap_or_default()
-}
-
-fn save_settings(state: &AppState) -> Result<(), String> {
-    let settings = AppSettings {
-        taskbar_widget_enabled: state.taskbar_widget_enabled.load(Ordering::Relaxed),
-    };
-    if let Some(parent) = state.settings_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let content = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
-    std::fs::write(&state.settings_path, content).map_err(|error| error.to_string())
-}
-
 #[cfg(desktop)]
 use tauri_plugin_autostart::ManagerExt;
 
@@ -75,12 +43,28 @@ pub struct AppState {
     history_refresh_lock: Mutex<()>,
     watcher_diagnostics: RwLock<WatcherDiagnostics>,
     quick_panel_focus_lost_at: StdMutex<Option<Instant>>,
-    taskbar_widget_enabled: AtomicBool,
+    settings: StdMutex<AppSettings>,
     detected_providers: StdMutex<Vec<ProviderKind>>,
     settings_path: PathBuf,
 }
 
 impl AppState {
+    fn settings(&self) -> AppSettings {
+        self.settings.lock().map(|settings| settings.clone()).unwrap_or_default()
+    }
+
+    /// Applies a change and records it, so a preference the user expressed survives the
+    /// next start whether it came from the tray or from the settings dialog.
+    fn update_settings(&self, change: impl FnOnce(&mut AppSettings)) -> Result<AppSettings, String> {
+        let updated = {
+            let mut settings = self.settings.lock().map_err(|_| "Settings unavailable.".to_string())?;
+            change(&mut settings);
+            settings.clone()
+        };
+        settings::save(&self.settings_path, &updated)?;
+        Ok(updated)
+    }
+
     /// The providers currently on display, in the order every surface shows them.
     fn enabled_providers(&self) -> Vec<ProviderKind> {
         self.detected_providers.lock().map(|providers| providers.clone()).unwrap_or_default()
@@ -183,8 +167,7 @@ fn place_taskbar_widget(app: &tauri::AppHandle) {
 
 fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     let state = app.state::<Arc<AppState>>();
-    state.taskbar_widget_enabled.store(visible, Ordering::Relaxed);
-    if let Err(error) = save_settings(&state) {
+    if let Err(error) = state.update_settings(|settings| settings.taskbar_widget_enabled = visible) {
         log::write(format!("failed to save application settings: {error}"));
     }
     if let Some(widget) = app.get_webview_window("taskbar-widget") {
@@ -201,10 +184,31 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
 #[tauri::command]
 fn set_taskbar_widget_size(app: tauri::AppHandle, provider_count: u32) -> Result<(), String> {
     // A hidden widget still runs its renderer; resizing it must not bring it back.
-    if !app.state::<Arc<AppState>>().taskbar_widget_enabled.load(Ordering::Relaxed) {
+    if !app.state::<Arc<AppState>>().settings().taskbar_widget_enabled {
         return Ok(());
     }
     taskbar::set_widget_size(&app, provider_count)
+}
+
+#[tauri::command]
+fn get_app_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
+    state.settings()
+}
+
+/// Records a change the settings dialog made. The status-line bridge reads the same file
+/// on its next run, so a preference takes effect without the application telling it.
+#[tauri::command]
+fn set_app_settings(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    settings: AppSettings,
+) -> Result<AppSettings, String> {
+    let taskbar_changed = state.settings().taskbar_widget_enabled != settings.taskbar_widget_enabled;
+    let updated = state.update_settings(|current| *current = settings)?;
+    if taskbar_changed {
+        set_taskbar_widget_visible(&app, updated.taskbar_widget_enabled);
+    }
+    Ok(updated)
 }
 
 /// Whether the activity log can be revealed without exposing its path to the renderer.
@@ -595,10 +599,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
-    let taskbar_widget_enabled = app
-        .state::<Arc<AppState>>()
-        .taskbar_widget_enabled
-        .load(Ordering::Relaxed);
+    let taskbar_widget_enabled = app.state::<Arc<AppState>>().settings().taskbar_widget_enabled;
     let taskbar_widget = CheckMenuItem::with_id(
         app,
         "taskbar_widget",
@@ -658,7 +659,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             },
             "taskbar_widget" => {
                 let state = app.state::<Arc<AppState>>();
-                let enabled = !state.taskbar_widget_enabled.load(Ordering::Relaxed);
+                let enabled = !state.settings().taskbar_widget_enabled;
                 set_taskbar_widget_visible(app, enabled);
                 let _ = taskbar_widget_menu_item.set_checked(enabled);
             }
@@ -695,7 +696,7 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let database_path = app_data_dir.join("quotastation.db");
             let settings_path = app_data_dir.join("settings.json");
-            let settings = load_settings(&settings_path);
+            let settings = settings::load(&settings_path);
             let storage = tauri::async_runtime::block_on(Storage::open(&database_path))
                 .map_err(|error| error.to_string())?;
             if let Err(error) = tauri::async_runtime::block_on(storage.run_retention_if_due()) {
@@ -717,14 +718,14 @@ pub fn run() {
                 history_refresh_lock: Mutex::new(()),
                 watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
                 quick_panel_focus_lost_at: StdMutex::new(None),
-                taskbar_widget_enabled: AtomicBool::new(settings.taskbar_widget_enabled),
+                settings: StdMutex::new(settings),
                 detected_providers: StdMutex::new(Vec::new()),
                 settings_path,
             });
             state.detect_providers();
             app.manage(state.clone());
             build_tray(app)?;
-            if state.taskbar_widget_enabled.load(Ordering::Relaxed) {
+            if state.settings().taskbar_widget_enabled {
                 set_taskbar_widget_visible(app.handle(), true);
             }
             if session_watcher::start(app.handle().clone(), state.clone()).is_err() {
@@ -761,7 +762,7 @@ pub fn run() {
                 let mut interval = tokio::time::interval(Duration::from_secs(2));
                 loop {
                     interval.tick().await;
-                    if taskbar_state.taskbar_widget_enabled.load(Ordering::Relaxed) {
+                    if taskbar_state.settings().taskbar_widget_enabled {
                         place_taskbar_widget(&app_handle);
                     }
                 }
@@ -803,7 +804,9 @@ pub fn run() {
             set_claude_status_line,
             open_dashboard,
             set_taskbar_widget_size,
-            set_quick_panel_height
+            set_quick_panel_height,
+            get_app_settings,
+            set_app_settings
         ])
         .on_window_event(|window, event| {
             if window.label() == "quick-panel" && matches!(event, tauri::WindowEvent::Focused(false)) {
