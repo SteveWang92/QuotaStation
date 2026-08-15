@@ -4,7 +4,6 @@ import type { CompactStatus } from "../types";
 interface StatusBarProps {
   /** The workspace status, so the bar reads the same whether one provider is shown or two. */
   status: CompactStatus;
-  /** Marks the bar when something an acquisition path reported needs looking at. */
   attention: boolean;
   onOpenSettings: () => void;
 }

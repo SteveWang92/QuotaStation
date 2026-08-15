@@ -312,7 +312,6 @@ struct StatusLineView<'a> {
     model: Option<&'a str>,
     directory: Option<String>,
     branch: Option<String>,
-    /// How much of the context window this session has consumed.
     context_used: Option<f64>,
     session_cost_usd: Option<f64>,
     /// One entry per provider, this client's own first.

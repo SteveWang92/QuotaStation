@@ -180,7 +180,6 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     }
 }
 
-/// Restores the widget to the shared provider-slot contract after the renderer mounts.
 #[tauri::command]
 fn set_taskbar_widget_size(app: tauri::AppHandle, provider_count: u32) -> Result<(), String> {
     // A hidden widget still runs its renderer; resizing it must not bring it back.
