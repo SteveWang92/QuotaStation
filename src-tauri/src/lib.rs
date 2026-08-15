@@ -43,6 +43,8 @@ pub struct AppState {
     history_refresh_lock: Mutex<()>,
     watcher_diagnostics: RwLock<WatcherDiagnostics>,
     quick_panel_focus_lost_at: StdMutex<Option<Instant>>,
+    quick_panel_toggled_at: StdMutex<Option<Instant>>,
+    quick_panel_shown_at: StdMutex<Option<Instant>>,
     settings: StdMutex<AppSettings>,
     detected_providers: StdMutex<Vec<ProviderKind>>,
     settings_path: PathBuf,
@@ -514,9 +516,29 @@ fn quick_panel_placement(
     (PhysicalPosition::new(x.round() as i32, y.round() as i32), panel_size)
 }
 
-fn toggle_quick_panel(app: &tauri::AppHandle, click: PhysicalPosition<f64>, tray_rect: tauri::Rect) {
-    let Some(panel) = app.get_webview_window("quick-panel") else { return };
+/// Shows or hides the panel beside `anchor`, given in physical screen coordinates: the tray
+/// icon for a click on the tray, the docked widget for a click on the taskbar status. Both
+/// open the one panel — a second panel for the second surface would be the same readings
+/// drawn twice.
+///
+/// Reports whether the panel is now open.
+fn toggle_quick_panel_beside(
+    app: &tauri::AppHandle,
+    anchor_position: PhysicalPosition<f64>,
+    anchor_size: tauri::PhysicalSize<f64>,
+) -> bool {
+    let Some(panel) = app.get_webview_window("quick-panel") else { return false };
     let state = app.state::<Arc<AppState>>();
+    // One click opens the panel once. The tray icon and the taskbar status sit in the same
+    // corner and there is one panel between them, so a second request arriving on the heels
+    // of the first is the same click reaching a second path — obeying it moved the panel to
+    // the other anchor, which read as a second window replacing the first.
+    if let Ok(mut toggled_at) = state.quick_panel_toggled_at.lock() {
+        if toggled_at.is_some_and(|at| at.elapsed() < Duration::from_millis(300)) {
+            return panel.is_visible().unwrap_or(false);
+        }
+        *toggled_at = Some(Instant::now());
+    }
     // The renderer has already sized the window to its contents, so the panel opens at the
     // height it currently holds rather than at the height it was configured with.
     let current_height = panel.outer_size().map(|size| size.height).unwrap_or(QUICK_PANEL_HEIGHT);
@@ -525,32 +547,74 @@ fn toggle_quick_panel(app: &tauri::AppHandle, click: PhysicalPosition<f64>, tray
         && focus_lost_at.is_some_and(|lost_at| lost_at.elapsed() < Duration::from_millis(500))
     {
         *focus_lost_at = None;
-        return;
+        return false;
     }
     if panel.is_visible().unwrap_or(false) {
         let _ = panel.hide();
-        return;
+        return false;
     }
 
-    let monitor = app.monitor_from_point(click.x, click.y).ok().flatten();
+    let centre = (
+        anchor_position.x + anchor_size.width / 2.0,
+        anchor_position.y + anchor_size.height / 2.0,
+    );
+    let monitor = app.monitor_from_point(centre.0, centre.1).ok().flatten();
     let (x, y) = if let Some(monitor) = monitor {
-        let scale_factor = monitor.scale_factor();
-        let tray_position = tray_rect.position.to_physical::<f64>(scale_factor);
-        let tray_size = tray_rect.size.to_physical::<f64>(scale_factor);
-        let (position, fitted_size) =
-            quick_panel_placement(*monitor.work_area(), tray_position, tray_size, requested_size);
+        let (position, fitted_size) = quick_panel_placement(
+            *monitor.work_area(),
+            anchor_position,
+            anchor_size,
+            requested_size,
+        );
         let _ = panel.set_size(fitted_size);
         (position.x as f64, position.y as f64)
     } else {
         let _ = panel.set_size(requested_size);
         (
-            click.x - requested_size.width as f64,
-            click.y - requested_size.height as f64,
+            anchor_position.x - requested_size.width as f64,
+            anchor_position.y - requested_size.height as f64,
         )
     };
     let _ = panel.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    if let Ok(mut shown_at) = state.quick_panel_shown_at.lock() {
+        *shown_at = Some(Instant::now());
+    }
     let _ = panel.show();
     let _ = panel.set_focus();
+    true
+}
+
+/// The tray reports its icon in whichever unit the platform uses, so the click position —
+/// which is already physical — is what identifies the monitor whose scale converts it.
+fn toggle_quick_panel(app: &tauri::AppHandle, click: PhysicalPosition<f64>, tray_rect: tauri::Rect) {
+    let scale_factor = app
+        .monitor_from_point(click.x, click.y)
+        .ok()
+        .flatten()
+        .map(|monitor| monitor.scale_factor())
+        .unwrap_or(1.0);
+    toggle_quick_panel_beside(
+        app,
+        tray_rect.position.to_physical(scale_factor),
+        tray_rect.size.to_physical(scale_factor),
+    );
+}
+
+/// Opens the panel above the taskbar status, anchored to the widget rather than to the tray
+/// icon.
+///
+/// **Nothing calls this yet.** The widget is a child of the taskbar, so a click on it leaves
+/// the foreground with Explorer and the panel is dismissed by its own focus handling before
+/// it is seen; the workarounds tried so far do not hold. The plumbing is kept because it is
+/// correct as far as it goes — see `docs/TASKBAR_PANEL_TRIGGER.local.md` for what was
+/// measured — and the renderer will call it again once the focus behaviour is solved.
+#[tauri::command]
+fn toggle_quick_panel_from_taskbar(app: tauri::AppHandle) -> Result<(), String> {
+    let (position, size) = taskbar::widget_screen_rect(&app)?;
+    if toggle_quick_panel_beside(&app, position, size) {
+        taskbar::raise_window(&app, "quick-panel")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -745,6 +809,8 @@ pub fn run() {
                 history_refresh_lock: Mutex::new(()),
                 watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
                 quick_panel_focus_lost_at: StdMutex::new(None),
+                quick_panel_toggled_at: StdMutex::new(None),
+                quick_panel_shown_at: StdMutex::new(None),
                 settings: StdMutex::new(settings),
                 detected_providers: StdMutex::new(Vec::new()),
                 settings_path,
@@ -839,11 +905,25 @@ pub fn run() {
             set_app_settings,
             get_autostart,
             set_autostart,
-            create_desktop_shortcut
+            create_desktop_shortcut,
+            toggle_quick_panel_from_taskbar
         ])
         .on_window_event(|window, event| {
             if window.label() == "quick-panel" && matches!(event, tauri::WindowEvent::Focused(false)) {
                 let state = window.state::<Arc<AppState>>();
+                // A panel opened by a click on somebody else's window is told it lost focus
+                // before it ever had it — the click belongs to that window, and Windows hands
+                // the foreground back. Dismissing on that is dismissing the panel the click
+                // just asked for, which looks like the click doing nothing at all.
+                let just_shown = state
+                    .quick_panel_shown_at
+                    .lock()
+                    .ok()
+                    .and_then(|shown_at| *shown_at)
+                    .is_some_and(|shown_at| shown_at.elapsed() < Duration::from_millis(400));
+                if just_shown {
+                    return;
+                }
                 if let Ok(mut focus_lost_at) = state.quick_panel_focus_lost_at.lock() {
                     *focus_lost_at = Some(Instant::now());
                 }

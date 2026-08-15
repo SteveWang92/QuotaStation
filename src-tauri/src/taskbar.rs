@@ -5,10 +5,15 @@ use tauri::{Manager, PhysicalPosition, PhysicalSize};
 use windows::{
     Win32::{
         Foundation::{HWND, RECT},
-        UI::WindowsAndMessaging::{
-            FindWindowExW, FindWindowW, GetParent, GetWindowLongW, GetWindowRect, MoveWindow, SetParent,
-            SetWindowLongW, GWL_EXSTYLE, GWL_STYLE, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE,
-            WS_EX_TOOLWINDOW, WS_POPUP,
+        System::Threading::{AttachThreadInput, GetCurrentThreadId},
+        UI::{
+            Input::KeyboardAndMouse::SetFocus,
+            WindowsAndMessaging::{
+                FindWindowExW, FindWindowW, GetForegroundWindow, GetParent,
+                GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, MoveWindow, SetForegroundWindow,
+                SetParent, SetWindowLongW, GWL_EXSTYLE, GWL_STYLE, WS_CHILD, WS_CLIPSIBLINGS,
+                WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+            },
         },
     },
     core::{PCWSTR, w},
@@ -83,6 +88,64 @@ fn dock_widget(app: &tauri::AppHandle) -> Result<(), String> {
             MoveWindow(hwnd, x, y, width, height, true).map_err(|error| error.to_string())?;
         }
     }
+    Ok(())
+}
+
+/// Where the widget is on screen, for anchoring the panel a click on it opens.
+///
+/// Read from the window handle rather than from Tauri: once the widget is docked it is a
+/// child of the taskbar, and its Tauri position is then relative to that parent while
+/// `GetWindowRect` stays in screen coordinates whether it is docked or floating.
+#[cfg(windows)]
+pub fn widget_screen_rect(
+    app: &tauri::AppHandle,
+) -> Result<(PhysicalPosition<f64>, PhysicalSize<f64>), String> {
+    let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
+    let hwnd = widget.hwnd().map_err(|error| error.to_string())?;
+    let rect = window_rect(hwnd).ok_or("unable to read taskbar widget bounds")?;
+    Ok((
+        PhysicalPosition::new(f64::from(rect.left), f64::from(rect.top)),
+        PhysicalSize::new(
+            f64::from(rect.right - rect.left),
+            f64::from(rect.bottom - rect.top),
+        ),
+    ))
+}
+
+/// Hands a window the foreground when the click that asked for it landed on somebody else's
+/// window.
+///
+/// Windows only grants the foreground to the process that owns the click. A click on the
+/// docked widget belongs to Explorer — the widget is a child of the taskbar — so the panel
+/// this opens is shown, refused the foreground, and told immediately that it lost focus,
+/// which its own dismissal then acts on. Borrowing the input queue of whichever thread does
+/// hold the foreground is the documented way to be allowed to take it.
+#[cfg(windows)]
+pub fn raise_window(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
+    // On the thread that owns the window: the input queues being attached are the ones the
+    // calling thread has, and a command thread has none of the window's.
+    let handle = app.clone();
+    let label = label.to_string();
+    app.run_on_main_thread(move || {
+        let Some(window) = handle.get_webview_window(&label) else { return };
+        let Ok(hwnd) = window.hwnd() else { return };
+        unsafe {
+            let holder = GetWindowThreadProcessId(GetForegroundWindow(), None);
+            let ours = GetCurrentThreadId();
+            let borrowed =
+                holder != 0 && holder != ours && AttachThreadInput(holder, ours, true).as_bool();
+            let _ = SetForegroundWindow(hwnd);
+            let _ = SetFocus(Some(hwnd));
+            if borrowed {
+                let _ = AttachThreadInput(holder, ours, false);
+            }
+        }
+    })
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+pub fn raise_window(_app: &tauri::AppHandle, _label: &str) -> Result<(), String> {
     Ok(())
 }
 
@@ -169,6 +232,13 @@ pub fn place_widget(_app: &tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(not(windows))]
 pub fn set_widget_size(_app: &tauri::AppHandle, _provider_count: u32) -> Result<(), String> {
+    Err("taskbar status is supported on Windows only".to_string())
+}
+
+#[cfg(not(windows))]
+pub fn widget_screen_rect(
+    _app: &tauri::AppHandle,
+) -> Result<(tauri::PhysicalPosition<f64>, tauri::PhysicalSize<f64>), String> {
     Err("taskbar status is supported on Windows only".to_string())
 }
 
