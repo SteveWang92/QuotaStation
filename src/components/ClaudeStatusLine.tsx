@@ -19,6 +19,7 @@ export function ClaudeStatusLine() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
 
   useEffect(() => {
     void invoke<ClaudeStatusLineStatus>("get_claude_status_line").then(setStatus).catch(() => {
@@ -43,11 +44,14 @@ export function ClaudeStatusLine() {
   const change = useCallback(async (patch: Partial<AppSettings>) => {
     if (!settings) return;
     const next = { ...settings, ...patch };
-    setSettings(next);
+    setSavingSettings(true);
+    setError(null);
     try {
       setSettings(await invoke<AppSettings>("set_app_settings", { settings: next }));
     } catch (cause) {
       setError(errorMessage(cause));
+    } finally {
+      setSavingSettings(false);
     }
   }, [settings]);
 
@@ -94,6 +98,7 @@ export function ClaudeStatusLine() {
               <input
                 type="checkbox"
                 checked={settings.statusLineFullDetails}
+                disabled={savingSettings}
                 onChange={(event) => void change({ statusLineFullDetails: event.target.checked })}
               />
               Show the session and the other providers, not only Claude's own windows
@@ -102,6 +107,7 @@ export function ClaudeStatusLine() {
               Provider names
               <select
                 value={settings.statusLineProviderLabels}
+                disabled={savingSettings}
                 onChange={(event) =>
                   void change({
                     statusLineProviderLabels: event.target.value as ProviderLabelStyle,

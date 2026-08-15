@@ -56,12 +56,11 @@ impl AppState {
     /// Applies a change and records it, so a preference the user expressed survives the
     /// next start whether it came from the tray or from the settings dialog.
     fn update_settings(&self, change: impl FnOnce(&mut AppSettings)) -> Result<AppSettings, String> {
-        let updated = {
-            let mut settings = self.settings.lock().map_err(|_| "Settings unavailable.".to_string())?;
-            change(&mut settings);
-            settings.clone()
-        };
+        let mut settings = self.settings.lock().map_err(|_| "Settings unavailable.".to_string())?;
+        let mut updated = settings.clone();
+        change(&mut updated);
         settings::save(&self.settings_path, &updated)?;
+        *settings = updated.clone();
         Ok(updated)
     }
 

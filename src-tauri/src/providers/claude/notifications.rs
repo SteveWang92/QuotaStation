@@ -126,16 +126,18 @@ fn hook_positions(settings: &serde_json::Value) -> Vec<usize> {
                 .get("hooks")
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|commands| {
-                    commands.iter().any(|command| {
-                        command
-                            .get("command")
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(|command| command.contains(HOOK_ARG))
-                    })
+                    commands.iter().any(is_notification_handler)
                 })
         })
         .map(|(index, _)| index)
         .collect()
+}
+
+fn is_notification_handler(handler: &serde_json::Value) -> bool {
+    handler
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|command| command.contains(HOOK_ARG))
 }
 
 pub fn hook_command() -> Result<String> {
@@ -178,20 +180,32 @@ fn remove_from(path: &std::path::Path) -> Result<()> {
     write_settings(path, &settings, source.as_deref())
 }
 
-/// Drops QuotaStation's own Stop entries, and reports whether there were any. An array left
-/// empty is removed with its key: a hook that is not installed should leave no trace of
-/// having been.
+/// Drops QuotaStation's own Stop handlers, and reports whether there were any. A matcher
+/// group can own several handlers, so the group survives until the last one is removed.
+/// An array left empty is removed with its key: a hook that is not installed should leave
+/// no trace of having been.
 fn remove_positions(settings: &mut serde_json::Value) -> bool {
-    let positions = hook_positions(settings);
-    if positions.is_empty() {
-        return false;
-    }
     let Some(hooks) = settings.get_mut("hooks").and_then(serde_json::Value::as_object_mut) else {
         return false;
     };
+    let mut removed = false;
     if let Some(stop) = hooks.get_mut("Stop").and_then(serde_json::Value::as_array_mut) {
-        for index in positions.into_iter().rev() {
-            stop.remove(index);
+        for index in (0..stop.len()).rev() {
+            let mut remove_group = false;
+            if let Some(handlers) = stop[index]
+                .get_mut("hooks")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                let before = handlers.len();
+                handlers.retain(|handler| !is_notification_handler(handler));
+                if handlers.len() != before {
+                    removed = true;
+                    remove_group = handlers.is_empty();
+                }
+            }
+            if remove_group {
+                stop.remove(index);
+            }
         }
         if stop.is_empty() {
             hooks.remove("Stop");
@@ -202,7 +216,7 @@ fn remove_positions(settings: &mut serde_json::Value) -> bool {
     {
         object.remove("hooks");
     }
-    true
+    removed
 }
 
 #[cfg(test)]
@@ -262,6 +276,29 @@ mod tests {
         let settings: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(settings["hooks"]["Stop"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn removing_preserves_another_handler_in_the_same_matcher_group() {
+        let path = scratch("shared-group");
+        std::fs::write(
+            &path,
+            r#"{"hooks":{"Stop":[{"matcher":"","hooks":[
+                {"type":"command","command":"mine.exe"},
+                {"type":"command","command":"\"q.exe\" --claude-notify"}
+            ]}]}}"#,
+        )
+        .unwrap();
+
+        remove_from(&path).expect("remove only the QuotaStation handler");
+        let settings: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let stop = settings["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1, "the shared matcher group survives");
+        let handlers = stop[0]["hooks"].as_array().unwrap();
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0]["command"], "mine.exe");
         let _ = std::fs::remove_file(&path);
     }
 

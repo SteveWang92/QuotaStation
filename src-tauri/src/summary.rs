@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{LimitKind, WorkspaceSnapshot};
+use crate::domain::{Freshness, LimitKind, WorkspaceSnapshot};
 use crate::providers::claude::statusline::app_data_dir;
 
 const SUMMARY_FILE: &str = "quota-summary.json";
@@ -89,9 +89,13 @@ fn summarize(workspace: &WorkspaceSnapshot, now: i64) -> QuotaSummary {
                 windows: snapshot
                     .limits
                     .iter()
-                    // A window with no percentage says nothing a reader could render, and
-                    // the reader has no room to explain an absence.
+                    // A stale window cannot be explained in the status line's available
+                    // space, so omitting it is safer than restamping an old percentage as
+                    // current. A window with no percentage likewise has nothing to render.
                     .filter_map(|limit| {
+                        if limit.freshness != Freshness::Fresh {
+                            return None;
+                        }
                         Some(QuotaWindow {
                             label: short_window_label(limit.window_duration_mins, limit.kind),
                             used_percent: limit.used_percent?,
@@ -182,6 +186,19 @@ mod tests {
                 freshness: Freshness::Fresh,
                 status_color: String::new(),
             },
+            // A percentage is not enough: stale quota must not be restamped as current
+            // merely because the application has just published another summary.
+            LimitWindow {
+                kind: LimitKind::Secondary,
+                label: "Weekly window".to_string(),
+                used_percent: Some(91.0),
+                window_duration_mins: Some(10_080),
+                resets_at: Some(1_800_007_800),
+                source: WindowSource::AppServer,
+                observed_at: 1_799_000_000,
+                freshness: Freshness::Stale,
+                status_color: String::new(),
+            },
         ];
         codex.today.total = 1_234;
         WorkspaceSnapshot {
@@ -196,7 +213,11 @@ mod tests {
         assert_eq!(summary.schema, SCHEMA);
         let codex = &summary.providers[0];
         assert_eq!(codex.short_name, "CDX");
-        assert_eq!(codex.windows.len(), 1, "the unreadable window is left out");
+        assert_eq!(
+            codex.windows.len(),
+            1,
+            "unreadable and stale windows are both left out"
+        );
         assert_eq!(codex.windows[0].label, "5h");
         assert_eq!(codex.windows[0].used_percent, 62.0);
         assert_eq!(codex.today_tokens, 1_234);
