@@ -244,7 +244,9 @@ button { font: inherit; }
 .status-summary .settings-toggle { margin-left: auto; }
 .status-summary > svg { flex: none; width: 21px; height: 21px; }
 .status-summary > strong { flex: none; }
-.status-bar { border-color: color-mix(in srgb, var(--status-color) 48%, var(--line)); }
+/* A healthy bar holds nothing but the control, so tinting its border would draw a green
+   frame around a button that is not reporting anything. */
+.status-bar:not(.healthy) { border-color: color-mix(in srgb, var(--status-color) 48%, var(--line)); }
 .status-bar .status-summary > svg, .status-bar .status-summary > strong { color: var(--status-color); }
 .status-message { min-width: 0; color: #c8cdd0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-toggle { height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #4b5861; border-radius: 4px; color: #d4d8da; background: transparent; cursor: pointer; font-size: 12px; }

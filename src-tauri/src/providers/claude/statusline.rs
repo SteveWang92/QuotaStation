@@ -77,10 +77,15 @@ struct Worktree {
     branch: Option<String>,
 }
 
+/// Since Claude Code 2.1.132 the token counts describe the window as it stands rather than
+/// the session's running total, which is what makes them worth printing beside the share.
 #[derive(Deserialize)]
 struct ContextWindow {
     used_percentage: Option<f64>,
     remaining_percentage: Option<f64>,
+    total_input_tokens: Option<u64>,
+    total_output_tokens: Option<u64>,
+    context_window_size: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -293,6 +298,11 @@ fn view_of<'a>(input: Option<&'a StatusLineInput>, limits: Option<&RateLimits>) 
                 .used_percentage
                 .or_else(|| context.remaining_percentage.map(|free| 100.0 - free))
         }),
+        context_tokens: context.and_then(|context| {
+            let size = context.context_window_size.filter(|size| *size > 0)?;
+            let input = context.total_input_tokens?;
+            Some((input + context.total_output_tokens.unwrap_or(0), size))
+        }),
         session_cost_usd: input
             .and_then(|input| input.cost.as_ref())
             .and_then(|cost| cost.total_cost_usd),
@@ -313,6 +323,8 @@ struct StatusLineView<'a> {
     directory: Option<String>,
     branch: Option<String>,
     context_used: Option<f64>,
+    /// Tokens in the window and the window's size, so the share has a magnitude beside it.
+    context_tokens: Option<(u64, u64)>,
     session_cost_usd: Option<f64>,
     /// One entry per provider, this client's own first.
     quotas: Vec<QuotaSegment>,
@@ -349,6 +361,23 @@ fn percent(used: f64) -> String {
     format!("{colour}{text}{RESET}")
 }
 
+/// A token count in the width a status line can spare, written the way `/context` writes it
+/// so the two can be compared without arithmetic.
+fn tokens_short(tokens: u64) -> String {
+    match tokens {
+        tokens if tokens >= 1_000_000 => {
+            let millions = tokens as f64 / 1_000_000.0;
+            if millions >= 10.0 {
+                format!("{millions:.0}M")
+            } else {
+                format!("{millions:.1}M")
+            }
+        }
+        tokens if tokens >= 1_000 => format!("{:.1}k", tokens as f64 / 1_000.0),
+        tokens => tokens.to_string(),
+    }
+}
+
 /// How long a window has left, in the width a status line can spare. Whole days carry the
 /// point on their own; below a day the minutes are what decide whether to keep working.
 fn countdown(resets_at: i64, now: i64) -> Option<String> {
@@ -383,7 +412,13 @@ fn status_line(view: &StatusLineView) -> String {
             session.push(branch.clone());
         }
         if let Some(used) = view.context_used {
-            session.push(format!("ctx {}", percent(used)));
+            let share = percent(used);
+            session.push(match view.context_tokens {
+                Some((tokens, size)) => {
+                    format!("ctx {share} ({}/{})", tokens_short(tokens), tokens_short(size))
+                }
+                None => format!("ctx {share}"),
+            });
         }
         // A session that has spent nothing yet has no figure worth a column.
         if let Some(cost) = view.session_cost_usd.filter(|cost| *cost > 0.0) {
@@ -752,6 +787,7 @@ mod tests {
             directory: None,
             branch: None,
             context_used: None,
+            context_tokens: None,
             session_cost_usd: None,
             quotas,
             full_details: true,
@@ -811,10 +847,11 @@ mod tests {
         session.directory = Some("QuotaStation".to_string());
         session.branch = Some("dev".to_string());
         session.context_used = Some(19.0);
+        session.context_tokens = Some((189_300, 1_000_000));
         session.session_cost_usd = Some(0.1234);
         assert_eq!(
             plain(&status_line(&session)),
-            "Opus · QuotaStation · dev · ctx 19% · $0.12\n\
+            "Opus · QuotaStation · dev · ctx 19% (189.3k/1.0M) · $0.12\n\
              CLD 5h 24% (4h02m) 7d 41% (5d) · CDX 5h 62% (2h10m)"
         );
     }
@@ -866,6 +903,30 @@ mod tests {
         assert_eq!(windows.len(), 1, "a bucket with no percentage renders nothing");
         assert_eq!(windows[0].label, "5h");
         assert_eq!(windows[0].used_percent, 23.5);
+    }
+
+    #[test]
+    fn token_counts_are_written_the_way_the_context_command_writes_them() {
+        assert_eq!(tokens_short(189_300), "189.3k");
+        assert_eq!(tokens_short(1_000_000), "1.0M");
+        assert_eq!(tokens_short(200_000), "200.0k");
+        assert_eq!(tokens_short(940), "940");
+    }
+
+    #[test]
+    fn the_context_window_is_read_as_the_tokens_now_in_it() {
+        let payload = r#"{
+            "context_window": {
+                "total_input_tokens": 15500,
+                "total_output_tokens": 1200,
+                "context_window_size": 200000,
+                "used_percentage": 8
+            }
+        }"#;
+        let input: StatusLineInput = serde_json::from_str(payload).expect("read the payload");
+        let context = input.context_window.expect("the payload carries a context window");
+        assert_eq!(context.total_input_tokens, Some(15_500));
+        assert_eq!(context.context_window_size, Some(200_000));
     }
 
     #[test]

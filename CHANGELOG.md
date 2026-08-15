@@ -11,6 +11,7 @@ on `main`, with the matching section below as its notes.
 
 - Claude Code's status line now shows every provider's quota, not only Claude's own.
 - Settings for the status line: how much it reports, and how providers are named in it.
+- The status line names the tokens in the context window beside the share used.
 
 ### Changed
 
@@ -24,6 +25,10 @@ on `main`, with the matching section below as its notes.
 ### Removed
 
 - Status text, provider names and a model count that each appeared twice on a surface.
+
+### Fixed
+
+- A healthy status bar no longer frames the settings button in green.
 
 ## [0.1.0] - 2026-08-15
 
