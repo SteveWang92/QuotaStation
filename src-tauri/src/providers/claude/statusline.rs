@@ -484,67 +484,88 @@ fn countdown(resets_at: i64, now: i64) -> Option<String> {
     })
 }
 
+/// Within a group, the readings are of one kind and a dot is enough to separate them.
+const WITHIN: &str = " \u{b7} ";
+/// Between groups, a bar: the eye stops there, which is what tells the model apart from the
+/// project, the project from the session's own cost, and one provider from the next.
+const BETWEEN: &str = " | ";
+
+fn joined(groups: Vec<Vec<String>>) -> String {
+    groups
+        .into_iter()
+        .filter(|group| !group.is_empty())
+        .map(|group| group.join(WITHIN))
+        .collect::<Vec<_>>()
+        .join(BETWEEN)
+}
+
 /// What Claude Code shows while the bridge is installed.
 ///
-/// Two rows: what this session is, and what is left across every provider QuotaStation
-/// watches. The second row is the whole reason the bridge is worth its screen — Claude Code
-/// knows its own quota and nothing about anyone else's, and this is the one place both can
-/// be read without leaving the terminal.
+/// Three rows, each answering one question: what this session is, what it has spent, and
+/// what is left across every provider QuotaStation watches. The last row is the whole reason
+/// the bridge is worth its screen — Claude Code knows its own quota and nothing about anyone
+/// else's, and this is the one place both can be read without leaving the terminal.
 fn status_line(view: &StatusLineView) -> String {
-    let mut session: Vec<String> = Vec::new();
-    if let Some(model) = view.model.filter(|model| !model.is_empty()) {
-        session.push(model.to_string());
+    let mut model: Vec<String> = Vec::new();
+    if let Some(name) = view.model.filter(|model| !model.is_empty()) {
+        model.push(name.to_string());
     }
+    let mut project: Vec<String> = Vec::new();
+    let mut request: Vec<String> = Vec::new();
+    let mut spend: Vec<String> = Vec::new();
     if view.full_details {
         if let Some(effort) = view.effort.filter(|level| !level.is_empty()) {
-            session.push(effort.to_string());
+            model.push(effort.to_string());
         }
         if view.fast_mode {
-            session.push("fast".to_string());
+            model.push("fast".to_string());
         }
         if view.thinking {
-            session.push("think".to_string());
+            model.push("think".to_string());
         }
         if let Some(directory) = &view.directory {
-            session.push(directory.clone());
+            project.push(directory.clone());
         }
         if let Some(branch) = &view.branch {
-            session.push(branch.clone());
+            project.push(branch.clone());
         }
         if let Some((number, state)) = view.pull_request {
-            session.push(match state.filter(|state| !state.is_empty()) {
+            project.push(match state.filter(|state| !state.is_empty()) {
                 Some(state) => format!("PR #{number} {state}"),
                 None => format!("PR #{number}"),
             });
         }
         if let Some(used) = view.context_used {
             let share = percent(used);
-            session.push(match view.context_tokens {
+            request.push(match view.context_tokens {
                 Some((tokens, size)) => {
                     format!("ctx {share} ({}/{})", tokens_short(tokens), tokens_short(size))
                 }
                 None => format!("ctx {share}"),
             });
         }
+        // One decimal, because in Claude Code almost every input token is a cache read and
+        // the whole figure rounds to 100% on an ordinary turn. The turns worth noticing are
+        // the ones that had to rebuild part of the prefix, and that shows in the fraction.
         if let Some(hit) = view.cache_hit {
-            session.push(format!("cache {hit:.0}%"));
+            request.push(format!("cache {hit:.1}%"));
         }
         // A session that has spent nothing yet has no figure worth a column.
         if let Some(cost) = view.session_cost_usd.filter(|cost| *cost > 0.0) {
-            session.push(format!("${cost:.2}"));
+            spend.push(format!("${cost:.2}"));
         }
     }
 
-    // Without the session row there is only one row, so this client's own quota joins it
-    // rather than being left alone on a second line that says less than the first.
+    // Without the session rows there is only one row, so this client's own quota joins it
+    // rather than being left alone on a line that says less than the one above.
     let segments: &[QuotaSegment] = if view.full_details {
         &view.quotas
     } else {
         &view.quotas[..view.quotas.len().min(1)]
     };
-    let mut quotas: Vec<String> = Vec::new();
+    let mut quotas: Vec<Vec<String>> = Vec::new();
     for segment in segments {
-        let windows: Vec<String> = segment
+        let mut windows: Vec<String> = segment
             .windows
             .iter()
             // A window that has already restarted describes nothing that is running now.
@@ -565,17 +586,19 @@ fn status_line(view: &StatusLineView) -> String {
         }
         // Naming the provider only matters once there is a second one to tell it apart
         // from; alone inside Claude Code it says what the row is already running in.
-        quotas.push(if view.full_details {
-            format!("{} {}", segment.label, windows.join(" "))
-        } else {
-            windows.join(" ")
-        });
+        if view.full_details {
+            let first = windows.remove(0);
+            windows.insert(0, format!("{} {first}", segment.label));
+        }
+        quotas.push(windows);
     }
 
     let rows = if view.full_details {
-        vec![session.join(" · "), quotas.join(" · ")]
+        // The session line grew past the width a terminal gives it, so what the session is
+        // and what it has consumed are read on separate lines.
+        vec![joined(vec![model, project]), joined(vec![request, spend]), joined(quotas)]
     } else {
-        vec![session.into_iter().chain(quotas).collect::<Vec<_>>().join(" · ")]
+        vec![joined(std::iter::once(model).chain(quotas).collect())]
     };
     let lines: Vec<String> = rows.into_iter().filter(|line| !line.is_empty()).collect();
     if lines.is_empty() {
@@ -964,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn the_second_row_reports_every_provider_and_the_first_reports_the_session() {
+    fn each_row_answers_one_question_and_a_bar_separates_the_kinds_inside_it() {
         let mut session = view(Some("Opus"), two_providers());
         session.directory = Some("QuotaStation".to_string());
         session.branch = Some("dev".to_string());
@@ -973,8 +996,9 @@ mod tests {
         session.session_cost_usd = Some(0.1234);
         assert_eq!(
             plain(&status_line(&session)),
-            "Opus · QuotaStation · dev · ctx 19% (189.3k/1.0M) · $0.12\n\
-             CLD 5h 24% (4h02m) 7d 41% (5d) · CDX 5h 62% (2h10m)"
+            "Opus | QuotaStation · dev\n\
+             ctx 19% (189.3k/1.0M) | $0.12\n\
+             CLD 5h 24% (4h02m) · 7d 41% (5d) | CDX 5h 62% (2h10m)"
         );
     }
 
@@ -986,7 +1010,7 @@ mod tests {
         session.full_details = false;
         assert_eq!(
             plain(&status_line(&session)),
-            "Opus · 5h 24% (4h02m) 7d 41% (5d)",
+            "Opus | 5h 24% (4h02m) · 7d 41% (5d)",
             "no directory, no context, and nothing about the other provider"
         );
     }
@@ -1003,7 +1027,7 @@ mod tests {
         }]));
         assert_eq!(
             line,
-            format!("CDX 5h {GREEN}12%{RESET} 7d {YELLOW}72%{RESET} 30d {RED}91%{RESET}")
+            format!("CDX 5h {GREEN}12%{RESET} · 7d {YELLOW}72%{RESET} · 30d {RED}91%{RESET}")
         );
     }
 
@@ -1037,7 +1061,8 @@ mod tests {
         session.cache_hit = Some(78.4);
         assert_eq!(
             plain(&status_line(&session)),
-            "Opus · high · fast · think · PR #1234 pending · cache 78%"
+            "Opus · high · fast · think | PR #1234 pending
+cache 78.4%"
         );
     }
 

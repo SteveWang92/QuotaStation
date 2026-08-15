@@ -13,16 +13,14 @@ interface StatusBarProps {
 export function StatusBar({ attention, onOpenSettings }: StatusBarProps) {
   return (
     <footer className="status-bar">
-      <div className="status-summary">
-        <button
-          type="button"
-          className={`settings-toggle${attention ? " attention" : ""}`}
-          onClick={onOpenSettings}
-        >
-          <SlidersHorizontal aria-hidden="true" />
-          Settings and diagnostics
-        </button>
-      </div>
+      <button
+        type="button"
+        className={`settings-toggle${attention ? " attention" : ""}`}
+        onClick={onOpenSettings}
+      >
+        <SlidersHorizontal aria-hidden="true" />
+        Settings and diagnostics
+      </button>
     </footer>
   );
 }

@@ -32,7 +32,8 @@ on `main`, with the matching section below as its notes.
 
 ### Fixed
 
-- A healthy status bar no longer frames the settings button in green.
+- The settings button no longer sits inside an empty bordered strip.
+- The settings dialog is tall enough for its own contents.
 
 ## [0.1.0] - 2026-08-15
 

@@ -229,18 +229,9 @@ button { font: inherit; }
 .token-dot.violet { background: var(--violet); }
 .token-dot.blue { background: var(--blue); }
 
-.status-bar {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  color: #d4d8da;
-  background: rgba(16, 23, 29, 0.78);
-  font-size: 13px;
-}
-.status-summary { min-height: 56px; display: flex; align-items: center; padding: 0 16px 0 20px; }
-.status-summary .settings-toggle { margin-left: auto; }
+/* One control, so no panel around it: a bordered strip spanning the window would be a
+   container drawn for a single button. */
+.status-bar { margin-top: auto; display: flex; justify-content: flex-end; }
 .settings-toggle { height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #4b5861; border-radius: 4px; color: #d4d8da; background: transparent; cursor: pointer; font-size: 12px; }
 .settings-toggle:hover { border-color: #76838d; background: #182129; }
 .settings-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
@@ -251,7 +242,7 @@ button { font: inherit; }
 /* Settings and diagnostics are read together, so the dialog is one scrolling page and
    takes a fixed height: the two sections should not resize the dialog under the pointer
    as their contents change. */
-.settings-dialog { width: min(880px, 100%); height: min(720px, 100%); display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
+.settings-dialog { width: min(880px, 100%); height: min(900px, 100%); display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
 .settings-dialog:focus { outline: none; }
 .settings-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px 12px 18px; border-bottom: 1px solid var(--line-soft); }
 .settings-header h2 { margin: 0; font-size: 15px; font-weight: 650; }
