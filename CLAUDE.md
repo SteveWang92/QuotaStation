@@ -43,6 +43,18 @@ QuotaStation and take precedence when they differ.
 - Use the minimum local check required by the global rules. The three gates CI enforces are
   `npm test`, `npm run build`, and `cargo test --locked --manifest-path src-tauri/Cargo.toml`.
   There is no lint or format gate.
+- **The verification artifact is the unbundled release build, never the debug one.** Steve
+  runs `src-tauri/target/release/quotastation.exe` — a debug build is a different binary with
+  different performance, and handing him one is handing him something he does not run. The
+  `--debug` and `npm run tauri dev` forms in `docs/development.md` exist for diagnosing a
+  specific problem, not for finishing a change.
+- After the gates pass, close the running instance, rebuild it with `npm run build` then
+  `cargo build --release --manifest-path src-tauri/Cargo.toml`, and start it again with
+  `explorer.exe src-tauri\target\release\quotastation.exe` so it comes up owned by the shell
+  exactly as a double-click would rather than tied to the agent's terminal. Keep that
+  executable path stable: Claude Code's registered status-line command points at it.
+- Only one instance runs at a time — a second one hands over to the first and exits, which
+  looks like a crash. Close the running copy, including one started from the tray, first.
 
 ## Changelog
 
