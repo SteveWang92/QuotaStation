@@ -2,17 +2,22 @@
 use tauri::{Manager, PhysicalPosition, PhysicalSize};
 
 #[cfg(windows)]
+use std::sync::atomic::{AtomicIsize, Ordering};
+
+#[cfg(windows)]
 use windows::{
     Win32::{
-        Foundation::{HWND, RECT},
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
         UI::{
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
-                FindWindowExW, FindWindowW, GetForegroundWindow, GetParent,
-                GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, MoveWindow, SetForegroundWindow,
-                SetParent, SetWindowLongW, GWL_EXSTYLE, GWL_STYLE, WS_CHILD, WS_CLIPSIBLINGS,
-                WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+                CallNextHookEx, FindWindowExW, FindWindowW, GetForegroundWindow, GetParent,
+                GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, HC_ACTION, IsWindowVisible,
+                MSLLHOOKSTRUCT, MoveWindow, SetForegroundWindow, SetParent,
+                SetWindowLongW, SetWindowsHookExW, GWL_EXSTYLE, GWL_STYLE, WH_MOUSE_LL,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE,
+                WS_EX_TOOLWINDOW, WS_POPUP,
             },
         },
     },
@@ -31,6 +36,9 @@ fn window_rect(hwnd: HWND) -> Option<RECT> {
 /// leave the user with a status surface that nothing brings back.
 #[cfg(windows)]
 pub fn place_widget(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(hwnd) = app.get_webview_window("taskbar-widget").and_then(|widget| widget.hwnd().ok()) {
+        WATCHED_WIDGET.store(hwnd.0 as isize, Ordering::Relaxed);
+    }
     match dock_widget(app) {
         Ok(()) => Ok(()),
         Err(reason) => match float_widget(app) {
@@ -111,6 +119,68 @@ pub fn widget_screen_rect(
         ),
     ))
 }
+
+/// The docked widget, for the click watch below, or zero while nothing is docked.
+#[cfg(windows)]
+static WATCHED_WIDGET: AtomicIsize = AtomicIsize::new(0);
+
+/// Opens the quick panel when the left button is released over the docked widget.
+///
+/// **Why a system hook rather than a click handler in the widget.** Explorer takes every
+/// mouse message over the taskbar for itself: with the widget docked, its webview receives
+/// no click and no pointer movement at all — measured, not assumed. A `WM_LBUTTONUP`
+/// handler on the window would see nothing either, because the message never arrives. A
+/// low-level mouse hook sits ahead of that routing, and it is the only place the click is
+/// still ours to read.
+///
+/// It reads nothing but the pointer and the left button, and only acts on a release inside
+/// the widget's own rectangle. That release is consumed so Explorer does not answer the same
+/// click by giving the taskbar the foreground, which is what left the panel opening behind
+/// it and closing again on the focus it never got. Every other event is passed straight on.
+#[cfg(windows)]
+unsafe extern "system" fn on_mouse(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32
+        && matches!(wparam.0 as u32, WM_LBUTTONDOWN | WM_LBUTTONUP)
+        && over_widget(unsafe { (*(lparam.0 as *const MSLLHOOKSTRUCT)).pt })
+    {
+        if wparam.0 as u32 == WM_LBUTTONUP {
+            crate::open_quick_panel_from_taskbar();
+        }
+        // The press is swallowed with the release: half a click left behind would leave
+        // Explorer waiting for a button it never sees come up.
+        return LRESULT(1);
+    }
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+#[cfg(windows)]
+fn over_widget(point: POINT) -> bool {
+    let hwnd = HWND(WATCHED_WIDGET.load(Ordering::Relaxed) as *mut _);
+    if hwnd.is_invalid() || !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return false;
+    }
+    window_rect(hwnd).is_some_and(|rect| {
+        (rect.left..rect.right).contains(&point.x) && (rect.top..rect.bottom).contains(&point.y)
+    })
+}
+
+/// Installs the click watch. Must run on the thread with the message loop — a low-level
+/// hook is called on the thread that set it, and a thread that never pumps messages is one
+/// the system eventually drops the hook from.
+#[cfg(windows)]
+pub fn watch_widget_clicks() {
+    static INSTALLED: AtomicIsize = AtomicIsize::new(0);
+    if INSTALLED.swap(1, Ordering::SeqCst) == 1 {
+        return;
+    }
+    if let Err(error) = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(on_mouse), None, 0) } {
+        INSTALLED.store(0, Ordering::SeqCst);
+        crate::log::write(format!("taskbar status click watch unavailable: {error}"));
+    }
+}
+
+#[cfg(not(windows))]
+pub fn watch_widget_clicks() {}
 
 /// Hands a window the foreground when the click that asked for it landed on somebody else's
 /// window.

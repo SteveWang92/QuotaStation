@@ -16,6 +16,7 @@ on `main`, with the matching section below as its notes.
 - The status line reports cache hits, effort, thinking, fast mode and the open pull request.
 - Quota windows in the status line mark whether they are being spent faster than they elapse.
 - Diagnostics name the running version and which build it is.
+- Clicking the taskbar status opens the quick panel beside it.
 
 ### Changed
 
@@ -41,6 +42,7 @@ on `main`, with the matching section below as its notes.
 - A failed settings write no longer changes the running application's preferences.
 - The settings button no longer sits inside an empty bordered strip.
 - The settings dialog is tall enough for its own contents.
+- The quick panel no longer opens inside a larger window that read as a second panel behind it.
 
 ## [0.1.0] - 2026-08-15
 

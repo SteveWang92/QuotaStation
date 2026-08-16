@@ -12,7 +12,7 @@ mod taskbar;
 
 use crate::settings::AppSettings;
 
-use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex as StdMutex}, time::{Duration, Instant}};
+use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex as StdMutex, OnceLock}, time::{Duration, Instant}};
 
 use domain::{
     DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot, WatcherDiagnostics,
@@ -35,6 +35,10 @@ use tokio::sync::{Mutex, RwLock};
 
 #[cfg(desktop)]
 use tauri_plugin_autostart::ManagerExt;
+
+/// The handle the taskbar click watch reaches the application through: it is called from a
+/// system mouse hook, which is a bare C callback with nowhere to carry one.
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 pub struct AppState {
     storage: Storage,
@@ -175,6 +179,9 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
         if visible {
             let _ = widget.show();
             place_taskbar_widget(app);
+            // A low-level hook is called on the thread that installed it, so it has to be
+            // installed on the one running the message loop.
+            let _ = app.run_on_main_thread(taskbar::watch_widget_clicks);
         } else {
             let _ = widget.hide();
         }
@@ -389,7 +396,12 @@ fn show_main(app: &tauri::AppHandle) {
 
 /// The panel shows one column per provider, so its width follows how many are enabled.
 /// Sizing it as it opens keeps the edge anchoring below working from the real size.
-const QUICK_PANEL_COLUMN_WIDTH: u32 = 390;
+///
+/// This is the width the columns are laid out at, so a scaled display is given the scaled
+/// window: 390 device pixels left a 125% display 312 layout pixels to draw a 390-pixel
+/// column in, and the reflow made the panel taller than the height the renderer had
+/// already measured at the width the window opened with.
+const QUICK_PANEL_COLUMN_WIDTH: f64 = 390.0;
 /// Only what the window opens at before the renderer has measured anything. Every height
 /// after the first render comes from [`set_quick_panel_height`].
 const QUICK_PANEL_HEIGHT: u32 = 730;
@@ -397,8 +409,45 @@ const QUICK_PANEL_HEIGHT: u32 = 730;
 /// the growth below so a panel that grows stops exactly where one that opens would.
 const QUICK_PANEL_MARGIN: f64 = 12.0;
 
-fn quick_panel_size(providers: usize, height: u32) -> tauri::PhysicalSize<u32> {
-    tauri::PhysicalSize::new(QUICK_PANEL_COLUMN_WIDTH * providers.clamp(1, 2) as u32, height)
+/// What the window rect holds that the page is not drawn in.
+///
+/// An undecorated window with a shadow keeps an invisible resize frame, so its window rect
+/// is larger than its content area — 18 x 10 physical pixels at 125% here. `outer_size`,
+/// `outer_position` and the work area are all in window-rect coordinates while `set_size`
+/// takes a content size, so every placement below stays in window-rect units and converts
+/// exactly once, in [`resize_quick_panel`]. Reading one and writing the other grew the
+/// window by this frame on every open, and the content, which had not changed, kept the
+/// height it was measured at — leaving a band of bare background around the card that read
+/// as a second panel behind it.
+fn quick_panel_frame(panel: &tauri::WebviewWindow) -> tauri::PhysicalSize<u32> {
+    let Ok(outer) = panel.outer_size() else { return tauri::PhysicalSize::new(0, 0) };
+    let inner = panel.inner_size().unwrap_or(outer);
+    tauri::PhysicalSize::new(
+        outer.width.saturating_sub(inner.width),
+        outer.height.saturating_sub(inner.height),
+    )
+}
+
+fn resize_quick_panel(
+    panel: &tauri::WebviewWindow,
+    frame: tauri::PhysicalSize<u32>,
+    outer: tauri::PhysicalSize<u32>,
+) {
+    let _ = panel.set_size(tauri::PhysicalSize::new(
+        outer.width.saturating_sub(frame.width).max(1),
+        outer.height.saturating_sub(frame.height).max(1),
+    ));
+}
+
+/// The window rect the panel needs for `providers` columns, given the height it already holds.
+fn quick_panel_size(
+    providers: usize,
+    height: u32,
+    scale_factor: f64,
+    frame: tauri::PhysicalSize<u32>,
+) -> tauri::PhysicalSize<u32> {
+    let columns = QUICK_PANEL_COLUMN_WIDTH * providers.clamp(1, 2) as f64 * scale_factor.max(1.0);
+    tauri::PhysicalSize::new((columns.round() as u32).saturating_add(frame.width), height)
 }
 
 /// Where the panel sits once the renderer reports a different content height.
@@ -435,9 +484,11 @@ fn set_quick_panel_height(app: tauri::AppHandle, height: f64) -> Result<(), Stri
         return Ok(());
     }
     let scale_factor = panel.scale_factor().map_err(|error| error.to_string())?;
+    let frame = quick_panel_frame(&panel);
     let size = panel.outer_size().map_err(|error| error.to_string())?;
     let position = panel.outer_position().map_err(|error| error.to_string())?;
-    let requested = (height * scale_factor).round().clamp(1.0, u32::MAX as f64) as u32;
+    let requested = ((height * scale_factor).round().clamp(1.0, u32::MAX as f64) as u32)
+        .saturating_add(frame.height);
     let work_area = panel
         .current_monitor()
         .ok()
@@ -455,7 +506,7 @@ fn set_quick_panel_height(app: tauri::AppHandle, height: f64) -> Result<(), Stri
     if next_size == size && next_position == position {
         return Ok(());
     }
-    panel.set_size(next_size).map_err(|error| error.to_string())?;
+    resize_quick_panel(&panel, frame, next_size);
     panel.set_position(next_position).map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -541,8 +592,14 @@ fn toggle_quick_panel_beside(
     }
     // The renderer has already sized the window to its contents, so the panel opens at the
     // height it currently holds rather than at the height it was configured with.
+    let frame = quick_panel_frame(&panel);
     let current_height = panel.outer_size().map(|size| size.height).unwrap_or(QUICK_PANEL_HEIGHT);
-    let requested_size = quick_panel_size(state.enabled_providers().len(), current_height);
+    let requested_size = quick_panel_size(
+        state.enabled_providers().len(),
+        current_height,
+        panel.scale_factor().unwrap_or(1.0),
+        frame,
+    );
     if let Ok(mut focus_lost_at) = state.quick_panel_focus_lost_at.lock()
         && focus_lost_at.is_some_and(|lost_at| lost_at.elapsed() < Duration::from_millis(500))
     {
@@ -566,10 +623,10 @@ fn toggle_quick_panel_beside(
             anchor_size,
             requested_size,
         );
-        let _ = panel.set_size(fitted_size);
+        resize_quick_panel(&panel, frame, fitted_size);
         (position.x as f64, position.y as f64)
     } else {
-        let _ = panel.set_size(requested_size);
+        resize_quick_panel(&panel, frame, requested_size);
         (
             anchor_position.x - requested_size.width as f64,
             anchor_position.y - requested_size.height as f64,
@@ -603,18 +660,18 @@ fn toggle_quick_panel(app: &tauri::AppHandle, click: PhysicalPosition<f64>, tray
 /// Opens the panel above the taskbar status, anchored to the widget rather than to the tray
 /// icon.
 ///
-/// **Nothing calls this yet.** The widget is a child of the taskbar, so a click on it leaves
-/// the foreground with Explorer and the panel is dismissed by its own focus handling before
-/// it is seen; the workarounds tried so far do not hold. The plumbing is kept because it is
-/// correct as far as it goes — see `docs/TASKBAR_PANEL_TRIGGER.local.md` for what was
-/// measured — and the renderer will call it again once the focus behaviour is solved.
-#[tauri::command]
-fn toggle_quick_panel_from_taskbar(app: tauri::AppHandle) -> Result<(), String> {
-    let (position, size) = taskbar::widget_screen_rect(&app)?;
-    if toggle_quick_panel_beside(&app, position, size) {
-        taskbar::raise_window(&app, "quick-panel")?;
-    }
-    Ok(())
+/// Called from the click watch in [`taskbar`], which runs inside a low-level mouse hook, so
+/// the work is queued onto the main thread rather than done there: a hook that takes its
+/// time is a hook the system stops calling.
+pub(crate) fn open_quick_panel_from_taskbar() {
+    let Some(app) = APP.get().cloned() else { return };
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Ok((position, size)) = taskbar::widget_screen_rect(&handle) else { return };
+        if toggle_quick_panel_beside(&handle, position, size) {
+            let _ = taskbar::raise_window(&handle, "quick-panel");
+        }
+    });
 }
 
 #[cfg(test)]
@@ -669,6 +726,20 @@ mod quick_panel_tests {
         );
         assert!(position.y >= 12, "the top margin is kept");
         assert!(position.y + size.height as i32 <= 720 - 12, "so is the bottom one");
+    }
+
+    #[test]
+    fn a_column_is_reserved_in_layout_pixels_whatever_the_display_scales_by() {
+        let frame = tauri::PhysicalSize::new(18, 10);
+        assert_eq!(quick_panel_size(2, 600, 1.0, frame).width, 780 + 18);
+        assert_eq!(quick_panel_size(2, 600, 1.25, frame).width, 975 + 18);
+        assert_eq!(quick_panel_size(1, 600, 1.0, frame).width, 390 + 18);
+        assert_eq!(
+            quick_panel_size(3, 600, 1.0, frame).width,
+            780 + 18,
+            "two columns is the widest the panel goes"
+        );
+        assert_eq!(quick_panel_size(2, 600, 1.0, frame).height, 600, "the height is passed through");
     }
 
     #[test]
@@ -817,6 +888,7 @@ pub fn run() {
             });
             state.detect_providers();
             app.manage(state.clone());
+            let _ = APP.set(app.handle().clone());
             build_tray(app)?;
             watch_for_finished_turns(app.handle().clone());
             if state.settings().taskbar_widget_enabled {
@@ -905,8 +977,7 @@ pub fn run() {
             set_app_settings,
             get_autostart,
             set_autostart,
-            create_desktop_shortcut,
-            toggle_quick_panel_from_taskbar
+            create_desktop_shortcut
         ])
         .on_window_event(|window, event| {
             if window.label() == "quick-panel" && matches!(event, tauri::WindowEvent::Focused(false)) {
