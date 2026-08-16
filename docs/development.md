@@ -108,6 +108,20 @@ application's history, quota, and provider settings.
 Use the minimum relevant check for a focused change. Documentation-only changes need only
 a review of the edited files.
 
+## Application icon
+
+`src-tauri/icons/` holds two files and is meant to keep holding two: `app-icon.png`, the
+square master artwork, and `icon.ico`, the only icon a Windows build bundles. Replace the
+master and run
+
+```powershell
+npm run icons
+```
+
+which generates into a scratch directory, keeps the `.ico`, and discards the Android, iOS,
+macOS and Store variants `tauri icon` also produces. Running `npx tauri icon` directly writes
+all forty of them into the repository instead.
+
 ## Codex executable discovery
 
 QuotaStation discovers `codex` from PATH. To test a different official Codex executable,
