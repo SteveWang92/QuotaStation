@@ -2,17 +2,24 @@
 use tauri::{Manager, PhysicalPosition, PhysicalSize};
 
 #[cfg(windows)]
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+
+use serde::Serialize;
 
 #[cfg(windows)]
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::Gdi::{
+            GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW,
+            MonitorFromWindow,
+        },
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
         UI::{
+            HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
-                CallNextHookEx, FindWindowExW, FindWindowW, GA_ROOT, GetAncestor,
+                CallNextHookEx, FindWindowExW, FindWindowW, GA_ROOT, GetAncestor, MONITORINFOF_PRIMARY,
                 GetForegroundWindow, GetParent, GetWindowLongW, GetWindowRect,
                 GetWindowThreadProcessId, HC_ACTION, IsWindowVisible, MSLLHOOKSTRUCT, MoveWindow,
                 SetForegroundWindow, SetParent, WindowFromPoint,
@@ -32,6 +39,119 @@ fn window_rect(hwnd: HWND) -> Option<RECT> {
     Some(rect)
 }
 
+/// A display whose taskbar can host the status widget, as the settings dialog offers it.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskbarDisplay {
+    /// The Windows device name, `\\.\DISPLAY1`. This is what the choice is recorded as: it
+    /// survives a restart, unlike a window handle or an index into an enumeration order.
+    pub id: String,
+    pub label: String,
+    pub primary: bool,
+}
+
+/// One of Explorer's taskbars, and the display it sits on.
+#[cfg(windows)]
+struct Taskbar {
+    hwnd: HWND,
+    display: String,
+    primary: bool,
+    /// The display's whole rectangle, for the floating fallback.
+    monitor: RECT,
+    monitor_handle: HMONITOR,
+}
+
+/// Every taskbar Explorer is showing: the primary one first, then one per additional
+/// display. A secondary taskbar is a `Shell_SecondaryTrayWnd` of its own rather than a
+/// child of the primary, so both classes have to be walked.
+#[cfg(windows)]
+fn taskbars() -> Vec<Taskbar> {
+    let mut found = Vec::new();
+    if let Ok(primary) = unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) } {
+        found.extend(describe_taskbar(primary));
+    }
+    let mut previous: Option<HWND> = None;
+    while let Ok(next) =
+        unsafe { FindWindowExW(None, previous, w!("Shell_SecondaryTrayWnd"), PCWSTR::null()) }
+    {
+        found.extend(describe_taskbar(next));
+        previous = Some(next);
+    }
+    found
+}
+
+#[cfg(windows)]
+fn describe_taskbar(hwnd: HWND) -> Option<Taskbar> {
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFOEXW::default();
+    info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+    if !unsafe { GetMonitorInfoW(monitor, std::ptr::from_mut(&mut info).cast::<MONITORINFO>()) }
+        .as_bool()
+    {
+        return None;
+    }
+    let device = String::from_utf16_lossy(&info.szDevice);
+    Some(Taskbar {
+        hwnd,
+        display: device.trim_end_matches('\0').to_string(),
+        primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+        monitor: info.monitorInfo.rcMonitor,
+        monitor_handle: monitor,
+    })
+}
+
+/// The taskbar the widget belongs on: the chosen display's, or the primary one whenever no
+/// display was chosen and whenever the chosen one is no longer attached. A monitor that
+/// comes and goes must not leave the status with nowhere to be.
+#[cfg(windows)]
+fn chosen_taskbar(app: &tauri::AppHandle) -> Option<Taskbar> {
+    let preferred = crate::preferred_taskbar_display(app);
+    let mut taskbars = taskbars();
+    if let Some(preferred) = preferred.as_deref() {
+        if let Some(index) = taskbars.iter().position(|taskbar| taskbar.display == preferred) {
+            return Some(taskbars.swap_remove(index));
+        }
+    }
+    if let Some(index) = taskbars.iter().position(|taskbar| taskbar.primary) {
+        return Some(taskbars.swap_remove(index));
+    }
+    taskbars.into_iter().next()
+}
+
+/// The displays the settings dialog can offer, named the way a person picks between them.
+#[cfg(windows)]
+pub fn taskbar_displays() -> Vec<TaskbarDisplay> {
+    taskbars()
+        .into_iter()
+        .map(|taskbar| TaskbarDisplay {
+            label: display_label(
+                &taskbar.display,
+                taskbar.primary,
+                taskbar.monitor.right - taskbar.monitor.left,
+                taskbar.monitor.bottom - taskbar.monitor.top,
+            ),
+            id: taskbar.display,
+            primary: taskbar.primary,
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+pub fn taskbar_displays() -> Vec<TaskbarDisplay> {
+    Vec::new()
+}
+
+/// `\\.\DISPLAY2` reads as nothing at all in a menu, so the number is paired with the
+/// resolution — which is how a person tells two attached screens apart.
+fn display_label(device: &str, primary: bool, width: i32, height: i32) -> String {
+    let name = match device.split_once("DISPLAY") {
+        Some((_, number)) if !number.is_empty() => format!("Display {number}"),
+        _ => device.to_string(),
+    };
+    let primary = if primary { " (primary)" } else { "" };
+    format!("{name}{primary} — {width} × {height}")
+}
+
 /// Docks the widget inside the taskbar, falling back to a floating window whenever the
 /// taskbar cannot host it. The widget stays visible either way; a failed dock must never
 /// leave the user with a status surface that nothing brings back.
@@ -40,9 +160,10 @@ pub fn place_widget(app: &tauri::AppHandle) -> Result<(), String> {
     if let Some(hwnd) = app.get_webview_window("taskbar-widget").and_then(|widget| widget.hwnd().ok()) {
         WATCHED_WIDGET.store(hwnd.0 as isize, Ordering::Relaxed);
     }
-    match dock_widget(app) {
+    let taskbar = chosen_taskbar(app);
+    match taskbar.as_ref().ok_or_else(|| "no taskbar found".to_string()).and_then(|taskbar| dock_widget(app, taskbar)) {
         Ok(()) => Ok(()),
-        Err(reason) => match float_widget(app) {
+        Err(reason) => match float_widget(app, taskbar.as_ref()) {
             Ok(()) => Err(format!("{reason}; showing the status as a floating window instead")),
             Err(error) => Err(format!("{reason}; floating fallback failed: {error}")),
         },
@@ -50,41 +171,42 @@ pub fn place_widget(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn dock_widget(app: &tauri::AppHandle) -> Result<(), String> {
+fn dock_widget(app: &tauri::AppHandle, taskbar: &Taskbar) -> Result<(), String> {
     let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
-    let taskbar = unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) }
-        .map_err(|error| error.to_string())?;
-    let taskbar_rect = window_rect(taskbar).ok_or("unable to read taskbar bounds")?;
+    let taskbar_rect = window_rect(taskbar.hwnd).ok_or("unable to read taskbar bounds")?;
     let taskbar_width = taskbar_rect.right - taskbar_rect.left;
     let taskbar_height = taskbar_rect.bottom - taskbar_rect.top;
     if taskbar_width <= taskbar_height {
         return Err("vertical taskbars are not supported yet".to_string());
     }
 
-    let tray = unsafe { FindWindowExW(Some(taskbar), None, w!("TrayNotifyWnd"), PCWSTR::null()) }.ok();
-    let tray_left = tray.and_then(window_rect).map(|rect| rect.left).unwrap_or(taskbar_rect.right);
-    let requested_width = widget.outer_size().map_err(|error| error.to_string())?.width as i32;
-    let available_width = (tray_left - taskbar_rect.left - 16).max(0);
-    if available_width < requested_width {
+    // The layout is drawn in CSS pixels, so its width follows the display the widget will
+    // actually sit on — not the one the window happened to be created on. Two taskbars at
+    // different scalings otherwise crop whichever of them is not the primary.
+    let dpi = taskbar_dpi(taskbar);
+    let width = scaled(widget_width(provider_slots()), dpi);
+    let trailing = trailing_edge(taskbar, taskbar_rect, dpi);
+    let available_width = (trailing - taskbar_rect.left - scaled(TASKBAR_MARGIN, dpi)).max(0);
+    if available_width < width {
         return Err(format!(
-            "taskbar has {available_width}px available but the status layout requires {requested_width}px"
+            "taskbar has {available_width}px available but the status layout requires {width}px"
         ));
     }
-    let width = requested_width;
     // Use the taskbar's actual physical height. A 44px ceiling left only 22 CSS pixels at
     // 200% scaling and cropped the second quota row even when Explorer had ample space.
     let height = docked_height(taskbar_height);
-    let x = (tray_left - taskbar_rect.left - width - 8).max(8);
+    let gap = scaled(TASKBAR_MARGIN / 2, dpi);
+    let x = (trailing - taskbar_rect.left - width - gap).max(gap);
     let y = ((taskbar_height - height) / 2).max(0);
     let hwnd = widget.hwnd().map_err(|error| error.to_string())?;
     unsafe {
-        if GetParent(hwnd).ok() != Some(taskbar) {
+        if GetParent(hwnd).ok() != Some(taskbar.hwnd) {
             let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_TOOLWINDOW.0 as i32 | WS_EX_NOACTIVATE.0 as i32);
             let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
             let child_style = (style & !WS_POPUP.0) | WS_CHILD.0 | WS_CLIPSIBLINGS.0;
             SetWindowLongW(hwnd, GWL_STYLE, child_style as i32);
-            SetParent(hwnd, Some(taskbar)).map_err(|error| error.to_string())?;
+            SetParent(hwnd, Some(taskbar.hwnd)).map_err(|error| error.to_string())?;
         }
         let current = window_rect(hwnd).ok_or("unable to read taskbar widget bounds")?;
         let expected_left = taskbar_rect.left + x;
@@ -98,6 +220,45 @@ fn dock_widget(app: &tauri::AppHandle) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Where the widget's right edge goes: immediately before whatever the taskbar keeps at its
+/// trailing end.
+///
+/// The primary taskbar's notification area is a window of its own, so its left edge is read
+/// directly. A secondary taskbar has no `TrayNotifyWnd` — measured: its only children are
+/// `Start`, `WorkerW`/`MSTaskListWClass` and the XAML content bridge, and its clock is drawn
+/// inside that bridge with no window to measure. That end is reserved by width instead,
+/// generously enough for a two-line date and time.
+#[cfg(windows)]
+fn trailing_edge(taskbar: &Taskbar, rect: RECT, dpi: u32) -> i32 {
+    unsafe { FindWindowExW(Some(taskbar.hwnd), None, w!("TrayNotifyWnd"), PCWSTR::null()) }
+        .ok()
+        .and_then(window_rect)
+        .map(|tray| tray.left)
+        .unwrap_or_else(|| rect.right - scaled(SECONDARY_CLOCK_RESERVE, dpi))
+}
+
+/// The display's effective scaling.
+///
+/// Read from the monitor rather than from the taskbar window: `GetDpiForWindow` answers in
+/// terms of the *calling* process's DPI awareness, and it reported a flat 96 for a taskbar
+/// on a 125% display — which sized the layout at 460 device pixels where it needed 575 and
+/// cropped its leading column, the exact defect the width scaling exists to avoid.
+#[cfg(windows)]
+fn taskbar_dpi(taskbar: &Taskbar) -> u32 {
+    let mut dpi_x = 0;
+    let mut dpi_y = 0;
+    match unsafe { GetDpiForMonitor(taskbar.monitor_handle, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) } {
+        Ok(()) if dpi_x > 0 => dpi_x,
+        _ => 96,
+    }
+}
+
+/// A layout width in CSS pixels, in the device pixels that display draws them at.
+#[cfg(windows)]
+fn scaled(logical: u32, dpi: u32) -> i32 {
+    (f64::from(logical) * f64::from(dpi) / 96.0).round() as i32
 }
 
 /// Where the widget is on screen, for anchoring the panel a click on it opens.
@@ -283,6 +444,27 @@ const MIN_PROVIDER_SLOTS: u32 = 2;
 const MAX_PROVIDER_SLOTS: u32 = 8;
 pub const WIDGET_HEIGHT: u32 = 40;
 
+/// The clearance kept at the taskbar's leading edge, and half of it between the widget and
+/// whatever ends the bar.
+#[cfg(windows)]
+const TASKBAR_MARGIN: u32 = 16;
+
+/// What a secondary taskbar's clock is assumed to occupy, in CSS pixels, since it has no
+/// window to measure.
+#[cfg(windows)]
+const SECONDARY_CLOCK_RESERVE: u32 = 160;
+
+/// How many provider slots the renderer last asked for. Placement runs on a loop and has to
+/// re-derive the width every tick — the display it docks to can change, and with it the
+/// scaling the layout is drawn at — so the count outlives the call that reported it.
+#[cfg(windows)]
+static PROVIDER_SLOTS: AtomicU32 = AtomicU32::new(MIN_PROVIDER_SLOTS);
+
+#[cfg(windows)]
+fn provider_slots() -> u32 {
+    PROVIDER_SLOTS.load(Ordering::Relaxed)
+}
+
 pub fn widget_width(provider_count: u32) -> u32 {
     let slots = provider_count.clamp(MIN_PROVIDER_SLOTS, MAX_PROVIDER_SLOTS);
     WIDGET_BASE_WIDTH.saturating_add(slots.saturating_mul(PROVIDER_SLOT_WIDTH))
@@ -294,21 +476,14 @@ fn docked_height(taskbar_height: i32) -> i32 {
 
 #[cfg(windows)]
 pub fn set_widget_size(app: &tauri::AppHandle, provider_count: u32) -> Result<(), String> {
-    let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
-    let scale = widget.scale_factor().unwrap_or(1.0).max(1.0);
-    widget
-        .set_size(PhysicalSize::new(
-            (f64::from(widget_width(provider_count)) * scale).round() as u32,
-            WIDGET_HEIGHT,
-        ))
-        .map_err(|error| error.to_string())?;
+    PROVIDER_SLOTS.store(provider_count.clamp(MIN_PROVIDER_SLOTS, MAX_PROVIDER_SLOTS), Ordering::Relaxed);
     place_widget(app)
 }
 
 /// Parks the widget above the taskbar as an ordinary window. Every step is skipped when
 /// it already holds, so the repositioning loop does not fight the window every tick.
 #[cfg(windows)]
-fn float_widget(app: &tauri::AppHandle) -> Result<(), String> {
+fn float_widget(app: &tauri::AppHandle, taskbar: Option<&Taskbar>) -> Result<(), String> {
     let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
     let hwnd = widget.hwnd().map_err(|error| error.to_string())?;
     let mut detached = false;
@@ -325,10 +500,29 @@ fn float_widget(app: &tauri::AppHandle) -> Result<(), String> {
         widget.set_always_on_top(true).map_err(|error| error.to_string())?;
     }
 
-    let monitor = app.primary_monitor().map_err(|error| error.to_string())?.ok_or("primary monitor missing")?;
-    let origin = monitor.position();
-    let bounds = monitor.size();
-    let size = widget.outer_size().map_err(|error| error.to_string())?;
+    // The fallback belongs on the display whose taskbar could not host it, not on whichever
+    // one Windows calls primary: a status parked on the screen the user is not watching is
+    // no better than one that vanished.
+    let (origin, bounds, dpi) = match taskbar {
+        Some(taskbar) => (
+            PhysicalPosition::new(taskbar.monitor.left, taskbar.monitor.top),
+            PhysicalSize::new(
+                (taskbar.monitor.right - taskbar.monitor.left) as u32,
+                (taskbar.monitor.bottom - taskbar.monitor.top) as u32,
+            ),
+            taskbar_dpi(taskbar),
+        ),
+        None => {
+            let monitor =
+                app.primary_monitor().map_err(|error| error.to_string())?.ok_or("primary monitor missing")?;
+            let scale = monitor.scale_factor();
+            (*monitor.position(), *monitor.size(), (scale * 96.0).round() as u32)
+        }
+    };
+    let size = PhysicalSize::new(scaled(widget_width(provider_slots()), dpi) as u32, WIDGET_HEIGHT);
+    if widget.outer_size().map_err(|error| error.to_string())? != size {
+        widget.set_size(size).map_err(|error| error.to_string())?;
+    }
     let position = PhysicalPosition::new(
         origin.x + bounds.width as i32 - size.width as i32 - 12,
         origin.y + bounds.height as i32 - size.height as i32 - 60,
@@ -361,7 +555,10 @@ pub fn widget_screen_rect(
 
 #[cfg(test)]
 mod tests {
-    use super::{WIDGET_HEIGHT, docked_height, widget_width};
+    use super::{WIDGET_HEIGHT, display_label, docked_height, widget_width};
+
+    #[cfg(windows)]
+    use super::scaled;
 
     #[cfg(windows)]
     use super::{WidgetClickAction, widget_click_transition};
@@ -391,6 +588,21 @@ mod tests {
         assert_eq!(docked_height(40), 34);
         assert_eq!(docked_height(80), 74);
         assert_eq!(docked_height(18), 20, "a malformed tiny taskbar still gets a legal window");
+    }
+
+    #[test]
+    fn a_display_is_named_by_its_number_and_the_size_that_tells_two_screens_apart() {
+        assert_eq!(display_label(r"\\.\DISPLAY2", true, 2752, 1152), "Display 2 (primary) — 2752 × 1152");
+        assert_eq!(display_label(r"\\.\DISPLAY1", false, 1080, 1920), "Display 1 — 1080 × 1920");
+        assert_eq!(display_label("unnamed", false, 800, 600), "unnamed — 800 × 600");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_layout_width_follows_the_scaling_of_the_display_it_docks_to() {
+        assert_eq!(scaled(widget_width(2), 96), widget_width(2) as i32);
+        assert_eq!(scaled(100, 120), 125, "a 125% taskbar draws 100 CSS pixels in 125 device ones");
+        assert_eq!(scaled(100, 192), 200);
     }
 
     #[cfg(windows)]

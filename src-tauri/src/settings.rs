@@ -27,6 +27,11 @@ pub enum ProviderLabelStyle {
 pub struct AppSettings {
     #[serde(default = "enabled")]
     pub taskbar_widget_enabled: bool,
+    /// Which display's taskbar hosts the status, by Windows device name (`\\.\DISPLAY1`).
+    /// Unset — and a name no longer attached — means the primary taskbar, so unplugging a
+    /// monitor moves the status rather than losing it.
+    #[serde(default)]
+    pub taskbar_widget_display: Option<String>,
     #[serde(default)]
     pub status_line_provider_labels: ProviderLabelStyle,
     /// Whether the status line reports every provider QuotaStation watches, or only the
@@ -47,6 +52,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             taskbar_widget_enabled: enabled(),
+            taskbar_widget_display: None,
             status_line_provider_labels: ProviderLabelStyle::default(),
             status_line_other_providers: enabled(),
             status_line_extra_details: enabled(),
@@ -131,6 +137,7 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"taskbarWidgetEnabled":false}"#).expect("read old settings");
         assert!(!settings.taskbar_widget_enabled, "the recorded choice survives");
+        assert_eq!(settings.taskbar_widget_display, None, "no display chosen means the primary one");
         assert_eq!(settings.status_line_provider_labels, ProviderLabelStyle::Short);
         assert!(settings.status_line_other_providers, "an unrecorded choice takes its default");
         assert!(settings.status_line_extra_details, "an unrecorded choice takes its default");
@@ -140,6 +147,7 @@ mod tests {
     fn settings_survive_a_round_trip_through_the_file_format() {
         let settings = AppSettings {
             taskbar_widget_enabled: false,
+            taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
             status_line_provider_labels: ProviderLabelStyle::Full,
             status_line_other_providers: false,
             status_line_extra_details: false,
@@ -165,6 +173,7 @@ mod tests {
         save(&path, &AppSettings::default()).expect("write the first settings");
         let expected = AppSettings {
             taskbar_widget_enabled: false,
+            taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
             status_line_provider_labels: ProviderLabelStyle::Full,
             status_line_other_providers: false,
             status_line_extra_details: false,

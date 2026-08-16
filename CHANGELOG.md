@@ -10,6 +10,7 @@ on `main`, with the matching section below as its notes.
 ### Added
 
 - A status line setting for the project, branch, context, cache and cost detail.
+- A setting for which display's taskbar carries the quota status.
 
 ### Changed
 

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { saveAppSettings, useAppSettings } from "../appSettings";
 import { errorMessage } from "../errors";
+import type { TaskbarDisplay } from "../types";
 
 /**
  * How the application sits on the machine: whether Windows starts it, whether it draws the
@@ -16,11 +17,15 @@ export function GeneralSettings() {
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [shortcutCreated, setShortcutCreated] = useState(false);
+  const [displays, setDisplays] = useState<TaskbarDisplay[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void invoke<boolean>("get_autostart").then(setAutostart).catch(() => {
       // Autostart is one row of this card; the rest still works without it.
+    });
+    void invoke<TaskbarDisplay[]>("get_taskbar_displays").then(setDisplays).catch(() => {
+      // One display and no choice to make is the same as a failed read here.
     });
   }, []);
 
@@ -41,6 +46,18 @@ export function GeneralSettings() {
     setError(null);
     try {
       await saveAppSettings({ taskbarWidgetEnabled: enabled });
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const changeTaskbarDisplay = useCallback(async (display: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await saveAppSettings({ taskbarWidgetDisplay: display === "" ? null : display });
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -89,6 +106,24 @@ export function GeneralSettings() {
             />
             Show the quota status in the taskbar
           </label>
+          {/* Offered only where there is a choice: one display makes the row pure noise. */}
+          {displays.length > 1 ? (
+            <label>
+              Taskbar display
+              <select
+                value={settings?.taskbarWidgetDisplay ?? ""}
+                disabled={busy || settings === null || !settings.taskbarWidgetEnabled}
+                onChange={(event) => void changeTaskbarDisplay(event.target.value)}
+              >
+                <option value="">Follow the primary taskbar</option>
+                {displays.map((display) => (
+                  <option key={display.id} value={display.id}>
+                    {display.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
         </div>
       </div>
       <button type="button" onClick={() => void createShortcut()} disabled={busy}>

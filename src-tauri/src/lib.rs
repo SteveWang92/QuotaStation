@@ -188,6 +188,21 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     }
 }
 
+/// Which display's taskbar the user chose to host the status widget, for [`taskbar`].
+///
+/// The placement loop runs before the settings dialog has ever been opened and after the
+/// window it belongs to is gone, so it reads the recorded choice rather than being told.
+pub(crate) fn preferred_taskbar_display(app: &tauri::AppHandle) -> Option<String> {
+    app.try_state::<Arc<AppState>>()?.settings().taskbar_widget_display
+}
+
+/// The displays the status can be shown on. Read live rather than stored: a monitor is
+/// attached and detached while the application runs.
+#[tauri::command]
+fn get_taskbar_displays() -> Vec<taskbar::TaskbarDisplay> {
+    taskbar::taskbar_displays()
+}
+
 #[tauri::command]
 fn set_taskbar_widget_size(app: tauri::AppHandle, provider_count: u32) -> Result<(), String> {
     // A hidden widget still runs its renderer; resizing it must not bring it back.
@@ -210,10 +225,16 @@ fn set_app_settings(
     state: State<'_, Arc<AppState>>,
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
-    let taskbar_changed = state.settings().taskbar_widget_enabled != settings.taskbar_widget_enabled;
+    let previous = state.settings();
+    let taskbar_changed = previous.taskbar_widget_enabled != settings.taskbar_widget_enabled;
+    let display_changed = previous.taskbar_widget_display != settings.taskbar_widget_display;
     let updated = state.update_settings(|current| *current = settings)?;
     if taskbar_changed {
         set_taskbar_widget_visible(&app, updated.taskbar_widget_enabled);
+    } else if display_changed && updated.taskbar_widget_enabled {
+        // The placement loop would move it within two seconds; doing it here makes the
+        // choice answer immediately, which is what a person changing it is watching for.
+        place_taskbar_widget(&app);
     }
     Ok(updated)
 }
@@ -972,6 +993,7 @@ pub fn run() {
             set_claude_notifications,
             open_dashboard,
             set_taskbar_widget_size,
+            get_taskbar_displays,
             set_quick_panel_height,
             get_app_settings,
             set_app_settings,

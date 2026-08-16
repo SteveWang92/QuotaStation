@@ -150,8 +150,18 @@ export interface DiagnosticsSnapshot {
 /** How a provider is named where the name sits beside a reading rather than above one. */
 export type ProviderLabelStyle = "short" | "full";
 
+/** A display whose taskbar can host the status widget. */
+export interface TaskbarDisplay {
+  /** The Windows device name the choice is recorded as. */
+  id: string;
+  label: string;
+  primary: boolean;
+}
+
 export interface AppSettings {
   taskbarWidgetEnabled: boolean;
+  /** The chosen display's device name, or null for whichever taskbar is the primary one. */
+  taskbarWidgetDisplay: string | null;
   statusLineProviderLabels: ProviderLabelStyle;
   statusLineOtherProviders: boolean;
   statusLineExtraDetails: boolean;
