@@ -87,8 +87,13 @@ Releasing is manual here, and Steve starts it. Never bump a version, tag, create
   pushed before the review, or left sitting under later fixes, means the tagged commit is
   not the state that was reviewed — drop it and force-push with lease if it happens.
 - `main` holds the released state and nothing deploys from it — QuotaStation is a desktop
-  application, so a release is a tag plus, when asked for, a built bundle. The repository's
-  GitHub default branch is `dev`.
+  application, so a release is a tag and its changelog notes. The repository's GitHub default
+  branch is `dev`.
+- **No installer is attached to a release while the repository is private.** A bundle is
+  built for Steve's own verification, not for distribution, and uploading one before the
+  project is public serves nobody. Do not build or attach one, and do not ask each time;
+  when QuotaStation goes public, Steve will say so and that is when the artifact question
+  reopens.
 - Annotated `vX.Y.Z` tags on `main` are the source of truth for released versions. The tag
   message is the subject line only — `QuotaStation X.Y.Z` — because the notes already live
   in `CHANGELOG.md` and a second copy would drift. Tags carry no AI attribution, exactly as
@@ -118,9 +123,8 @@ The full sequence, once Steve asks for it:
    `git tag -a vX.Y.Z -m "QuotaStation X.Y.Z"` and `git push origin vX.Y.Z`. Tags do not
    travel with an ordinary push.
 9. Publish a GitHub release from the tag — `gh release create vX.Y.Z --title vX.Y.Z
-   --notes-file <section>` — with that version's changelog section as its notes, and attach
-   the built bundle when there is one. Every tag gets a release; a tag on its own is not the
-   published record.
+   --notes-file <section>` — with that version's changelog section as its notes and no
+   attached artifact. Every tag gets a release; a tag on its own is not the published record.
 10. Reset `dev` to `main` — `git checkout dev && git reset --hard main` and
     `git push --force-with-lease origin dev` — so `dev` starts the next version even with it.
 
