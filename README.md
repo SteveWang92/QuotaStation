@@ -8,20 +8,24 @@ API-equivalent costs across AI coding tools.
 
 ## Project status
 
-The first Codex implementation slice now builds and runs locally. It includes read-only live
-quota acquisition, event-driven local session-history aggregation, SQLite persistence, a
-system tray, and a compact monitoring surface. The history dashboard supports Today, 3-day,
-7-day, 30-day, and custom local-calendar ranges, with redacted acquisition diagnostics in
-the status bar. A packaged release is not available yet.
+QuotaStation 0.1.0 is released, with a per-user x64 installer attached to its
+[GitHub release](https://github.com/SteveWang92/QuotaStation/releases). It covers Codex and
+Claude Code; Gemini and other providers are future adapters.
 
-The initial product direction is:
+What it does today:
 
-- Windows system tray and compact status surface
-- Live quota windows and reset countdowns
-- Historical input, output, and cache token usage
-- Per-provider and per-model API-equivalent cost estimates
-- Local-first storage with no prompt or source-code upload
-- Codex as the first release target, with Claude and Gemini planned later
+- Live quota windows, the share of each one used, and its exact restart time
+- A tray icon with a quick panel, an optional widget docked into the Windows taskbar, and a
+  dashboard — all three drawn from one normalized snapshot
+- An optional status line for Claude Code that reports every provider's quota alongside the
+  session it is running in
+- Daily token and API-equivalent cost history per provider and per model, over preset and
+  custom local-calendar ranges
+- Quota reset history, classified as scheduled or unplanned
+- Redacted acquisition, watcher, retention, and pricing diagnostics
+- Local-first storage with no prompt or source-code upload, and no network request of its own
+
+See [CHANGELOG.md](CHANGELOG.md) for what has changed since the last release.
 
 ## Principles
 
@@ -43,8 +47,8 @@ The initial product direction is:
 
 ## Contributing
 
-The stack is Tauri 2 with a Rust core and React/TypeScript renderer. The first milestone
-integrates Codex live limits and local history; see
+The stack is Tauri 2 with a Rust core and React/TypeScript renderer; every user interface
+consumes one normalized provider model owned by the core. See
 [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 ## License
