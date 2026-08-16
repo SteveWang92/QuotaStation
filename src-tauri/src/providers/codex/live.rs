@@ -257,12 +257,12 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
             kind,
             label: kind.window_label(Some(minutes)),
             used_percent: Some(used_percent),
-            remaining_percent: Some((100.0 - used_percent).clamp(0.0, 100.0)),
             window_duration_mins: Some(minutes),
             resets_at: Some(resets_at),
             source: WindowSource::AppServer,
             observed_at,
             freshness: Freshness::Fresh,
+            status_color: String::new(),
         });
     }
     if limits.is_empty() {

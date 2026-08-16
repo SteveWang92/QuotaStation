@@ -4,15 +4,7 @@ import { formatCompactCountdown, formatWindowBadge } from "../format";
 import type { ProviderSnapshot, WorkspaceSnapshot } from "../types";
 import { useSnapshot } from "../useSnapshot";
 
-/** The taskbar has no room for a full provider name beside the window badge. */
-const SHORT_NAME: Record<string, string> = { codex: "CDX", claude: "CLD" };
-
-function shortName(snapshot: ProviderSnapshot) {
-  return SHORT_NAME[snapshot.provider] ?? snapshot.displayName.slice(0, 3).toUpperCase();
-}
-
 function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
-  const badge = shortName(snapshot);
   const statusColor = snapshot.compactStatus.color;
   return (
     <div className="taskbar-provider">
@@ -20,7 +12,7 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
           its windows was repeating its own name, which is the widest thing in a slot the
           taskbar may only give 30px of. */}
       <span className="taskbar-name" style={{ color: statusColor }}>
-        {badge}
+        {snapshot.shortName}
       </span>
       <div className="taskbar-windows">
         {snapshot.limits.length > 0 ? (
@@ -29,7 +21,7 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
             // the bars of two windows, and of two providers, all start and end on the same
             // pixel. A proportional bar made each row a different length instead.
             const percent =
-              limit.remainingPercent === null ? null : `${Math.round(limit.remainingPercent)}%`;
+              limit.usedPercent === null ? null : `${Math.round(limit.usedPercent)}%`;
             const countdown = limit.resetsAt === null ? null : formatCompactCountdown(limit.resetsAt);
             return (
               <div className="taskbar-quota" key={limit.kind}>
@@ -46,12 +38,12 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
                     <b
                       style={{
                         width: `${Math.min(100, Math.max(0, limit.usedPercent))}%`,
-                        background: statusColor,
+                        background: limit.statusColor,
                       }}
                     />
                   </i>
                 )}
-                {/* Remaining and reset share one centred cell so a window still waiting for its
+                {/* Usage and reset share one centred cell so a window still waiting for its
                     first reading shows a single dash on the same axis as the window below it,
                     rather than two dashes pushed against the right edge. */}
                 <span className="taskbar-reading">
@@ -64,7 +56,7 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
                     </em>
                   ) : (
                     <>
-                      {percent !== null && <em style={{ color: statusColor }}>{percent}</em>}
+                      {percent !== null && <em style={{ color: limit.statusColor }}>{percent}</em>}
                       {percent !== null && countdown !== null && (
                         <span className="taskbar-dot" aria-hidden="true">
                           ·

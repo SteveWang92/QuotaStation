@@ -83,6 +83,10 @@ but the result cannot be run. Each row states what lands on disk and what it is 
 | `npm run tauri build -- --no-bundle` | `src-tauri/target/release/quotastation.exe`, standalone | The optimized application, run straight from `target/` |
 | `npm run tauri -- build --bundles nsis` | An NSIS installer under `src-tauri/target/release/bundle/nsis/` | Distribution only, as part of an explicitly requested release |
 
+`src-tauri/target/release/quotastation.exe` is the copy the application is actually run
+from between releases, so it is the one a finished change is rebuilt and relaunched as. The
+debug forms are for diagnosing a specific problem.
+
 Both `--no-bundle` forms embed `dist/` into the executable, so the file needs nothing beside
 it and runs from wherever it sits. The build runs `npm run build` first, so the renderer is
 always current. Windows 11 supplies the WebView2 runtime these builds require.

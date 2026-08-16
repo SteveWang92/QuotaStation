@@ -1,5 +1,5 @@
 import type { LimitResetEvent, LimitWindow } from "../types";
-import { formatCountdown, formatEarlyBy, formatResetTimestamp, formatWindowDuration } from "../format";
+import { formatCountdown, formatEarlyBy, formatResetTimestamp } from "../format";
 
 interface QuotaSectionProps {
   /** Display name of the provider these windows belong to, for labels and empty copy. */
@@ -7,7 +7,6 @@ interface QuotaSectionProps {
   limits: LimitWindow[];
   earnedResetCount: number | null;
   resets: LimitResetEvent[];
-  statusColor: string;
   compact?: boolean;
 }
 
@@ -29,20 +28,18 @@ function originOf(limit: LimitWindow, resets: LimitResetEvent[]): LimitResetEven
 
 function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEvent }) {
   const used = limit.usedPercent;
-  const remaining = limit.remainingPercent;
   return (
-    <div className={`quota-row${limit.freshness === "stale" ? " stale" : ""}`}>
+    // Each window is coloured by its own reading: the provider's status is the loudest of
+    // them, and inheriting it would paint an untouched window in the colour of a spent one.
+    <div
+      className={`quota-row${limit.freshness === "stale" ? " stale" : ""}`}
+      style={{ "--quota-status-color": limit.statusColor } as React.CSSProperties}
+    >
+      {/* The label already names the duration, and which source produced the reading is a
+          diagnostic rather than something to read at a glance, so it lives in the settings
+          dialog beside the acquisition paths it belongs to. */}
       <div className="quota-label">
         <h2>{limit.label}</h2>
-        <p>{formatWindowDuration(limit.windowDurationMins)}</p>
-        <small>
-          {limit.source === "app_server"
-            ? "App server"
-            : limit.source === "status_line"
-              ? "Status line"
-              : "Session log"}{" "}
-          · as of {formatResetTimestamp(limit.observedAt)}
-        </small>
       </div>
       <div className="quota-meter" aria-label={`${limit.label} usage`}>
         <div className="quota-track">
@@ -54,8 +51,8 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
         </div>
       </div>
       <div className="quota-percent">
-        <strong>{remaining === null ? "—" : `${remaining.toFixed(1)}%`}</strong>
-        <span>{remaining === null ? "unavailable" : "remaining"}</span>
+        <strong>{used === null ? "—" : `${used.toFixed(1)}%`}</strong>
+        <span>{used === null ? "unavailable" : "used"}</span>
       </div>
       <div className="quota-reset">
         <span>Resets in</span>
@@ -101,12 +98,11 @@ function ResetHistory({ resets }: { resets: LimitResetEvent[] }) {
   );
 }
 
-export function QuotaSection({ provider, limits, earnedResetCount, resets, statusColor, compact = false }: QuotaSectionProps) {
+export function QuotaSection({ provider, limits, earnedResetCount, resets, compact = false }: QuotaSectionProps) {
   return (
     <section
       className={`quota-section${compact ? " compact" : ""}`}
       aria-label={`${provider} quota windows`}
-      style={{ "--quota-status-color": statusColor } as React.CSSProperties}
     >
       {limits.length > 0 ? (
         limits.map((limit) => <QuotaRow key={limit.kind} limit={limit} origin={originOf(limit, resets)} />)

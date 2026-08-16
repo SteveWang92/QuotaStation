@@ -140,11 +140,12 @@ export function UsageSummary({
       {error ? <p className="range-error">Unable to load this range: {error}</p> : null}
 
       <div className={`history-content ${loading ? "loading" : ""}`}>
+        {/* The model count is not a fourth headline figure: the model mix card below both
+            counts them and says what they were. */}
         <div className="summary-strip">
           <div><span>Total tokens</span><strong>{formatNumber(usage.total)}</strong></div>
           <div><span>API-equivalent cost</span><strong>{formatCurrency(range.apiEquivalentCostUsd)}</strong></div>
           <div><span>Active-day average</span><strong>{formatNumber(activeDayAverage)}</strong></div>
-          <div><span>Models</span><strong>{formatNumber(range.models.length)}</strong></div>
         </div>
 
         <div className="history-grid">
@@ -178,7 +179,9 @@ export function UsageSummary({
           </article>
 
           <article className="history-card model-card">
-            <div className="card-heading"><div><h3>Model mix</h3><span>By total tokens</span></div></div>
+            <div className="card-heading">
+              <div><h3>Model mix</h3><span>{range.models.length} models · by total tokens</span></div>
+            </div>
             <div className="model-list">
               {range.models.length === 0 ? (
                 <p className="empty-copy">No model usage recorded.</p>

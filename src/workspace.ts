@@ -5,10 +5,15 @@ import type { ProviderKey, ProviderSnapshot, WorkspaceSnapshot } from "./types";
  * before the core finishes opening its database, so each one needs a placeholder that
  * is shaped like a real snapshot rather than a null it has to guard on.
  */
-export function emptySnapshot(provider: ProviderKey, displayName: string): ProviderSnapshot {
+export function emptySnapshot(
+  provider: ProviderKey,
+  displayName: string,
+  shortName: string,
+): ProviderSnapshot {
   return {
     provider,
     displayName,
+    shortName,
     planType: null,
     limits: [],
     earnedResetCount: null,
@@ -21,7 +26,6 @@ export function emptySnapshot(provider: ProviderKey, displayName: string): Provi
     compactStatus: {
       level: "unavailable",
       label: "Provider unavailable",
-      message: `No current ${displayName} quota data is available.`,
       color: "#ff7469",
     },
     lastAttemptAt: null,
@@ -53,7 +57,6 @@ export const EMPTY_WORKSPACE: WorkspaceSnapshot = {
   aggregate: {
     level: "unavailable",
     label: "Starting",
-    message: "Reading local provider data.",
     color: "#9aa4ad",
   },
 };

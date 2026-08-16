@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowUpRight, RefreshCw } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../errors";
 import { formatCurrency, formatNumber } from "../format";
 import type { ProviderSnapshot, WorkspaceSnapshot } from "../types";
@@ -21,21 +21,53 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
         limits={snapshot.limits}
         earnedResetCount={snapshot.earnedResetCount}
         resets={snapshot.recentResets}
-        statusColor={snapshot.compactStatus.color}
       />
       <section className="quick-usage" aria-label={`${snapshot.displayName} usage today`}>
         <div><span>Today</span><strong>{formatNumber(snapshot.today.total)}</strong><small>tokens</small></div>
         <div><span>API equivalent</span><strong>{formatCurrency(snapshot.apiEquivalentCostUsd)}</strong><small>estimated cost</small></div>
       </section>
-      <p className="quick-freshness">{snapshot.compactStatus.message}</p>
     </section>
   );
+}
+
+/**
+ * The panel is a frameless window, so nothing trims it to its contents: without this it is
+ * sized for the tallest case it might ever hold and everything shorter leaves dead space,
+ * while everything taller scrolls. Reporting the rendered height lets the core grow the
+ * window upwards from the tray instead, and the core clamps it to the work area — past
+ * that the panel scrolls, because there is nowhere left to grow.
+ */
+function useReportedHeight() {
+  const shell = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const element = shell.current;
+    if (!element) return;
+    let reported = 0;
+    const report = () => {
+      const height = Math.ceil(element.getBoundingClientRect().height);
+      // Resizing the window re-runs the observer, so a report has to be worth making or
+      // the two would trade single pixels back and forth forever.
+      if (height <= 0 || Math.abs(height - reported) < 2) return;
+      reported = height;
+      void invoke("set_quick_panel_height", { height }).catch(() => {
+        // A panel that cannot resize is still a readable panel at its configured size.
+      });
+    };
+    const observer = new ResizeObserver(report);
+    observer.observe(element);
+    report();
+    return () => observer.disconnect();
+  }, []);
+
+  return shell;
 }
 
 export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSnapshot }) {
   const { workspace, error, loaded } = useSnapshot(initialWorkspace);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const shell = useReportedHeight();
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -51,12 +83,11 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
 
   const failure = refreshError ?? error;
   return (
-    <main className="quick-panel-shell">
+    <main className="quick-panel-shell" ref={shell}>
+      {/* Each column carries its own provider's status, and the aggregate here was the
+          louder of those two said a second time. */}
       <header className="quick-panel-header">
-        <div>
-          <span>QuotaStation</span>
-          <strong style={{ color: workspace.aggregate.color }}>{workspace.aggregate.label}</strong>
-        </div>
+        <strong>QuotaStation</strong>
         <button type="button" aria-label="Refresh quota and usage" onClick={() => void refresh()} disabled={refreshing}>
           <RefreshCw aria-hidden="true" className={refreshing ? "spinning" : ""} />
         </button>

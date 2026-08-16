@@ -23,22 +23,40 @@ pub enum CompactStatusLevel {
     Unavailable,
 }
 
+/// The three colours a reading is drawn in, and the shares of a window that earn them.
+/// Every surface reads them from here, so a percentage never means one thing on the
+/// dashboard and another in the tray.
+pub const HEALTHY_COLOR: &str = "#b5e835";
+pub const WARNING_COLOR: &str = "#f0b84b";
+pub const CRITICAL_COLOR: &str = "#ff7469";
+pub const WARNING_PERCENT: f64 = 70.0;
+pub const CRITICAL_PERCENT: f64 = 90.0;
+
+/// The colour one window's own reading earns. A window with no published percentage is
+/// tracked rather than in trouble, so it is drawn as healthy.
+pub fn quota_color(used_percent: Option<f64>) -> String {
+    match used_percent {
+        Some(value) if value >= CRITICAL_PERCENT => CRITICAL_COLOR,
+        Some(value) if value >= WARNING_PERCENT => WARNING_COLOR,
+        _ => HEALTHY_COLOR,
+    }
+    .to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactStatus {
     pub level: CompactStatusLevel,
     pub label: String,
-    pub message: String,
     pub color: String,
 }
 
 impl CompactStatus {
-    fn unavailable(provider: &str) -> Self {
+    fn unavailable() -> Self {
         Self {
             level: CompactStatusLevel::Unavailable,
             label: "Provider unavailable".to_string(),
-            message: format!("No current {provider} quota data is available."),
-            color: "#ff7469".to_string(),
+            color: CRITICAL_COLOR.to_string(),
         }
     }
 }
@@ -59,15 +77,14 @@ impl CompactStatusLevel {
 }
 
 /// The single status the tray icon, the taskbar accent, and the panel header show when
-/// several providers are on screen at once. It is the loudest provider's own status, so
-/// the wording still names which provider raised it.
+/// several providers are on screen at once. It is the loudest provider's own status.
 pub fn aggregate_status(snapshots: &[ProviderSnapshot]) -> CompactStatus {
     snapshots
         .iter()
         .map(|snapshot| &snapshot.compact_status)
         .max_by_key(|status| status.level.severity())
         .cloned()
-        .unwrap_or_else(|| CompactStatus::unavailable("provider"))
+        .unwrap_or(CompactStatus::unavailable())
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -128,12 +145,20 @@ pub struct LimitWindow {
     pub kind: LimitKind,
     pub label: String,
     pub used_percent: Option<f64>,
-    pub remaining_percent: Option<f64>,
     pub window_duration_mins: Option<i64>,
     pub resets_at: Option<i64>,
     pub source: WindowSource,
     pub observed_at: i64,
     pub freshness: Freshness,
+    /// This window's own colour. A provider is as loud as its loudest window, but a window
+    /// is only ever as loud as itself: a weekly allowance barely touched must not turn red
+    /// because the five-hour one beside it ran out.
+    ///
+    /// Left empty where windows are read, and filled by `resolve_derived_state` before any
+    /// surface sees one — an acquisition path reports a reading, it does not decide how the
+    /// reading is drawn.
+    #[serde(default)]
+    pub status_color: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -193,6 +218,8 @@ pub struct ModelUsage {
 pub struct ProviderSnapshot {
     pub provider: ProviderKind,
     pub display_name: String,
+    /// The same name in the three characters a crowded row can spare.
+    pub short_name: String,
     pub plan_type: Option<String>,
     pub limits: Vec<LimitWindow>,
     pub earned_reset_count: Option<u64>,
@@ -219,6 +246,7 @@ impl ProviderSnapshot {
         Self {
             provider,
             display_name: provider.display_name().to_string(),
+            short_name: provider.short_name().to_string(),
             plan_type: None,
             limits: Vec::new(),
             earned_reset_count: None,
@@ -228,7 +256,7 @@ impl ProviderSnapshot {
             models: Vec::new(),
             freshness: Freshness::Unavailable,
             stale_age_seconds: None,
-            compact_status: CompactStatus::unavailable(provider.display_name()),
+            compact_status: CompactStatus::unavailable(),
             last_attempt_at: None,
             last_live_success_at: None,
             last_history_success_at: None,
@@ -259,6 +287,7 @@ impl ProviderSnapshot {
             } else {
                 Freshness::Stale
             };
+            limit.status_color = quota_color(limit.used_percent);
         }
         self.freshness = if self.last_live_success_at.is_none() || self.limits.is_empty() {
             Freshness::Unavailable
@@ -273,7 +302,6 @@ impl ProviderSnapshot {
     }
 
     pub fn update_compact_status(&mut self) {
-        let provider = self.display_name.clone();
         self.stale_age_seconds = self
             .limits
             .iter()
@@ -285,37 +313,30 @@ impl ProviderSnapshot {
             .max()
             .or_else(|| self.last_live_success_at.as_deref().and_then(age_seconds));
         self.compact_status = if self.freshness == Freshness::Unavailable || self.limits.is_empty() {
-            CompactStatus::unavailable(&provider)
+            CompactStatus::unavailable()
         } else if self.freshness == Freshness::Stale {
             CompactStatus {
                 level: CompactStatusLevel::Stale,
                 label: "Data stale".to_string(),
-                message: match self.stale_age_seconds {
-                    Some(age) => format!("{provider}'s last successful update was {} ago.", format_age(age)),
-                    None => format!("{provider}'s last successful update time is unknown."),
-                },
-                color: "#f0b84b".to_string(),
+                color: WARNING_COLOR.to_string(),
             }
         } else {
-            let minimum = self.limits.iter().filter_map(|limit| limit.remaining_percent).reduce(f64::min);
-            match minimum {
-                Some(value) if value <= 10.0 => CompactStatus {
+            let peak = self.limits.iter().filter_map(|limit| limit.used_percent).reduce(f64::max);
+            match peak {
+                Some(value) if value >= CRITICAL_PERCENT => CompactStatus {
                     level: CompactStatusLevel::Critical,
                     label: "Quota critical".to_string(),
-                    message: format!("A {provider} quota window has 10% or less remaining."),
-                    color: "#ff7469".to_string(),
+                    color: CRITICAL_COLOR.to_string(),
                 },
-                Some(value) if value <= 30.0 => CompactStatus {
+                Some(value) if value >= WARNING_PERCENT => CompactStatus {
                     level: CompactStatusLevel::Warning,
                     label: "Quota running low".to_string(),
-                    message: format!("A {provider} quota window has 30% or less remaining."),
-                    color: "#f0b84b".to_string(),
+                    color: WARNING_COLOR.to_string(),
                 },
                 Some(_) => CompactStatus {
                     level: CompactStatusLevel::Healthy,
                     label: "Quota healthy".to_string(),
-                    message: format!("{provider} quota data is current."),
-                    color: "#b5e835".to_string(),
+                    color: HEALTHY_COLOR.to_string(),
                 },
                 // A window can be known without its allowance being published, which is
                 // the ordinary case for a provider read from its own logs. That is a
@@ -323,10 +344,7 @@ impl ProviderSnapshot {
                 None => CompactStatus {
                     level: CompactStatusLevel::Healthy,
                     label: "Window tracked".to_string(),
-                    message: format!(
-                        "{provider} publishes no remaining percentage; the window timing comes from local history."
-                    ),
-                    color: "#b5e835".to_string(),
+                    color: HEALTHY_COLOR.to_string(),
                 },
             }
         };
@@ -356,34 +374,27 @@ fn age_seconds(value: &str) -> Option<u64> {
     Some(elapsed.as_secs().max(0) as u64)
 }
 
-fn format_age(seconds: u64) -> String {
-    if seconds < 60 { return "less than a minute".to_string(); }
-    if seconds < 3_600 { return format!("{}m", seconds / 60); }
-    if seconds < 86_400 { return format!("{}h {}m", seconds / 3_600, seconds % 3_600 / 60); }
-    format!("{}d {}h", seconds / 86_400, seconds % 86_400 / 3_600)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn fresh_snapshot(remaining_percent: f64) -> ProviderSnapshot {
-        provider_snapshot(ProviderKind::Codex, remaining_percent)
+    fn fresh_snapshot(used_percent: f64) -> ProviderSnapshot {
+        provider_snapshot(ProviderKind::Codex, used_percent)
     }
 
-    fn provider_snapshot(provider: ProviderKind, remaining_percent: f64) -> ProviderSnapshot {
+    fn provider_snapshot(provider: ProviderKind, used_percent: f64) -> ProviderSnapshot {
         let mut snapshot = ProviderSnapshot {
             freshness: Freshness::Fresh,
             limits: vec![LimitWindow {
                 kind: LimitKind::Primary,
                 label: "Primary window".to_string(),
-                used_percent: Some(100.0 - remaining_percent),
-                remaining_percent: Some(remaining_percent),
+                used_percent: Some(used_percent),
                 window_duration_mins: Some(300),
                 resets_at: None,
                 source: WindowSource::AppServer,
                 observed_at: jiff::Timestamp::now().as_second(),
                 freshness: Freshness::Fresh,
+                status_color: String::new(),
             }],
             ..ProviderSnapshot::new(provider)
         };
@@ -401,9 +412,9 @@ mod tests {
 
     #[test]
     fn compact_status_uses_shared_quota_thresholds() {
-        assert_eq!(fresh_snapshot(31.0).compact_status.level, CompactStatusLevel::Healthy);
-        assert_eq!(fresh_snapshot(30.0).compact_status.level, CompactStatusLevel::Warning);
-        assert_eq!(fresh_snapshot(10.0).compact_status.level, CompactStatusLevel::Critical);
+        assert_eq!(fresh_snapshot(69.0).compact_status.level, CompactStatusLevel::Healthy);
+        assert_eq!(fresh_snapshot(70.0).compact_status.level, CompactStatusLevel::Warning);
+        assert_eq!(fresh_snapshot(90.0).compact_status.level, CompactStatusLevel::Critical);
     }
 
     #[test]
@@ -414,12 +425,12 @@ mod tests {
                 kind: LimitKind::Primary,
                 label: "5-hour window".to_string(),
                 used_percent: Some(20.0),
-                remaining_percent: Some(80.0),
                 window_duration_mins: Some(300),
                 resets_at: Some(now.as_second() + 3_600),
                 source: WindowSource::AppServer,
                 observed_at: now.as_second() - 901,
                 freshness: Freshness::Fresh,
+                status_color: String::new(),
             }],
             last_live_success_at: Some(now.to_string()),
             last_history_success_at: Some(now.to_string()),
@@ -438,12 +449,12 @@ mod tests {
                 kind: LimitKind::Primary,
                 label: "5-hour window".to_string(),
                 used_percent: Some(20.0),
-                remaining_percent: Some(80.0),
                 window_duration_mins: Some(300),
                 resets_at: Some(now.as_second() + 600),
                 source: WindowSource::StatusLine,
                 observed_at: now.as_second() - 3_601,
                 freshness: Freshness::Fresh,
+                status_color: String::new(),
             }],
             last_live_success_at: Some(now.to_string()),
             ..ProviderSnapshot::new(ProviderKind::Claude)
@@ -454,30 +465,50 @@ mod tests {
     }
 
     #[test]
+    fn each_window_is_coloured_by_its_own_reading_not_the_providers() {
+        let mut snapshot = provider_snapshot(ProviderKind::Claude, 92.0);
+        snapshot.limits.push(LimitWindow {
+            kind: LimitKind::Secondary,
+            label: "Weekly window".to_string(),
+            used_percent: Some(59.0),
+            window_duration_mins: Some(10_080),
+            resets_at: None,
+            source: WindowSource::StatusLine,
+            observed_at: jiff::Timestamp::now().as_second(),
+            freshness: Freshness::Fresh,
+            status_color: String::new(),
+        });
+        snapshot.last_live_success_at = Some(jiff::Timestamp::now().to_string());
+        snapshot.resolve_derived_state();
+        assert_eq!(snapshot.compact_status.level, CompactStatusLevel::Critical);
+        assert_eq!(snapshot.limits[0].status_color, CRITICAL_COLOR);
+        assert_eq!(
+            snapshot.limits[1].status_color, HEALTHY_COLOR,
+            "a barely used window keeps its own colour beside a spent one"
+        );
+    }
+
+    #[test]
     fn stale_status_takes_priority_over_quota_thresholds() {
-        let mut snapshot = fresh_snapshot(5.0);
+        let mut snapshot = fresh_snapshot(95.0);
         snapshot.freshness = Freshness::Stale;
         snapshot.update_compact_status();
         assert_eq!(snapshot.compact_status.level, CompactStatusLevel::Stale);
     }
 
-    #[test]
-    fn compact_status_names_the_provider_that_raised_it() {
-        assert!(fresh_snapshot(5.0).compact_status.message.contains("Codex"));
-    }
 
     #[test]
     fn the_aggregate_reports_the_loudest_provider() {
-        let healthy = provider_snapshot(ProviderKind::Codex, 80.0);
-        let critical = provider_snapshot(ProviderKind::Codex, 5.0);
+        let healthy = provider_snapshot(ProviderKind::Codex, 20.0);
+        let critical = provider_snapshot(ProviderKind::Codex, 95.0);
         let aggregate = aggregate_status(&[healthy.clone(), critical]);
         assert_eq!(aggregate.level, CompactStatusLevel::Critical);
 
         // An unreadable provider outranks one that is merely running low.
-        let mut unavailable = provider_snapshot(ProviderKind::Codex, 80.0);
+        let mut unavailable = provider_snapshot(ProviderKind::Codex, 20.0);
         unavailable.freshness = Freshness::Unavailable;
         unavailable.update_compact_status();
-        let warning = provider_snapshot(ProviderKind::Codex, 20.0);
+        let warning = provider_snapshot(ProviderKind::Codex, 80.0);
         assert_eq!(
             aggregate_status(&[warning, unavailable]).level,
             CompactStatusLevel::Unavailable
@@ -581,6 +612,12 @@ pub struct DiagnosticsSnapshot {
     pub retention: RetentionDiagnostics,
     pub parser_revision: String,
     pub pricing_catalog_revision: String,
+    pub app_version: String,
+    /// Which build this is. The same version number ships as a debug build, a portable
+    /// executable and an installed one, and they behave differently enough — where the
+    /// executable lives, what Claude Code's hooks point at — that a bug report about "0.1.0"
+    /// is not answerable without it.
+    pub build_kind: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

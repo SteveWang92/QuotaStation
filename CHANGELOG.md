@@ -7,6 +7,46 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-16
+
+### Added
+
+- Claude Code's status line now shows every provider's quota, not only Claude's own.
+- Settings for the status line: how much it reports, and how providers are named in it.
+- The status line names the tokens in the context window beside the share used.
+- A desktop notification when Claude Code finishes a turn, offered in settings.
+- The status line reports cache hits, effort, thinking, fast mode and the open pull request.
+- Quota windows in the status line mark whether they are being spent faster than they elapse.
+- Diagnostics name the running version and which build it is.
+- Clicking the taskbar status opens the quick panel beside it.
+
+### Changed
+
+- Every quota percentage is now the share used, not the share remaining.
+- The quick panel sizes itself to its contents and grows upwards from the tray.
+- Clock times are written on a 24-hour clock everywhere.
+- Settings and diagnostics are one taller scrolling page instead of two tabs.
+- Each quota window's source and observation time moved to the diagnostics section.
+- Installing the Claude Code status line now asks in a confirmation instead of a long note.
+- The status bar keeps only the settings button; each provider panel already states its own status.
+- Start with Windows, the taskbar status and the desktop shortcut moved into settings.
+
+### Removed
+
+- Status text, provider names and a model count that each appeared twice on a surface.
+
+### Fixed
+
+- Each quota window is coloured by its own reading rather than the provider's loudest one.
+- Claude Code's status line omits stale cross-provider quota instead of presenting it as current.
+- The status line's one-row form never shows another provider's quota where Claude's own would be read.
+- Removing the Claude completion hook preserves other handlers in the same Stop group.
+- Failed or overlapping settings changes no longer corrupt, undo, or misreport the application's preferences.
+- The taskbar status click target no longer intercepts drags or clicks meant for a covering window.
+- The settings button no longer sits inside an empty bordered strip.
+- The settings dialog is tall enough for its own contents.
+- The quick panel no longer opens inside a larger window that read as a second panel behind it.
+
 ## [0.1.0] - 2026-08-15
 
 First release. QuotaStation reads the quota and usage data that the AI provider clients
@@ -50,5 +90,6 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/SteveWang92/QuotaStation/releases/tag/v0.1.0

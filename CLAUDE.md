@@ -43,6 +43,18 @@ QuotaStation and take precedence when they differ.
 - Use the minimum local check required by the global rules. The three gates CI enforces are
   `npm test`, `npm run build`, and `cargo test --locked --manifest-path src-tauri/Cargo.toml`.
   There is no lint or format gate.
+- **The verification artifact is the unbundled release build, never the debug one.** Steve
+  runs `src-tauri/target/release/quotastation.exe` — a debug build is a different binary with
+  different performance, and handing him one is handing him something he does not run. The
+  `--debug` and `npm run tauri dev` forms in `docs/development.md` exist for diagnosing a
+  specific problem, not for finishing a change.
+- After the gates pass, close the running instance, rebuild it with `npm run build` then
+  `cargo build --release --manifest-path src-tauri/Cargo.toml`, and start it again with
+  `explorer.exe src-tauri\target\release\quotastation.exe` so it comes up owned by the shell
+  exactly as a double-click would rather than tied to the agent's terminal. Keep that
+  executable path stable: Claude Code's registered status-line command points at it.
+- Only one instance runs at a time — a second one hands over to the first and exits, which
+  looks like a crash. Close the running copy, including one started from the tray, first.
 
 ## Changelog
 
@@ -51,6 +63,11 @@ QuotaStation and take precedence when they differ.
   the same change that makes them, not in a sweep before the release.
 - Record the net user-facing result, not a commit log. Omit pure build, CI, formatting,
   test, typo, and version-bump churn unless a person using the application perceives it.
+- **One entry is one line — a single sentence naming the result, and nothing else.** No
+  second sentence, no wrapped continuation line, no reason, no mechanism, no before-and-after,
+  no list of what stayed the same. If an entry does not fit on one line it is carrying
+  explanation that belongs in the code comment or the commit, not here. The reader wants to
+  know what changed for them, and every extra clause is one more line they read to find it.
 - Use the Keep a Changelog categories in this order — Added, Changed, Deprecated, Removed,
   Fixed, Security — and omit the empty ones.
 - Compare links live at the bottom of the file and are maintained by hand: this repository
@@ -62,11 +79,21 @@ Releasing is manual here, and Steve starts it. Never bump a version, tag, create
 `dev` → `main` pull request, or publish a release without being asked.
 
 - The version appears in three files that must always move together: `package.json`,
-  `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`. `Cargo.lock` records it too, so
-  refresh it in the same commit.
+  `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`. `Cargo.lock` and
+  `package-lock.json` record it too, so refresh them in the same commit.
+- **The release commit is the last commit before the merge.** The pull request is opened,
+  reviewed and fixed on the unbumped branch; the version bump and the changelog dating are
+  committed only after Steve confirms the pull request is ready to merge. A release commit
+  pushed before the review, or left sitting under later fixes, means the tagged commit is
+  not the state that was reviewed — drop it and force-push with lease if it happens.
 - `main` holds the released state and nothing deploys from it — QuotaStation is a desktop
-  application, so a release is a tag plus, when asked for, a built bundle. The repository's
-  GitHub default branch is `dev`.
+  application, so a release is a tag and its changelog notes. The repository's GitHub default
+  branch is `dev`.
+- **No installer is attached to a release while the repository is private.** A bundle is
+  built for Steve's own verification, not for distribution, and uploading one before the
+  project is public serves nobody. Do not build or attach one, and do not ask each time;
+  when QuotaStation goes public, Steve will say so and that is when the artifact question
+  reopens.
 - Annotated `vX.Y.Z` tags on `main` are the source of truth for released versions. The tag
   message is the subject line only — `QuotaStation X.Y.Z` — because the notes already live
   in `CHANGELOG.md` and a second copy would drift. Tags carry no AI attribution, exactly as
@@ -74,26 +101,34 @@ Releasing is manual here, and Steve starts it. Never bump a version, tag, create
 
 The full sequence, once Steve asks for it:
 
-1. On a clean `dev`: `git fetch origin` then `git merge --ff-only origin/dev`.
-2. Bump the three version fields, refresh `Cargo.lock`, and run the three verification gates.
-3. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, open a fresh empty `[Unreleased]`
-   above it, and update the compare links at the bottom of the file.
-4. Commit that as `chore(release): vX.Y.Z` and push `dev`.
-5. Open the `dev` → `main` pull request titled `chore(release): vX.Y.Z` — the title becomes
-   the squash subject verbatim, so it has to be a Conventional Commit line — with the new
-   changelog section as its body.
-6. Review the release pull request with the `/code-review` skill and resolve what it finds.
-   The global rules require a real review here; a diff scan is not one.
+1. On a clean `dev`: `git fetch origin` then `git merge --ff-only origin/dev`. Run the three
+   verification gates.
+2. Open the `dev` → `main` pull request titled `chore(release): vX.Y.Z` — the title becomes
+   the squash subject verbatim, so it has to be a Conventional Commit line — with the
+   `[Unreleased]` entries as its body. **No version bump yet:** `dev` still carries the
+   previous version at this point.
+3. Review the release pull request with the `/code-review` skill and resolve what it finds.
+   The global rules require a real review here; a diff scan is not one. Fixes are ordinary
+   commits pushed to `dev`; the pull request updates itself.
+4. Wait for Steve to confirm the pull request is ready to merge. Nothing below this line
+   happens before that confirmation.
+5. Now bump the three version fields, refresh `Cargo.lock` and `package-lock.json`, rename
+   `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, open a fresh empty `[Unreleased]` above
+   it, update the compare links at the bottom of the file, re-run the three gates, and
+   commit it as `chore(release): vX.Y.Z`. Push `dev`. This is the last commit on the branch.
+6. Update the pull request body to the finished changelog section if the entries changed
+   during the review.
 7. Squash-merge it: `gh pr merge --squash --body ""`.
 8. `git checkout main && git pull origin main`, then
    `git tag -a vX.Y.Z -m "QuotaStation X.Y.Z"` and `git push origin vX.Y.Z`. Tags do not
    travel with an ordinary push.
-9. Publish a GitHub release from the tag, with the changelog section as its notes, only when
-   there is a bundle to attach or Steve asks for one.
+9. Publish a GitHub release from the tag — `gh release create vX.Y.Z --title vX.Y.Z
+   --notes-file <section>` — with that version's changelog section as its notes and no
+   attached artifact. Every tag gets a release; a tag on its own is not the published record.
 10. Reset `dev` to `main` — `git checkout dev && git reset --hard main` and
     `git push --force-with-lease origin dev` — so `dev` starts the next version even with it.
 
-`v0.1.0` was the base case and skipped steps 2 through 7. There was no `main` to diff
+`v0.1.0` was the base case and skipped steps 2 through 6. There was no `main` to diff
 against, so there was no pull request and nothing for a release review to gate; the version
 and the changelog were already final, so a `chore(release)` commit would have carried no
 change at all. `main` was branched from `dev` and the tag placed on the commit they shared,

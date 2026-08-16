@@ -8,11 +8,12 @@ import {
   formatRevision,
   formatTimestamp,
   formatWindowBadge,
-  formatWindowDuration,
 } from "../src/format";
 
 // Assertions stay locale independent: the surfaces format with whatever locale the
-// machine reports, so only the values QuotaStation itself decides are pinned here.
+// machine reports, so only the values QuotaStation itself decides are pinned here. The
+// clock is one of those decisions — every timestamp is 24-hour — but the machine's time
+// zone is not, so it is asserted through the absence of a meridiem rather than an hour.
 
 const NOW = Date.UTC(2026, 7, 11, 12, 0, 0);
 
@@ -57,20 +58,25 @@ describe("countdowns", () => {
 });
 
 describe("quota window durations", () => {
-  it("describes a duration in its largest whole unit", () => {
-    expect(formatWindowDuration(300)).toBe("5-hour quota window");
-    expect(formatWindowDuration(10_080)).toBe("7-day quota window");
-    expect(formatWindowDuration(90)).toBe("90-minute quota window");
-  });
-
-  it("badges the same duration for the taskbar", () => {
+  it("badges a duration in its largest whole unit for the taskbar", () => {
     expect(formatWindowBadge(300, "Primary window")).toBe("5H");
     expect(formatWindowBadge(10_080, "Weekly window")).toBe("7D");
   });
 
   it("falls back to the window label when the provider reports no duration", () => {
-    expect(formatWindowDuration(null)).toBe("Window duration unavailable");
     expect(formatWindowBadge(null, "Weekly window")).toBe("WE");
+  });
+});
+
+describe("clock times", () => {
+  it("writes every timestamp on a 24-hour clock", () => {
+    // 22:00 UTC and 10:00 UTC: whatever the machine's offset, one of the two lands in the
+    // afternoon, so a 12-hour formatter would have to mark it.
+    for (const utcHour of [22, 10]) {
+      const instant = Date.UTC(2026, 7, 11, utcHour, 0, 0);
+      expect(formatTimestamp(new Date(instant).toISOString())).not.toMatch(/[ap]\.?m\.?/i);
+      expect(formatResetTimestamp(instant / 1_000)).not.toMatch(/[ap]\.?m\.?/i);
+    }
   });
 });
 

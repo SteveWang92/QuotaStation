@@ -21,6 +21,11 @@
 * { box-sizing: border-box; }
 html, body, #root { min-width: 800px; min-height: 100%; margin: 0; }
 html.compact-window, html.compact-window body, html.compact-window #root { min-width: 0; width: 100%; height: 100%; overflow: hidden; }
+/* The quick panel is the one compact window whose height follows its contents: the
+   renderer reports the rendered height and the core resizes the window to it, so the
+   document must be free to take its natural height rather than the window's. Only the
+   clamped case — content taller than the work area — leaves anything to scroll. */
+html.quick-panel-window, html.quick-panel-window body, html.quick-panel-window #root { height: auto; min-height: 100%; overflow: visible; }
 html.taskbar-window, html.taskbar-window body, html.taskbar-window #root { background: transparent; }
 body {
   min-height: 100vh;
@@ -48,9 +53,6 @@ button { font: inherit; }
 }
 .identity { display: flex; align-items: center; gap: 16px; }
 .identity h1 { margin: 0; font-size: 30px; letter-spacing: -1.25px; font-weight: 720; }
-.identity h1::after { content: ""; display: inline-block; width: 1px; height: 30px; margin-left: 16px; background: #74808a; vertical-align: middle; }
-.identity p { color: #d9d6cf; margin: 0; font-size: 15px; }
-.provider-name { color: #99a8ff; font-size: 17px; font-weight: 640; }
 .header-actions { display: flex; align-items: center; color: var(--muted); font-size: 13px; }
 .header-actions button {
   height: 44px;
@@ -88,8 +90,7 @@ button { font: inherit; }
   border-bottom: 1px solid var(--line);
 }
 .quota-row > * { min-width: 0; }
-.quota-label h2, .history-section h2 { margin: 0 0 8px; font-size: 18px; letter-spacing: -0.25px; font-weight: 660; }
-.quota-label p { margin: 0; color: var(--muted); font-size: 13px; }
+.quota-label h2, .history-section h2 { margin: 0; font-size: 18px; letter-spacing: -0.25px; font-weight: 660; }
 .quota-track, .mini-track { height: 10px; overflow: hidden; background: #303941; border-radius: 3px; }
 .quota-track span, .mini-track i { display: block; height: 100%; background: var(--lime); border-radius: inherit; transition: width 320ms ease; }
 .quota-track span { background: var(--quota-status-color); }
@@ -135,13 +136,14 @@ button { font: inherit; }
 .provider-tabs button:hover { color: var(--text); background: #1a242c; }
 .provider-tabs button.active { color: #10150c; background: var(--lime); }
 
-.provider-consent { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.provider-consent { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .provider-setup { padding: 22px; border: 1px dashed var(--line); border-radius: 8px; background: var(--surface); }
 .provider-setup h2 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
 .provider-setup p { margin: 0; max-width: 70ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .provider-setup.compact { padding: 16px; }
 .provider-setup.compact h2 { font-size: 13px; }
 .provider-setup.compact p { font-size: 11px; }
+.provider-consent + .provider-consent { margin-top: 12px; }
 .provider-consent h2 { margin: 0 0 5px; font-size: 14px; font-weight: 650; }
 .provider-consent p { margin: 0; max-width: 78ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .provider-consent p + p { margin-top: 8px; }
@@ -150,6 +152,24 @@ button { font: inherit; }
 .provider-consent button { flex: none; height: 36px; padding: 0 16px; border: 1px solid #6f7d87; border-radius: 5px; color: var(--text); background: #172129; cursor: pointer; font-weight: 650; }
 .provider-consent button:hover:not(:disabled) { background: #202c35; }
 .provider-consent button:disabled { opacity: 0.55; cursor: wait; }
+.provider-consent-body { min-width: 0; }
+.provider-consent-note { margin-top: 6px !important; }
+.consent-options { display: flex; flex-direction: column; gap: 7px; margin-top: 11px; color: var(--muted); font-size: 12px; }
+.consent-options label { display: flex; align-items: center; gap: 8px; }
+.consent-options input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--lime); }
+.consent-options select { height: 26px; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: #0d1419; font: inherit; font-size: 12px; }
+
+.confirm-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 32px; background: rgba(6, 10, 13, 0.72); }
+.confirm-dialog { width: min(520px, 100%); padding: 20px 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55); }
+.confirm-dialog h3 { margin: 0 0 12px; font-size: 15px; font-weight: 660; }
+.confirm-dialog p { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.confirm-dialog code { padding: 0 3px; border-radius: 3px; background: #1c2730; color: #cbd2d6; font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.confirm-actions button { height: 34px; padding: 0 16px; border: 1px solid #6f7d87; border-radius: 5px; color: var(--text); background: transparent; cursor: pointer; font-weight: 650; }
+.confirm-actions button:hover:not(:disabled) { background: #202c35; }
+.confirm-actions button:disabled { opacity: 0.55; cursor: wait; }
+.confirm-actions .confirm-primary { border-color: var(--lime); color: #0b1014; background: var(--lime); }
+.confirm-actions .confirm-primary:hover:not(:disabled) { background: #c6f24a; }
 
 .history-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
 .history-heading h2 { margin: 3px 0 0; font-size: 24px; }
@@ -168,7 +188,7 @@ button { font: inherit; }
 .range-error { margin: 0; padding: 10px 13px; border: 1px solid #824741; border-radius: 4px; color: #ffaaa3; background: rgba(96, 31, 27, 0.22); font-size: 12px; }
 .history-content { display: flex; flex-direction: column; gap: 16px; transition: opacity 140ms ease; }
 .history-content.loading { opacity: 0.52; }
-.summary-strip { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 5px; background: rgba(16, 23, 29, 0.62); }
+.summary-strip { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 5px; background: rgba(16, 23, 29, 0.62); }
 .summary-strip > div { min-height: 78px; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 13px 20px; border-left: 1px solid var(--line); }
 .summary-strip > div:first-child { border-left: 0; }
 .summary-strip span { color: var(--muted); font-size: 11px; font-weight: 630; letter-spacing: 0.06em; text-transform: uppercase; }
@@ -209,21 +229,9 @@ button { font: inherit; }
 .token-dot.violet { background: var(--violet); }
 .token-dot.blue { background: var(--blue); }
 
-.status-bar {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  color: #d4d8da;
-  background: rgba(16, 23, 29, 0.78);
-  font-size: 13px;
-}
-.status-summary { min-height: 56px; display: grid; grid-template-columns: 22px auto minmax(180px, 1fr) auto; align-items: center; gap: 14px; padding: 0 16px 0 20px; }
-.status-summary > svg { width: 21px; height: 21px; }
-.status-bar { border-color: color-mix(in srgb, var(--status-color) 48%, var(--line)); }
-.status-bar .status-summary > svg, .status-bar .status-summary > strong { color: var(--status-color); }
-.status-message { color: #c8cdd0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* One control, so no panel around it: a bordered strip spanning the window would be a
+   container drawn for a single button. */
+.status-bar { margin-top: auto; display: flex; justify-content: flex-end; }
 .settings-toggle { height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #4b5861; border-radius: 4px; color: #d4d8da; background: transparent; cursor: pointer; font-size: 12px; }
 .settings-toggle:hover { border-color: #76838d; background: #182129; }
 .settings-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
@@ -231,18 +239,18 @@ button { font: inherit; }
 .settings-toggle.attention { border-color: color-mix(in srgb, var(--danger) 60%, var(--line)); color: #ffbdb6; }
 
 .settings-overlay { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 32px; background: rgba(6, 10, 13, 0.66); backdrop-filter: blur(2px); }
-.settings-dialog { width: min(880px, 100%); max-height: min(720px, 100%); display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
+/* Settings and diagnostics are read together, so the dialog is one scrolling page and
+   takes a fixed height: the two sections should not resize the dialog under the pointer
+   as their contents change. */
+.settings-dialog { width: min(880px, 100%); height: min(900px, 100%); display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5); }
 .settings-dialog:focus { outline: none; }
-.settings-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px 0 18px; border-bottom: 1px solid var(--line-soft); }
-.settings-tabs { display: flex; gap: 4px; }
-.settings-tabs button { height: 38px; padding: 0 14px; border: none; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; cursor: pointer; font-size: 13px; font-weight: 620; }
-.settings-tabs button:hover { color: var(--text); }
-.settings-tabs button.active { color: var(--text); border-bottom-color: var(--lime); }
-.settings-tabs button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
-.settings-close { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 6px; border: 1px solid transparent; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; }
+.settings-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px 12px 18px; border-bottom: 1px solid var(--line-soft); }
+.settings-header h2 { margin: 0; font-size: 15px; font-weight: 650; }
+.settings-close { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; }
 .settings-close:hover { border-color: var(--line); color: var(--text); background: #182129; }
 .settings-close svg { width: 17px; height: 17px; }
-.settings-body { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px 18px; overflow-y: auto; }
+.settings-body { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 20px; padding: 16px 18px 18px; overflow-y: auto; }
+.settings-section-heading { margin: 0 0 10px; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: 0.09em; text-transform: uppercase; }
 .settings-empty { margin: 0; max-width: 78ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
 
 .diagnostics-panel { display: flex; flex-direction: column; gap: 8px; }
@@ -255,6 +263,7 @@ button { font: inherit; }
 .diagnostic-item > strong.pending { color: var(--muted); }
 .diagnostic-item small { grid-column: 1 / -1; color: var(--muted); line-height: 1.35; }
 .diagnostic-item .diagnostic-error { color: #ffaaa3; }
+.diagnostic-sources { display: flex; flex-direction: column; gap: 3px; padding-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.4; }
 .diagnostic-revisions { display: flex; align-items: center; gap: 20px; padding-top: 8px; color: var(--muted); font-size: 11px; }
 .diagnostic-log { margin-left: auto; height: 28px; padding: 0 10px; border: 1px solid #4b5861; border-radius: 4px; color: #d4d8da; background: transparent; cursor: pointer; font-size: 11px; }
 .diagnostic-log:hover { border-color: #76838d; background: #182129; }
@@ -265,7 +274,6 @@ button { font: inherit; }
 @media (max-width: 1050px) {
   .provider-grid { grid-template-columns: minmax(0, 1fr); }
   .app-shell { padding: 24px; }
-  .identity p { display: none; }
   .quota-row { grid-template-columns: 190px minmax(210px, 1fr) 92px 150px; gap: 18px; padding-inline: 22px; }
   .quota-reset { padding-left: 18px; }
   .history-heading { align-items: flex-start; flex-direction: column; }
@@ -279,14 +287,14 @@ button { font: inherit; }
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
 
+/* No fixed height: this element is what the renderer measures, so it has to be free to
+   take exactly the height its contents need. */
 .quick-panel-shell {
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
   padding: 18px;
   display: flex;
   flex-direction: column;
   gap: 13px;
-  overflow: hidden;
   border: 1px solid #687680;
   border-radius: 10px;
   background: linear-gradient(145deg, #121a20, #0b1116 72%);
@@ -294,26 +302,24 @@ button { font: inherit; }
 .quick-panel-header { display: flex; align-items: center; justify-content: space-between; }
 .quick-panel-header > div { display: flex; flex-direction: column; gap: 3px; }
 .quick-panel-header span { color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: 0.1em; text-transform: uppercase; }
-.quick-panel-header strong { font-size: 18px; }
+.quick-panel-header strong { font-size: 16px; font-weight: 700; }
 .quick-panel-header button { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: transparent; cursor: pointer; }
 .quick-panel-header button:disabled { opacity: 0.5; }
 .quick-panel-header svg { width: 16px; height: 16px; }
 /* Providers sit side by side so the panel answers "how much is left?" for both in one
    look. A single provider keeps the original single-column width. */
-/* The columns scroll rather than grow: the panel is a fixed-size window, and content
-   taller than it must not run underneath the dashboard button below. */
-.quick-providers { min-height: 0; flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; overflow-y: auto; }
+/* The columns take their natural height and the window follows; they only scroll when the
+   core has clamped the window to the work area and there is nowhere left to grow. */
+.quick-providers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .quick-providers.single { grid-template-columns: minmax(0, 1fr); }
-.quick-provider { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.quick-provider { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .quick-provider-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .quick-provider-header h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .quick-provider-header span { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.quick-provider .quick-freshness { margin-top: auto; }
 .quota-section.compact { flex: none; border-color: var(--line); }
 .quota-section.compact .quota-row { min-height: 112px; grid-template-columns: minmax(0, 1fr) 86px; grid-template-areas: "label percent" "meter meter" "reset reset"; gap: 8px 14px; padding: 13px 15px; }
 .quota-section.compact .quota-label { grid-area: label; }
-.quota-section.compact .quota-label h2 { margin-bottom: 3px; font-size: 14px; }
-.quota-section.compact .quota-label p { font-size: 10px; }
+.quota-section.compact .quota-label h2 { font-size: 14px; }
 .quota-section.compact .quota-meter { grid-area: meter; }
 .quota-section.compact .quota-percent { grid-area: percent; align-items: flex-end; }
 .quota-section.compact .quota-percent strong { font-size: 19px; }

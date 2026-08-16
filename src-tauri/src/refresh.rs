@@ -93,6 +93,10 @@ pub async fn refresh_history_for_provider(
 async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) {
     let workspace = state.workspace_snapshot().await;
     let _ = app.emit("snapshot-updated", &workspace);
+    // The event reaches this application's own windows and nothing else. The status-line
+    // bridge is a separate process with no way to receive it, so the same snapshot is also
+    // left on disk for it to read.
+    crate::summary::publish(&workspace);
 }
 
 async fn apply_live(

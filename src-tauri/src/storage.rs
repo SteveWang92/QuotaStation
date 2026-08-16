@@ -566,12 +566,12 @@ impl Storage {
                 kind,
                 label: kind.window_label(window_duration_mins),
                 used_percent: row.try_get("used_percent").ok(),
-                remaining_percent: row.try_get::<Option<f64>, _>("used_percent").ok().flatten().map(|used| (100.0 - used).clamp(0.0, 100.0)),
                 window_duration_mins,
                 resets_at: row.try_get("resets_at").ok(),
                 source: WindowSource::parse(&row.try_get::<String, _>("source").ok()?)?,
                 observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
                 freshness: Freshness::Stale,
+                status_color: String::new(),
             })
         }).collect();
 
@@ -980,12 +980,12 @@ mod tests {
                 kind: LimitKind::Primary,
                 label: LimitKind::Primary.window_label(Some(300)),
                 used_percent: Some(40.0),
-                remaining_percent: Some(60.0),
                 window_duration_mins: Some(300),
                 resets_at: Some(1_800_000_000),
                 source: WindowSource::AppServer,
                 observed_at: jiff::Timestamp::now().as_second(),
                 freshness: Freshness::Fresh,
+                status_color: String::new(),
             }],
         };
         storage.save_live(CODEX, &live, "2026-08-11T00:00:00Z").await.expect("save live");
@@ -994,7 +994,7 @@ mod tests {
         assert_eq!(snapshot.plan_type.as_deref(), Some("plus"));
         assert_eq!(snapshot.limits.len(), 1);
         assert_eq!(snapshot.limits[0].label, "5-hour window");
-        assert_eq!(snapshot.limits[0].remaining_percent, Some(60.0));
+        assert_eq!(snapshot.limits[0].used_percent, Some(40.0));
         assert_eq!(snapshot.freshness, Freshness::Fresh, "freshness follows the stored observation");
     }
 
@@ -1008,12 +1008,12 @@ mod tests {
                 kind: LimitKind::Primary,
                 label: LimitKind::Primary.window_label(Some(WEEK_MINUTES)),
                 used_percent: Some(used_percent),
-                remaining_percent: Some(100.0 - used_percent),
                 window_duration_mins: Some(WEEK_MINUTES),
                 resets_at: Some(resets_at),
                 source: WindowSource::AppServer,
                 observed_at: resets_at - WEEK_MINUTES * 60,
                 freshness: Freshness::Fresh,
+                status_color: String::new(),
             }],
         }
     }

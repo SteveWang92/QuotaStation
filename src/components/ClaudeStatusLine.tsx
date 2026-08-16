@@ -1,43 +1,39 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { saveAppSettings, useAppSettings } from "../appSettings";
 import { errorMessage } from "../errors";
 import { formatResetTimestamp } from "../format";
-import type { ClaudeStatusLineStatus } from "../types";
+import type { AppSettings, ClaudeStatusLineStatus, ProviderLabelStyle } from "../types";
 
 /**
- * Claude Code reports both of its quota windows — the five-hour and the seven-day one, each
- * with the percentage consumed and the exact restart — to whatever command is configured as
- * its status line, and to nothing else. Registering QuotaStation as that command is
- * therefore the only way to see the seven-day window without presenting a credential to
- * Anthropic, and it costs nothing at all: no token, no network, no rate limit shared with
- * Claude Code's own usage display.
+ * Registering QuotaStation as Claude Code's status line is the only way to see the
+ * seven-day window without presenting a credential to Anthropic, and it costs nothing: no
+ * token, no network, no rate limit shared with Claude Code's own usage display.
  *
- * It does change a setting in Claude Code's own configuration, so it is never installed
- * without being asked for here, and a status line belonging to something else is reported
- * rather than replaced.
+ * It does change a setting in Claude Code's own configuration, which is someone else's
+ * file, so it is never installed without being asked for — and the asking happens in the
+ * confirmation below rather than in a paragraph nobody finishes reading.
  */
 export function ClaudeStatusLine() {
   const [status, setStatus] = useState<ClaudeStatusLineStatus | null>(null);
+  const settings = useAppSettings();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      setStatus(await invoke<ClaudeStatusLineStatus>("get_claude_status_line"));
-    } catch {
-      // The quota still comes from the session logs; this card is an offer, not a step.
-    }
-  }, []);
+  const [confirming, setConfirming] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void invoke<ClaudeStatusLineStatus>("get_claude_status_line").then(setStatus).catch(() => {
+      // The quota still comes from the session logs; this card is an offer, not a step.
+    });
+  }, []);
 
   const setInstalled = useCallback(async (installed: boolean) => {
     setBusy(true);
     setError(null);
     try {
       setStatus(await invoke<ClaudeStatusLineStatus>("set_claude_status_line", { installed }));
+      setConfirming(false);
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -45,61 +41,195 @@ export function ClaudeStatusLine() {
     }
   }, []);
 
+  const change = useCallback(async (patch: Partial<AppSettings>) => {
+    setSavingSettings(true);
+    setError(null);
+    try {
+      await saveAppSettings(patch);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setSavingSettings(false);
+    }
+  }, []);
+
   if (!status) return null;
 
   return (
     <section className="provider-consent" aria-label="Claude Code status line quota source">
-      <div>
+      <div className="provider-consent-body">
         <h2>Read Claude quota from Claude Code</h2>
         {status.installed ? (
-          <>
-            <p>
-              QuotaStation is registered as Claude Code's status line, which is how Claude
-              Code hands over its five-hour and seven-day windows.{" "}
-              {status.lastReadingAt === null
-                ? "No reading has arrived yet — the first one comes with the next Claude Code turn in a terminal."
-                : `Last reading ${formatResetTimestamp(status.lastReadingAt)}.`}
-            </p>
-            {/* Claude Code renders a status line in a terminal and nowhere else, so a
-                desktop-hosted session never runs this command however it is configured.
-                Without saying so, a correct installation looks like a broken one. */}
-            {status.desktopOnlySessions ? (
-              <p>
-                The Claude Code sessions running now are hosted by the desktop application,
-                which draws its own interface and renders no status line, so none of them
-                will hand a reading over. Run <code>claude</code> in a terminal to bring the
-                percentages up to date; the windows below stay as last reported until then.
-              </p>
-            ) : null}
-          </>
+          <p>
+            Installed.{" "}
+            {status.lastReadingAt === null
+              ? "No reading has arrived yet — the first comes with the next Claude Code turn in a terminal."
+              : `Last reading ${formatResetTimestamp(status.lastReadingAt)}.`}
+          </p>
         ) : (
           <p>
-            Claude Code's session logs give the five-hour window's timing but never an
-            allowance, and they say nothing at all about the seven-day window. Claude Code
-            does report both, with the percentage consumed and the exact restart, to whatever
-            command is set as its status line. Installing this registers QuotaStation as that
-            command: no credential is read, nothing leaves this machine, and Claude Code
-            shows the same two windows in its own status line. Only terminal sessions render
-            a status line — the desktop application draws its own interface and runs no such
-            command — so the readings arrive while <code>claude</code> is running in a
-            terminal, and between those the windows above stay as last reported.
+            Claude Code reports its five-hour and seven-day windows only to its status line.
+            Installing this reads them, and shows every provider's quota back inside Claude
+            Code.
           </p>
         )}
+        {/* Claude Code renders a status line in a terminal and nowhere else, so a
+            desktop-hosted session never runs this command however it is configured.
+            Without saying so, a correct installation looks like a broken one. */}
+        {status.installed && status.desktopOnlySessions ? (
+          <p className="provider-consent-note">
+            The Claude Code sessions running now are hosted by the desktop application, which
+            renders no status line. Run <code>claude</code> in a terminal to bring the
+            percentages up to date.
+          </p>
+        ) : null}
         {status.hasForeignCommand ? (
           <p className="provider-consent-error">
-            Claude Code already runs its own status line, which QuotaStation will not
-            replace. Remove it in Claude Code's settings first.
+            Claude Code already runs its own status line, which QuotaStation will not replace.
+            Remove it in Claude Code's settings first.
           </p>
         ) : null}
         {error ? <p className="provider-consent-error">{error}</p> : null}
+        {status.installed && settings ? (
+          <div className="consent-options">
+            <label>
+              <input
+                type="checkbox"
+                checked={settings.statusLineFullDetails}
+                disabled={savingSettings}
+                onChange={(event) => void change({ statusLineFullDetails: event.target.checked })}
+              />
+              Show the session and the other providers, not only Claude's own windows
+            </label>
+            <label>
+              Provider names
+              <select
+                value={settings.statusLineProviderLabels}
+                disabled={savingSettings}
+                onChange={(event) =>
+                  void change({
+                    statusLineProviderLabels: event.target.value as ProviderLabelStyle,
+                  })
+                }
+              >
+                <option value="short">Short (CDX, CLD)</option>
+                <option value="full">Full (Codex, Claude Code)</option>
+              </select>
+            </label>
+          </div>
+        ) : null}
       </div>
       <button
         type="button"
-        onClick={() => void setInstalled(!status.installed)}
+        onClick={() => (status.installed ? void setInstalled(false) : setConfirming(true))}
         disabled={busy || (!status.installed && status.hasForeignCommand)}
       >
         {status.installed ? "Remove status line" : "Install status line"}
       </button>
+      {confirming ? (
+        <ConfirmInstall busy={busy} onCancel={() => setConfirming(false)} onConfirm={() => void setInstalled(true)} />
+      ) : null}
     </section>
+  );
+}
+
+/**
+ * Claude Code's own completion notice reaches a handful of terminals, none of them the
+ * ordinary Windows ones, so a long turn finishes in silence and is found by going back to
+ * look. Claude Code will however run a command when the agent stops, which is enough.
+ */
+export function ClaudeFinishedNotifications() {
+  const [installed, setInstalled] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void invoke<boolean>("get_claude_notifications").then(setInstalled).catch(() => {});
+  }, []);
+
+  const change = useCallback(async (wanted: boolean) => {
+    setBusy(true);
+    setInstalled(wanted);
+    setError(null);
+    try {
+      setInstalled(await invoke<boolean>("set_claude_notifications", { installed: wanted }));
+    } catch (cause) {
+      setError(errorMessage(cause));
+      setInstalled(!wanted);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  if (installed === null) return null;
+
+  return (
+    <section className="provider-consent" aria-label="Claude Code completion notifications">
+      <div className="provider-consent-body">
+        <h2>Notify me when Claude Code finishes</h2>
+        <p>
+          A desktop notification when a turn ends, so a long one can be left running. This
+          adds a <code>Stop</code> hook to Claude Code's settings and leaves every other hook
+          alone. Nothing from the conversation is read or stored — the notification names the
+          project directory and nothing else.
+        </p>
+        {error ? <p className="provider-consent-error">{error}</p> : null}
+      </div>
+      <button type="button" onClick={() => void change(!installed)} disabled={busy}>
+        {installed ? "Turn off notifications" : "Turn on notifications"}
+      </button>
+    </section>
+  );
+}
+
+/**
+ * What installing actually does, at the moment it is being decided. The same words sat
+ * permanently on the card before, where they were a wall of text in front of a setting
+ * most people had already made up their mind about.
+ */
+function ConfirmInstall({
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="confirm-overlay" onMouseDown={onCancel}>
+      <div
+        className="confirm-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-label="Install the Claude Code status line"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <h3>Install the Claude Code status line?</h3>
+        <p>
+          QuotaStation will add a <code>statusLine</code> command to Claude Code's own
+          <code> settings.json</code>, leaving every other setting untouched. A status line
+          belonging to something else is never replaced.
+        </p>
+        <p>
+          No credential is read and nothing leaves this machine. Claude Code hands the
+          command its five-hour and seven-day windows, and the command prints every
+          provider's quota back into Claude Code.
+        </p>
+        <p>
+          Only terminal sessions render a status line — the desktop application draws its own
+          interface — so readings arrive while <code>claude</code> runs in a terminal, and
+          between those the windows stay as last reported. Removing it here undoes all of it.
+        </p>
+        <div className="confirm-actions">
+          <button type="button" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button type="button" className="confirm-primary" onClick={onConfirm} disabled={busy}>
+            Install
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
