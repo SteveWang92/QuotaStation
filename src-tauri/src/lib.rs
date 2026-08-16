@@ -323,11 +323,14 @@ fn watch_for_finished_turns(app: tauri::AppHandle) {
             else {
                 continue;
             };
+            // The title says which event this is, the same way the quota notifications do.
+            // Windows already prints the application's name above it, so spending the title
+            // on "QuotaStation" left every notification looking alike in the action centre.
             let body = match event.project {
-                Some(project) => format!("{project} · Claude Code finished responding"),
-                None => "Claude Code finished responding".to_string(),
+                Some(project) => project,
+                None => "A turn has ended".to_string(),
             };
-            alerts::raise(&app, "QuotaStation", &body);
+            alerts::raise(&app, "Claude Code finished responding", &body);
         }
     });
 }

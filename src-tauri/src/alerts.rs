@@ -129,8 +129,8 @@ fn quota_alert(provider: &ProviderSnapshot, window: &LimitWindow, loudness: Loud
         _ => format!("{} quota running low", provider.display_name),
     };
     let used = window.used_percent.unwrap_or_default();
-    let body = match window.resets_at.and_then(local_clock) {
-        Some(clock) => format!("{} {used:.0}% used · resets at {clock}", window.label),
+    let body = match window.resets_at.and_then(local_moment) {
+        Some(moment) => format!("{} {used:.0}% used · resets {moment}", window.label),
         None => format!("{} {used:.0}% used", window.label),
     };
     Alert { title, body }
@@ -196,19 +196,31 @@ fn collect_resets(
         ResetClassification::Unplanned => " early",
         ResetClassification::Scheduled => "",
     };
-    let body = match local_clock(reset.new_resets_at) {
-        Some(clock) => format!("{} restarted{early} · next reset at {clock}", reset.window_label),
+    let body = match local_moment(reset.new_resets_at) {
+        Some(moment) => format!("{} restarted{early} · next reset {moment}", reset.window_label),
         None => format!("{} restarted{early}", reset.window_label),
     };
     alerts.push(Alert { title: format!("{} quota reset", provider.display_name), body });
 }
 
-/// An epoch second on the 24-hour clock this machine keeps, which is how every other surface
-/// writes a time.
-fn local_clock(epoch: i64) -> Option<String> {
-    jiff::Timestamp::from_second(epoch)
-        .ok()
-        .map(|moment| moment.to_zoned(jiff::tz::TimeZone::system()).strftime("%H:%M").to_string())
+/// When something happens, in local time on the 24-hour clock every other surface uses.
+///
+/// The date is carried whenever it is not today's. A weekly window restarting "at 22:30" is
+/// the wrong answer four days early, and a notification is read once with no window beside it
+/// to check against.
+fn local_moment(epoch: i64) -> Option<String> {
+    written_moment(epoch, jiff::Timestamp::now().as_second())
+}
+
+fn written_moment(epoch: i64, now: i64) -> Option<String> {
+    let zone = jiff::tz::TimeZone::system();
+    let moment = jiff::Timestamp::from_second(epoch).ok()?.to_zoned(zone.clone());
+    let today = jiff::Timestamp::from_second(now).ok()?.to_zoned(zone);
+    let format = match moment.date() == today.date() {
+        true => "at %H:%M",
+        false => "on %b %d at %H:%M",
+    };
+    Some(moment.strftime(format).to_string())
 }
 
 fn announced() -> &'static Mutex<Announced> {
@@ -328,6 +340,18 @@ mod tests {
         );
         assert_eq!(critical.len(), 1, "the louder threshold is its own crossing");
         assert!(critical[0].title.contains("nearly gone"));
+    }
+
+    /// A weekly window restarts on a day, not at a time of day. Without the date, "resets at
+    /// 22:30" reads as tonight.
+    #[test]
+    fn a_reset_more_than_a_day_out_is_written_with_its_date() {
+        let now = 1_800_000_000;
+        let today = written_moment(now + 3_600, now).expect("today's reset");
+        assert!(today.starts_with("at "), "today needs no date: {today}");
+        let later = written_moment(now + 4 * 86_400, now).expect("a reset four days out");
+        assert!(later.starts_with("on "), "a later day carries its date: {later}");
+        assert!(later.contains(" at "), "and still names the time: {later}");
     }
 
     #[test]
