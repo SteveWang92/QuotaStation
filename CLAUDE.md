@@ -5,11 +5,26 @@ QuotaStation and take precedence when they differ.
 
 ## Project status
 
-- QuotaStation is implemented and preparing its first release. Codex and Claude are both
-  covered; the repository is private.
+- QuotaStation is released and under active development. Codex and Claude are both covered;
+  the repository is private. Which version is current is a question for the tags and
+  `CHANGELOG.md`, not for this file.
 - Read `docs/PROJECT_PLAN.local.md` when it exists before changing implementation scope.
 - Keep public documentation free of machine-specific paths, account details, credentials,
   and private usage data.
+
+## Which document owns what
+
+Every fact is explained in exactly one of these; the others link to it rather than repeating
+it, and a paragraph found in two of them is a bug in the documentation.
+
+| Document | Owns |
+| --- | --- |
+| `README.md` | What QuotaStation is and what it does today, for someone who has never seen it. No version numbers, no design rationale. |
+| `docs/architecture.md` | Why the boundaries are where they are: the stack, the provider/renderer split, data retention, privacy rules, what each source may and may not do. |
+| `docs/development.md` | How to run, build, verify, and where local data lives. Commands and paths. |
+| `docs/PROJECT_PLAN.local.md` | What is done, what is next, and the decisions and dead ends behind both. The only home for progress. |
+| `CHANGELOG.md` | What changed for a user, per version. |
+| `CLAUDE.md` | How to work in this repository. |
 
 ## Local-only files
 

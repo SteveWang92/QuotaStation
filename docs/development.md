@@ -136,47 +136,29 @@ Diagnostics tab's **Show activity log** button reveals it.
 Historical range changes query the normalized daily rows in SQLite; they do not trigger a
 new parse of the Codex session logs.
 
-Daily history uses the Windows system IANA time zone. The core records that zone per
-provider; after a system-zone change, the next successful full parse transactionally
-replaces that provider's daily rows so buckets from different zones cannot coexist.
-
-Quota samples remain at their roughly five-minute source granularity for 14 days. SQLite
-then converts them directly into daily summaries retained indefinitely, keeping reset
-windows separate. Daily usage also remains indefinitely. Startup performs this maintenance at
-most once every 24 hours; provider refreshes do not run it, and it does not issue `VACUUM`.
-Successful refresh diagnostics remain for 30 days and failures for 180 days, while the
-newest result for each acquisition path is always preserved.
+What is retained and for how long, how daily buckets follow the system time zone, and why
+each rule is what it is are all in
+[Architecture — Local database](architecture.md#local-database). Retention runs at startup
+and every 24 hours, never during a refresh, and never issues `VACUUM`.
 
 ## Refresh lifecycle and diagnostics
 
-QuotaStation keeps live quota and local history acquisition independent:
+Which source may answer for which provider, and why, belongs to
+[Architecture — Provider adapters](architecture.md#provider-adapters). What matters when
+running the application locally:
 
-- Live quota refreshes at startup, on manual refresh, and on a schedule of its own for each
-  provider: every five minutes for Codex, which answers from a local process, and every ten
-  minutes for Claude Code, whose window is recovered by parsing its session logs. A change
-  to those logs also refreshes Claude's window immediately, alongside its history.
-- Claude Code hands its own five-hour and seven-day windows, with percentages and exact
-  restarts, to the command configured as its status line. Installing that bridge from the
-  dashboard's settings dialog registers `quotastation.exe --claude-statusline` as the command;
-  every Claude Code turn **in a terminal** then leaves a reading in the application data
-  directory, which the same log change that refreshes Claude's window picks up. Sessions
-  hosted by the Claude Code desktop application render no status line and so never run the
-  command; the settings card says so when those are the only sessions running. Removing the
-  bridge takes out only that entry.
-- History refreshes at startup and on manual refresh. A recursive watcher reuses ccusage's
-  resolved Codex session locations and debounces `.jsonl` changes for two seconds.
-- A full history reconciliation runs every fifteen minutes to recover missed filesystem
-  notifications.
-- Renderer range changes continue to query SQLite. A successful history refresh emits an
-  application event so the active range updates without waiting for the UI polling fallback.
-
-The status bar opens one dialog for both of the dashboard's occasional surfaces. Its
-Settings tab holds the provider quota-source choices — currently the Claude Code status-line
-bridge — so the dashboard itself stays given over to the quota panels. Its Diagnostics tab reads normalized refresh records and in-memory watcher health,
-exposing acquisition status, timestamps, redacted errors, watched-location count, and
-embedded source revisions, and never full paths or raw session records. The status bar's own
-control is marked whenever an acquisition path, the watcher, or the command channel has
-failed, so nothing wrong stays hidden behind a closed dialog.
+- Live quota refreshes at startup, on manual refresh, every five minutes for Codex and every
+  ten minutes for Claude Code, and immediately whenever Claude Code's session logs change.
+- History refreshes at startup and on manual refresh. A recursive watcher debounces `.jsonl`
+  changes for two seconds, and a full reconciliation every fifteen minutes recovers missed
+  filesystem notifications. A successful history refresh emits an application event, so an
+  open range updates without waiting for the polling fallback.
+- The Claude Code status-line bridge is installed from the settings dialog, which registers
+  `quotastation.exe --claude-statusline` as that command. Readings then arrive from terminal
+  sessions only; the settings card says so when every running session is desktop-hosted.
+- The settings dialog's Diagnostics section reads normalized refresh records and in-memory
+  watcher health. The status bar's control is marked whenever an acquisition path, the
+  watcher, or the command channel has failed, so nothing wrong hides behind a closed dialog.
 
 ## Pricing catalog lifecycle
 

@@ -8,9 +8,10 @@ API-equivalent costs across AI coding tools.
 
 ## Project status
 
-QuotaStation 0.1.0 is released, with a per-user x64 installer attached to its
-[GitHub release](https://github.com/SteveWang92/QuotaStation/releases). It covers Codex and
-Claude Code; Gemini and other providers are future adapters.
+QuotaStation is released and under active development. It covers Codex and Claude Code;
+Gemini and other providers are future adapters. The current version and what each one
+brought are in [CHANGELOG.md](CHANGELOG.md) and on the
+[releases page](https://github.com/SteveWang92/QuotaStation/releases).
 
 What it does today:
 
@@ -24,8 +25,6 @@ What it does today:
 - Quota reset history, classified as scheduled or unplanned
 - Redacted acquisition, watcher, retention, and pricing diagnostics
 - Local-first storage with no prompt or source-code upload, and no network request of its own
-
-See [CHANGELOG.md](CHANGELOG.md) for what has changed since the last release.
 
 ## Principles
 
