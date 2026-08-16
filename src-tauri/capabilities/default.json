@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability for every QuotaStation window",
-  "windows": ["main", "quick-panel", "taskbar-widget"],
+  "windows": ["main", "quick-panel", "taskbar-widget*"],
   "permissions": ["core:default", "notification:default"]
 }

@@ -9,7 +9,7 @@ use serde::Serialize;
 #[cfg(windows)]
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM},
         Graphics::Gdi::{
             GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW,
             MonitorFromWindow,
@@ -19,9 +19,10 @@ use windows::{
             HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
-                CallNextHookEx, FindWindowExW, FindWindowW, GA_ROOT, GetAncestor, MONITORINFOF_PRIMARY,
-                GetForegroundWindow, GetParent, GetWindowLongW, GetWindowRect,
-                GetWindowThreadProcessId, HC_ACTION, IsWindowVisible, MSLLHOOKSTRUCT, MoveWindow,
+                CallNextHookEx, EnumChildWindows, FindWindowExW, FindWindowW, GA_ROOT, GetAncestor,
+                GetClassNameW, GetForegroundWindow, GetParent, GetWindowLongW, GetWindowRect,
+                GetWindowThreadProcessId, HC_ACTION, IsWindow, IsWindowVisible,
+                MONITORINFOF_PRIMARY, MSLLHOOKSTRUCT, MoveWindow,
                 SetForegroundWindow, SetParent, WindowFromPoint,
                 SetWindowLongW, SetWindowsHookExW, GWL_EXSTYLE, GWL_STYLE, WH_MOUSE_LL,
                 WM_LBUTTONDOWN, WM_LBUTTONUP, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE,
@@ -29,7 +30,7 @@ use windows::{
             },
         },
     },
-    core::{PCWSTR, w},
+    core::{BOOL, PCWSTR, w},
 };
 
 #[cfg(windows)]
@@ -152,14 +153,122 @@ fn display_label(device: &str, primary: bool, width: i32, height: i32) -> String
     format!("{name}{primary} — {width} × {height}")
 }
 
+/// The widget window's label, which gains a suffix every time the window has to be built
+/// again.
+///
+/// A label is claimed for the life of the process: Tauri never released `taskbar-widget`
+/// after Explorer destroyed the window underneath it — measured, and `destroy()` on the
+/// record it kept does not free it either, because that path waits for a window that is
+/// already gone. So the replacement takes the next name rather than the old one. Everything
+/// that addresses the widget asks for the current label instead of spelling it out.
+static WIDGET_GENERATION: AtomicU32 = AtomicU32::new(0);
+
+pub fn widget_label() -> String {
+    match WIDGET_GENERATION.load(Ordering::Relaxed) {
+        0 => "taskbar-widget".to_string(),
+        generation => format!("taskbar-widget-{generation}"),
+    }
+}
+
+/// The widget's window handle, or `None` once that window no longer exists.
+///
+/// Explorer owns the docked widget: it is a child of the taskbar, so restarting Explorer
+/// destroys the taskbar and takes the widget with it. Asking Tauri for the size or position
+/// of a window that is already gone panics inside tao — measured, on the thread running the
+/// event loop, which ends the whole application rather than the widget. Nothing here calls
+/// into the window until its handle is known to still be alive.
+#[cfg(windows)]
+fn live_widget(app: &tauri::AppHandle) -> Option<HWND> {
+    let hwnd = app.get_webview_window(&widget_label())?.hwnd().ok()?;
+    unsafe { IsWindow(Some(hwnd)) }.as_bool().then_some(hwnd)
+}
+
+/// Builds the widget's window again after Explorer took it, from the same configuration it
+/// is created with at startup. Placement runs on a loop, so the next tick docks it.
+#[cfg(windows)]
+fn rebuild_widget(app: &tauri::AppHandle) -> Result<(), String> {
+    // Building a webview window takes longer than the two seconds between placement ticks,
+    // and every tick until it appears would ask for another one: three status windows were
+    // created from one Explorer restart before this guard existed.
+    if REBUILD_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let Some(mut config) =
+        app.config().app.windows.iter().find(|window| window.label == "taskbar-widget").cloned()
+    else {
+        REBUILD_IN_FLIGHT.store(false, Ordering::SeqCst);
+        return Err("the taskbar status window is not configured".to_string());
+    };
+    // The generation only moves once the window exists, so a failed build does not strand
+    // the label on a window that was never created.
+    let generation = WIDGET_GENERATION.load(Ordering::SeqCst) + 1;
+    config.label = format!("taskbar-widget-{generation}");
+    let handle = app.clone();
+    let queued = app.run_on_main_thread(move || {
+        // A window is created on the thread that owns the event loop, and the placement
+        // loop this is called from is not it. Whether one is still needed is decided here
+        // rather than there: several callers reach placement — the loop, the renderer
+        // reporting its width, the setting being switched on — and by the time this runs
+        // one of the others may already have rebuilt it.
+        if live_widget(&handle).is_some() {
+            REBUILD_IN_FLIGHT.store(false, Ordering::SeqCst);
+            return;
+        }
+        match tauri::WebviewWindowBuilder::from_config(&handle, &config)
+            .and_then(|builder| builder.build())
+        {
+            Ok(widget) => {
+                WIDGET_GENERATION.store(generation, Ordering::SeqCst);
+                let _ = widget.show();
+                crate::log::write("taskbar status rebuilt after Explorer replaced the taskbar");
+            }
+            Err(error) => report_rebuild_failure(&error.to_string()),
+        }
+        REBUILD_IN_FLIGHT.store(false, Ordering::SeqCst);
+    });
+    if queued.is_err() {
+        REBUILD_IN_FLIGHT.store(false, Ordering::SeqCst);
+    }
+    queued.map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+static REBUILD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Placement retries every couple of seconds, so the same failure would otherwise be
+/// written to the log thirty times a minute and bury everything else in it.
+#[cfg(windows)]
+fn report_rebuild_failure(message: &str) {
+    static LAST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.as_deref() == Some(message) {
+        return;
+    }
+    crate::log::write(format!("taskbar status could not be rebuilt: {message}"));
+    *last = Some(message.to_string());
+}
+
+/// Whether the widget's window is there to be shown or hidden.
+#[cfg(windows)]
+pub fn widget_is_live(app: &tauri::AppHandle) -> bool {
+    live_widget(app).is_some()
+}
+
+#[cfg(not(windows))]
+pub fn widget_is_live(_app: &tauri::AppHandle) -> bool {
+    false
+}
+
 /// Docks the widget inside the taskbar, falling back to a floating window whenever the
 /// taskbar cannot host it. The widget stays visible either way; a failed dock must never
 /// leave the user with a status surface that nothing brings back.
 #[cfg(windows)]
 pub fn place_widget(app: &tauri::AppHandle) -> Result<(), String> {
-    if let Some(hwnd) = app.get_webview_window("taskbar-widget").and_then(|widget| widget.hwnd().ok()) {
-        WATCHED_WIDGET.store(hwnd.0 as isize, Ordering::Relaxed);
-    }
+    let Some(hwnd) = live_widget(app) else {
+        WATCHED_WIDGET.store(0, Ordering::Relaxed);
+        return rebuild_widget(app);
+    };
+    WATCHED_WIDGET.store(hwnd.0 as isize, Ordering::Relaxed);
     let taskbar = chosen_taskbar(app);
     match taskbar.as_ref().ok_or_else(|| "no taskbar found".to_string()).and_then(|taskbar| dock_widget(app, taskbar)) {
         Ok(()) => Ok(()),
@@ -172,7 +281,7 @@ pub fn place_widget(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(windows)]
 fn dock_widget(app: &tauri::AppHandle, taskbar: &Taskbar) -> Result<(), String> {
-    let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
+    let widget = app.get_webview_window(&widget_label()).ok_or("taskbar widget window missing")?;
     let taskbar_rect = window_rect(taskbar.hwnd).ok_or("unable to read taskbar bounds")?;
     let taskbar_width = taskbar_rect.right - taskbar_rect.left;
     let taskbar_height = taskbar_rect.bottom - taskbar_rect.top;
@@ -186,7 +295,8 @@ fn dock_widget(app: &tauri::AppHandle, taskbar: &Taskbar) -> Result<(), String> 
     let dpi = taskbar_dpi(taskbar);
     let width = scaled(widget_width(provider_slots()), dpi);
     let trailing = trailing_edge(taskbar, taskbar_rect, dpi);
-    let available_width = (trailing - taskbar_rect.left - scaled(TASKBAR_MARGIN, dpi)).max(0);
+    let leading = leading_edge(taskbar.hwnd, taskbar_rect);
+    let available_width = (trailing - leading - scaled(TASKBAR_MARGIN, dpi)).max(0);
     if available_width < width {
         return Err(format!(
             "taskbar has {available_width}px available but the status layout requires {width}px"
@@ -245,6 +355,34 @@ fn trailing_edge(taskbar: &Taskbar, rect: RECT, dpi: u32) -> i32 {
 /// terms of the *calling* process's DPI awareness, and it reported a flat 96 for a taskbar
 /// on a 125% display — which sized the layout at 460 device pixels where it needed 575 and
 /// cropped its leading column, the exact defect the width scaling exists to avoid.
+/// Where the free part of the taskbar begins: after the task buttons, which Windows 11
+/// centres, so the empty stretch is between them and the clock rather than the whole bar.
+///
+/// Without this the widget was anchored to the trailing end alone and drew straight over
+/// the running applications' icons on a short taskbar — a portrait display's, measured at
+/// 1080 pixels wide, where the centred buttons reach past the widget's leading edge.
+#[cfg(windows)]
+fn leading_edge(taskbar: HWND, rect: RECT) -> i32 {
+    let mut right = rect.left;
+    let _ = unsafe {
+        EnumChildWindows(Some(taskbar), Some(task_buttons_right), LPARAM(std::ptr::from_mut(&mut right) as isize))
+    };
+    right
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn task_buttons_right(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let mut class = [0u16; 64];
+    let length = unsafe { GetClassNameW(hwnd, &mut class) } as usize;
+    if String::from_utf16_lossy(&class[..length]) == "MSTaskListWClass" {
+        if let Some(rect) = window_rect(hwnd) {
+            let widest = lparam.0 as *mut i32;
+            unsafe { *widest = (*widest).max(rect.right) };
+        }
+    }
+    TRUE
+}
+
 #[cfg(windows)]
 fn taskbar_dpi(taskbar: &Taskbar) -> u32 {
     let mut dpi_x = 0;
@@ -270,7 +408,7 @@ fn scaled(logical: u32, dpi: u32) -> i32 {
 pub fn widget_screen_rect(
     app: &tauri::AppHandle,
 ) -> Result<(PhysicalPosition<f64>, PhysicalSize<f64>), String> {
-    let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
+    let widget = app.get_webview_window(&widget_label()).ok_or("taskbar widget window missing")?;
     let hwnd = widget.hwnd().map_err(|error| error.to_string())?;
     let rect = window_rect(hwnd).ok_or("unable to read taskbar widget bounds")?;
     Ok((
@@ -484,7 +622,7 @@ pub fn set_widget_size(app: &tauri::AppHandle, provider_count: u32) -> Result<()
 /// it already holds, so the repositioning loop does not fight the window every tick.
 #[cfg(windows)]
 fn float_widget(app: &tauri::AppHandle, taskbar: Option<&Taskbar>) -> Result<(), String> {
-    let widget = app.get_webview_window("taskbar-widget").ok_or("taskbar widget window missing")?;
+    let widget = app.get_webview_window(&widget_label()).ok_or("taskbar widget window missing")?;
     let hwnd = widget.hwnd().map_err(|error| error.to_string())?;
     let mut detached = false;
     unsafe {

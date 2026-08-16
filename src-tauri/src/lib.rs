@@ -175,16 +175,18 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     if let Err(error) = state.update_settings(|settings| settings.taskbar_widget_enabled = visible) {
         log::write(format!("failed to save application settings: {error}"));
     }
-    if let Some(widget) = app.get_webview_window("taskbar-widget") {
-        if visible {
+    if visible {
+        // Placement comes first: it rebuilds the window when Explorer's taskbar took it
+        // with it, and showing a window that no longer exists is what ends the process.
+        place_taskbar_widget(app);
+        if let Some(widget) = app.get_webview_window(&taskbar::widget_label()).filter(|_| taskbar::widget_is_live(app)) {
             let _ = widget.show();
-            place_taskbar_widget(app);
-            // A low-level hook is called on the thread that installed it, so it has to be
-            // installed on the one running the message loop.
-            let _ = app.run_on_main_thread(taskbar::watch_widget_clicks);
-        } else {
-            let _ = widget.hide();
         }
+        // A low-level hook is called on the thread that installed it, so it has to be
+        // installed on the one running the message loop.
+        let _ = app.run_on_main_thread(taskbar::watch_widget_clicks);
+    } else if let Some(widget) = app.get_webview_window(&taskbar::widget_label()).filter(|_| taskbar::widget_is_live(app)) {
+        let _ = widget.hide();
     }
 }
 

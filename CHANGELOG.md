@@ -19,6 +19,8 @@ on `main`, with the matching section below as its notes.
 ### Fixed
 
 - The reset history's verdict column no longer wraps onto a second line.
+- The application survives an Explorer restart and puts the taskbar status back by itself.
+- The taskbar status no longer draws over the taskbar's application buttons.
 
 ## [0.2.0] - 2026-08-16
 

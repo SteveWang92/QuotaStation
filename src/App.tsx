@@ -48,8 +48,14 @@ const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
 };
 
 const CURRENT_WINDOW_LABEL = getCurrentWindow().label;
+/**
+ * The taskbar status is the one surface whose window can be built more than once — Explorer
+ * destroys it when its taskbar is replaced — and each rebuild takes the next label, because
+ * Tauri never gives the previous one back.
+ */
+const IS_TASKBAR_WIDGET = CURRENT_WINDOW_LABEL.startsWith("taskbar-widget");
 document.documentElement.classList.toggle("compact-window", CURRENT_WINDOW_LABEL !== "main");
-document.documentElement.classList.toggle("taskbar-window", CURRENT_WINDOW_LABEL === "taskbar-widget");
+document.documentElement.classList.toggle("taskbar-window", IS_TASKBAR_WIDGET);
 document.documentElement.classList.toggle("quick-panel-window", CURRENT_WINDOW_LABEL === "quick-panel");
 
 /**
@@ -260,6 +266,6 @@ function Dashboard() {
 
 export default function App() {
   if (CURRENT_WINDOW_LABEL === "quick-panel") return <QuickPanel initialWorkspace={EMPTY_WORKSPACE} />;
-  if (CURRENT_WINDOW_LABEL === "taskbar-widget") return <TaskbarWidget initialWorkspace={EMPTY_WORKSPACE} />;
+  if (IS_TASKBAR_WIDGET) return <TaskbarWidget initialWorkspace={EMPTY_WORKSPACE} />;
   return <Dashboard />;
 }
