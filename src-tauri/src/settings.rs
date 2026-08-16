@@ -72,12 +72,29 @@ pub fn save(path: &Path, settings: &AppSettings) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let content = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
-    std::fs::write(path, content).map_err(|error| error.to_string())
+    // The status-line process reads this file while the application is running. Publish a
+    // complete replacement so it never sees a truncated JSON document, and a failed write
+    // leaves the last saved preferences intact.
+    let staging = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    std::fs::write(&staging, content).map_err(|error| error.to_string())?;
+    std::fs::rename(&staging, path).map_err(|error| {
+        let _ = std::fs::remove_file(&staging);
+        error.to_string()
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("quotastation-{name}-settings.json"));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(
+            path.with_extension(format!("json.{}.tmp", std::process::id())),
+        );
+        path
+    }
 
     #[test]
     fn a_file_written_by_an_earlier_build_keeps_the_choices_it_recorded() {
@@ -97,5 +114,19 @@ mod tests {
         };
         let encoded = serde_json::to_string(&settings).expect("encode");
         assert_eq!(serde_json::from_str::<AppSettings>(&encoded).expect("decode"), settings);
+    }
+
+    #[test]
+    fn replacing_the_settings_file_keeps_the_last_complete_record() {
+        let path = scratch("atomic");
+        save(&path, &AppSettings::default()).expect("write the first settings");
+        let expected = AppSettings {
+            taskbar_widget_enabled: false,
+            status_line_provider_labels: ProviderLabelStyle::Full,
+            status_line_full_details: false,
+        };
+        save(&path, &expected).expect("replace the settings");
+        assert_eq!(load(&path), expected);
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -141,12 +141,14 @@ export function ClaudeStatusLine() {
 export function ClaudeFinishedNotifications() {
   const [installed, setInstalled] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     void invoke<boolean>("get_claude_notifications").then(setInstalled).catch(() => {});
   }, []);
 
   const change = useCallback(async (wanted: boolean) => {
+    setBusy(true);
     setInstalled(wanted);
     setError(null);
     try {
@@ -154,6 +156,8 @@ export function ClaudeFinishedNotifications() {
     } catch (cause) {
       setError(errorMessage(cause));
       setInstalled(!wanted);
+    } finally {
+      setBusy(false);
     }
   }, []);
 
@@ -171,7 +175,7 @@ export function ClaudeFinishedNotifications() {
         </p>
         {error ? <p className="provider-consent-error">{error}</p> : null}
       </div>
-      <button type="button" onClick={() => void change(!installed)}>
+      <button type="button" onClick={() => void change(!installed)} disabled={busy}>
         {installed ? "Turn off notifications" : "Turn on notifications"}
       </button>
     </section>

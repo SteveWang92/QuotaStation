@@ -39,7 +39,8 @@ on `main`, with the matching section below as its notes.
 - Claude Code's status line omits stale cross-provider quota instead of presenting it as current.
 - The status line's one-row form never shows another provider's quota where Claude's own would be read.
 - Removing the Claude completion hook preserves other handlers in the same Stop group.
-- A failed settings write no longer changes the running application's preferences.
+- Failed or overlapping settings changes no longer corrupt, undo, or misreport the application's preferences.
+- The taskbar status click target no longer intercepts drags or clicks meant for a covering window.
 - The settings button no longer sits inside an empty bordered strip.
 - The settings dialog is tall enough for its own contents.
 - The quick panel no longer opens inside a larger window that read as a second panel behind it.

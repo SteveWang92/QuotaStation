@@ -11,6 +11,7 @@ import type { AppSettings } from "./types";
  */
 let current: AppSettings | null = null;
 let loading: Promise<unknown> | null = null;
+let saveQueue: Promise<void> = Promise.resolve();
 const listeners = new Set<(settings: AppSettings | null) => void>();
 
 function publish(next: AppSettings) {
@@ -46,6 +47,16 @@ export function useAppSettings(): AppSettings | null {
 
 /** Records a change to some of the settings and hands every card the saved result. */
 export async function saveAppSettings(patch: Partial<AppSettings>): Promise<void> {
-  if (current === null) return;
-  publish(await invoke<AppSettings>("set_app_settings", { settings: { ...current, ...patch } }));
+  const save = async () => {
+    if (current === null) return;
+    // Merge only when this write reaches the front of the queue. Two cards can be changed
+    // independently, and capturing `current` before the preceding write returns would send
+    // an older complete record that quietly undoes it.
+    publish(await invoke<AppSettings>("set_app_settings", { settings: { ...current, ...patch } }));
+  };
+  const pending = saveQueue.then(save);
+  // Keep the queue usable after a rejected write while returning that rejection to the
+  // caller whose setting failed.
+  saveQueue = pending.catch(() => {});
+  return pending;
 }

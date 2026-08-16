@@ -2,7 +2,7 @@
 use tauri::{Manager, PhysicalPosition, PhysicalSize};
 
 #[cfg(windows)]
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 #[cfg(windows)]
 use windows::{
@@ -12,9 +12,10 @@ use windows::{
         UI::{
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
-                CallNextHookEx, FindWindowExW, FindWindowW, GetForegroundWindow, GetParent,
-                GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, HC_ACTION, IsWindowVisible,
-                MSLLHOOKSTRUCT, MoveWindow, SetForegroundWindow, SetParent,
+                CallNextHookEx, FindWindowExW, FindWindowW, GA_ROOT, GetAncestor,
+                GetForegroundWindow, GetParent, GetWindowLongW, GetWindowRect,
+                GetWindowThreadProcessId, HC_ACTION, IsWindowVisible, MSLLHOOKSTRUCT, MoveWindow,
+                SetForegroundWindow, SetParent, WindowFromPoint,
                 SetWindowLongW, SetWindowsHookExW, GWL_EXSTYLE, GWL_STYLE, WH_MOUSE_LL,
                 WM_LBUTTONDOWN, WM_LBUTTONUP, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE,
                 WS_EX_TOOLWINDOW, WS_POPUP,
@@ -124,6 +125,34 @@ pub fn widget_screen_rect(
 #[cfg(windows)]
 static WATCHED_WIDGET: AtomicIsize = AtomicIsize::new(0);
 
+/// Whether the press half of a left click was taken for the widget. A global hook must
+/// consume a complete pair: swallowing only the release can leave another application in
+/// mouse capture, while swallowing only the press hands it a release it never asked for.
+#[cfg(windows)]
+static WIDGET_CLICK_CAPTURED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WidgetClickAction {
+    Pass,
+    Swallow,
+    Open,
+}
+
+#[cfg(windows)]
+fn widget_click_transition(
+    captured: bool,
+    message: u32,
+    pointer_over_widget: bool,
+) -> (bool, WidgetClickAction) {
+    match message {
+        WM_LBUTTONDOWN if pointer_over_widget => (true, WidgetClickAction::Swallow),
+        WM_LBUTTONUP if captured && pointer_over_widget => (false, WidgetClickAction::Open),
+        WM_LBUTTONUP if captured => (false, WidgetClickAction::Swallow),
+        _ => (captured, WidgetClickAction::Pass),
+    }
+}
+
 /// Opens the quick panel when the left button is released over the docked widget.
 ///
 /// **Why a system hook rather than a click handler in the widget.** Explorer takes every
@@ -139,16 +168,19 @@ static WATCHED_WIDGET: AtomicIsize = AtomicIsize::new(0);
 /// it and closing again on the focus it never got. Every other event is passed straight on.
 #[cfg(windows)]
 unsafe extern "system" fn on_mouse(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code == HC_ACTION as i32
-        && matches!(wparam.0 as u32, WM_LBUTTONDOWN | WM_LBUTTONUP)
-        && over_widget(unsafe { (*(lparam.0 as *const MSLLHOOKSTRUCT)).pt })
-    {
-        if wparam.0 as u32 == WM_LBUTTONUP {
-            crate::open_quick_panel_from_taskbar();
+    if code == HC_ACTION as i32 && matches!(wparam.0 as u32, WM_LBUTTONDOWN | WM_LBUTTONUP) {
+        let point = unsafe { (*(lparam.0 as *const MSLLHOOKSTRUCT)).pt };
+        let captured = WIDGET_CLICK_CAPTURED.load(Ordering::Relaxed);
+        let (next, action) = widget_click_transition(captured, wparam.0 as u32, over_widget(point));
+        WIDGET_CLICK_CAPTURED.store(next, Ordering::Relaxed);
+        match action {
+            WidgetClickAction::Open => {
+                crate::open_quick_panel_from_taskbar();
+                return LRESULT(1);
+            }
+            WidgetClickAction::Swallow => return LRESULT(1),
+            WidgetClickAction::Pass => {}
         }
-        // The press is swallowed with the release: half a click left behind would leave
-        // Explorer waiting for a button it never sees come up.
-        return LRESULT(1);
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
@@ -157,6 +189,15 @@ unsafe extern "system" fn on_mouse(code: i32, wparam: WPARAM, lparam: LPARAM) ->
 fn over_widget(point: POINT) -> bool {
     let hwnd = HWND(WATCHED_WIDGET.load(Ordering::Relaxed) as *mut _);
     if hwnd.is_invalid() || !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return false;
+    }
+    // A visible-style window can still sit behind a fullscreen or always-on-top window.
+    // The hook is global, so a rectangle check alone would steal that covering window's
+    // click. WindowFromPoint identifies the root that will actually receive it.
+    let hit = unsafe { WindowFromPoint(point) };
+    if hit.is_invalid()
+        || unsafe { GetAncestor(hit, GA_ROOT) } != unsafe { GetAncestor(hwnd, GA_ROOT) }
+    {
         return false;
     }
     window_rect(hwnd).is_some_and(|rect| {
@@ -316,6 +357,12 @@ pub fn widget_screen_rect(
 mod tests {
     use super::{WIDGET_HEIGHT, docked_height, widget_width};
 
+    #[cfg(windows)]
+    use super::{WidgetClickAction, widget_click_transition};
+
+    #[cfg(windows)]
+    use windows::Win32::UI::WindowsAndMessaging::{WM_LBUTTONDOWN, WM_LBUTTONUP};
+
     #[test]
     fn the_widget_reserves_one_slot_for_every_reading_it_can_show() {
         // Two providers showing two windows each is the widest the interface goes, and the
@@ -338,5 +385,35 @@ mod tests {
         assert_eq!(docked_height(40), 34);
         assert_eq!(docked_height(80), 74);
         assert_eq!(docked_height(18), 20, "a malformed tiny taskbar still gets a legal window");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_widget_press_consumes_its_matching_release_even_after_a_drag_out() {
+        let (captured, down) = widget_click_transition(false, WM_LBUTTONDOWN, true);
+        assert!(captured);
+        assert_eq!(down, WidgetClickAction::Swallow);
+
+        let (captured, up) = widget_click_transition(captured, WM_LBUTTONUP, false);
+        assert!(!captured);
+        assert_eq!(up, WidgetClickAction::Swallow);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_release_dragged_in_from_another_window_is_left_alone() {
+        let (captured, action) = widget_click_transition(false, WM_LBUTTONUP, true);
+        assert!(!captured);
+        assert_eq!(action, WidgetClickAction::Pass);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_complete_click_on_the_widget_opens_the_panel() {
+        let (captured, down) = widget_click_transition(false, WM_LBUTTONDOWN, true);
+        assert_eq!(down, WidgetClickAction::Swallow);
+        let (captured, up) = widget_click_transition(captured, WM_LBUTTONUP, true);
+        assert!(!captured);
+        assert_eq!(up, WidgetClickAction::Open);
     }
 }
