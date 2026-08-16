@@ -1,3 +1,4 @@
+mod alerts;
 mod domain;
 mod log;
 mod providers;
@@ -314,7 +315,6 @@ fn set_claude_notifications(installed: bool) -> Result<bool, String> {
 /// what that costs; the alternative is a filesystem watcher for a file written a handful of
 /// times an hour.
 fn watch_for_finished_turns(app: tauri::AppHandle) {
-    use tauri_plugin_notification::NotificationExt;
     tauri::async_runtime::spawn(async move {
         let mut ticks = tokio::time::interval(Duration::from_secs(2));
         loop {
@@ -327,13 +327,7 @@ fn watch_for_finished_turns(app: tauri::AppHandle) {
                 Some(project) => format!("{project} · Claude Code finished responding"),
                 None => "Claude Code finished responding".to_string(),
             };
-            if let Err(error) = app.notification().builder().title("QuotaStation").body(body).show()
-            {
-                // Windows refuses a toast from an application it cannot identify, which is
-                // silent from the user's side: the hook fires, nothing appears, and there is
-                // nowhere to look. The log is that place.
-                log::write(format!("desktop notification failed: {error}"));
-            }
+            alerts::raise(&app, "QuotaStation", &body);
         }
     });
 }

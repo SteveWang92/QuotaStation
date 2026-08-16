@@ -11,6 +11,7 @@ on `main`, with the matching section below as its notes.
 
 - A status line setting for the project, branch, context, cache and cost detail.
 - A setting for which display's taskbar carries the quota status.
+- Desktop notifications for a quota window running low, a provider that cannot be read, and a quota reset.
 
 ### Changed
 

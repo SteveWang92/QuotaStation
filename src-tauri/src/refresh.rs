@@ -97,6 +97,9 @@ async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) {
     // bridge is a separate process with no way to receive it, so the same snapshot is also
     // left on disk for it to read.
     crate::summary::publish(&workspace);
+    // Every refresh passes through here, whichever scheduler or watcher asked for it, so it
+    // is the one place that sees every change a notification could be about.
+    crate::alerts::review(app, &workspace);
 }
 
 async fn apply_live(

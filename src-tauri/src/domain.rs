@@ -87,7 +87,7 @@ pub fn aggregate_status(snapshots: &[ProviderSnapshot]) -> CompactStatus {
         .unwrap_or(CompactStatus::unavailable())
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum LimitKind {
     Primary,

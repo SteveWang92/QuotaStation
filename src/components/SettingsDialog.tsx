@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { ClaudeFinishedNotifications, ClaudeStatusLine } from "./ClaudeStatusLine";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { GeneralSettings } from "./GeneralSettings";
+import { QuotaNotifications } from "./QuotaNotifications";
 import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
 
 interface SettingsDialogProps {
@@ -69,6 +70,9 @@ export function SettingsDialog({
         <div className="settings-body">
           <section aria-label="Application">
             <GeneralSettings />
+          </section>
+          <section aria-label="Notifications">
+            <QuotaNotifications />
           </section>
           <section aria-label="Quota sources">
             {showClaude ? (

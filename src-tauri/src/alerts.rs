@@ -1,0 +1,449 @@
+//! Desktop notifications for the things that change while nobody is watching the window.
+//!
+//! QuotaStation runs all day with no window open, so a quota window that runs out, an
+//! acquisition path that stops answering, and a window that restarts are all invisible until
+//! someone goes looking. Each of those is announced once, when it happens, and never again
+//! until the condition that raised it has cleared — a notification repeated on a two-minute
+//! refresh loop is a notification that gets turned off.
+//!
+//! The thresholds are not new ones: a window is announced when it crosses into the same
+//! warning and critical shares every surface already colours it by.
+
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
+
+use crate::{
+    domain::{
+        CRITICAL_PERCENT, CompactStatusLevel, Freshness, LimitKind, LimitWindow, ProviderSnapshot,
+        ResetClassification, WARNING_PERCENT, WorkspaceSnapshot,
+    },
+    providers::ProviderKind,
+    settings::AppSettings,
+};
+
+/// One notification, ready to be shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alert {
+    pub title: String,
+    pub body: String,
+}
+
+/// How loud a window's own reading is, in the shares the rest of the application already
+/// draws it by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+enum Loudness {
+    #[default]
+    Quiet,
+    Warning,
+    Critical,
+}
+
+impl Loudness {
+    fn of(window: &LimitWindow) -> Self {
+        match window.used_percent {
+            Some(percent) if percent >= CRITICAL_PERCENT => Self::Critical,
+            Some(percent) if percent >= WARNING_PERCENT => Self::Warning,
+            _ => Self::Quiet,
+        }
+    }
+}
+
+/// What the loudest reading already announced for one quota window was, and which run of
+/// that window it belonged to. A restart gives the window a new expiry, and that is what
+/// re-arms it: the same window at 95% before and after a reset is two different facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QuotaMark {
+    resets_at: Option<i64>,
+    announced: Loudness,
+}
+
+/// Everything already said, so nothing is said twice.
+#[derive(Debug, Default, PartialEq)]
+pub struct Announced {
+    quota: HashMap<(ProviderKind, LimitKind), QuotaMark>,
+    /// The providers currently known to be failing. Recovering removes one, which is what
+    /// allows the next failure to be announced.
+    failing: Vec<ProviderKind>,
+    /// The newest restart already announced per provider, by the moment the restarted
+    /// window began.
+    resets: HashMap<ProviderKind, i64>,
+    /// The first review after a start records the present without announcing it. Everything
+    /// it would otherwise report is already true — the machine has just been turned on, and
+    /// a quota that was low yesterday is not news this morning.
+    seeded: bool,
+}
+
+/// The alerts a new snapshot has earned, and the record of them.
+pub fn pending(
+    announced: &mut Announced,
+    workspace: &WorkspaceSnapshot,
+    settings: &AppSettings,
+) -> Vec<Alert> {
+    let seeding = !announced.seeded;
+    announced.seeded = true;
+    let mut alerts = Vec::new();
+    for provider in &workspace.providers {
+        collect_quota(announced, provider, settings, seeding, &mut alerts);
+        collect_failure(announced, provider, settings, seeding, &mut alerts);
+        collect_resets(announced, provider, settings, seeding, &mut alerts);
+    }
+    alerts
+}
+
+fn collect_quota(
+    announced: &mut Announced,
+    provider: &ProviderSnapshot,
+    settings: &AppSettings,
+    seeding: bool,
+    alerts: &mut Vec<Alert>,
+) {
+    for window in &provider.limits {
+        // A reading that is no longer current cannot raise an alarm. It is the same reading
+        // that was already judged when it was fresh, and the provider's own failure alert
+        // covers the fact that nothing newer has arrived.
+        if window.freshness != Freshness::Fresh {
+            continue;
+        }
+        let loudness = Loudness::of(window);
+        let key = (provider.provider, window.kind);
+        let previous = announced.quota.get(&key);
+        let carried = previous
+            .filter(|mark| mark.resets_at == window.resets_at)
+            .map(|mark| mark.announced)
+            .unwrap_or_default();
+        announced
+            .quota
+            .insert(key, QuotaMark { resets_at: window.resets_at, announced: loudness.max(carried) });
+        if seeding || !settings.notify_low_quota || loudness <= carried {
+            continue;
+        }
+        alerts.push(quota_alert(provider, window, loudness));
+    }
+}
+
+fn quota_alert(provider: &ProviderSnapshot, window: &LimitWindow, loudness: Loudness) -> Alert {
+    let title = match loudness {
+        Loudness::Critical => format!("{} quota nearly gone", provider.display_name),
+        _ => format!("{} quota running low", provider.display_name),
+    };
+    let used = window.used_percent.unwrap_or_default();
+    let body = match window.resets_at.and_then(local_clock) {
+        Some(clock) => format!("{} {used:.0}% used · resets at {clock}", window.label),
+        None => format!("{} {used:.0}% used", window.label),
+    };
+    Alert { title, body }
+}
+
+fn collect_failure(
+    announced: &mut Announced,
+    provider: &ProviderSnapshot,
+    settings: &AppSettings,
+    seeding: bool,
+    alerts: &mut Vec<Alert>,
+) {
+    let key = provider.provider;
+    let was_failing = announced.failing.contains(&key);
+    let Some(reason) = failure_reason(provider) else {
+        announced.failing.retain(|failing| failing != &key);
+        return;
+    };
+    if !was_failing {
+        announced.failing.push(key);
+    }
+    if seeding || was_failing || !settings.notify_read_failures {
+        return;
+    }
+    alerts.push(Alert {
+        title: format!("{} cannot be read", provider.display_name),
+        body: reason,
+    });
+}
+
+/// Why a provider is in trouble, or `None` while it is answering.
+///
+/// The status level is the one every surface already uses, so a notification and the tray
+/// icon can never disagree about whether something is wrong. Errors reaching here have been
+/// sanitized by the core, so they are safe to show.
+fn failure_reason(provider: &ProviderSnapshot) -> Option<String> {
+    match provider.compact_status.level {
+        CompactStatusLevel::Unavailable | CompactStatusLevel::Stale => Some(
+            provider
+                .live_error
+                .clone()
+                .or_else(|| provider.history_error.clone())
+                .unwrap_or_else(|| provider.compact_status.label.clone()),
+        ),
+        _ => None,
+    }
+}
+
+fn collect_resets(
+    announced: &mut Announced,
+    provider: &ProviderSnapshot,
+    settings: &AppSettings,
+    seeding: bool,
+    alerts: &mut Vec<Alert>,
+) {
+    let Some(reset) = provider.recent_resets.first() else { return };
+    let previous = announced.resets.insert(provider.provider, reset.anchored_at);
+    if seeding || !settings.notify_quota_resets || previous.is_some_and(|at| at >= reset.anchored_at)
+    {
+        return;
+    }
+    let early = match reset.classification {
+        ResetClassification::Unplanned => " early",
+        ResetClassification::Scheduled => "",
+    };
+    let body = match local_clock(reset.new_resets_at) {
+        Some(clock) => format!("{} restarted{early} · next reset at {clock}", reset.window_label),
+        None => format!("{} restarted{early}", reset.window_label),
+    };
+    alerts.push(Alert { title: format!("{} quota reset", provider.display_name), body });
+}
+
+/// An epoch second on the 24-hour clock this machine keeps, which is how every other surface
+/// writes a time.
+fn local_clock(epoch: i64) -> Option<String> {
+    jiff::Timestamp::from_second(epoch)
+        .ok()
+        .map(|moment| moment.to_zoned(jiff::tz::TimeZone::system()).strftime("%H:%M").to_string())
+}
+
+fn announced() -> &'static Mutex<Announced> {
+    static ANNOUNCED: OnceLock<Mutex<Announced>> = OnceLock::new();
+    ANNOUNCED.get_or_init(|| Mutex::new(Announced::default()))
+}
+
+/// Shows whatever a freshly published snapshot has earned.
+pub fn review(app: &tauri::AppHandle, workspace: &WorkspaceSnapshot) {
+    use tauri::Manager;
+
+    let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() else { return };
+    let settings = state.settings();
+    let alerts = {
+        let Ok(mut record) = announced().lock() else { return };
+        pending(&mut record, workspace, &settings)
+    };
+    for alert in alerts {
+        raise(app, &alert.title, &alert.body);
+    }
+}
+
+/// Shows one desktop notification.
+///
+/// Windows refuses a toast from an application it cannot identify, and refuses it silently:
+/// from the user's side the event happens and nothing appears, with nowhere to look. The log
+/// is that place.
+pub fn raise(app: &tauri::AppHandle, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+
+    if let Err(error) = app.notification().builder().title(title).body(body).show() {
+        crate::log::write(format!("desktop notification failed: {error}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{CompactStatus, LimitResetEvent, WindowSource};
+
+    fn window(kind: LimitKind, used: f64, resets_at: i64) -> LimitWindow {
+        LimitWindow {
+            kind,
+            label: "5h window".to_string(),
+            used_percent: Some(used),
+            window_duration_mins: Some(300),
+            resets_at: Some(resets_at),
+            source: WindowSource::AppServer,
+            observed_at: 1_800_000_000,
+            freshness: Freshness::Fresh,
+            status_color: String::new(),
+        }
+    }
+
+    fn provider(limits: Vec<LimitWindow>) -> ProviderSnapshot {
+        let mut snapshot = ProviderSnapshot::new(ProviderKind::Codex);
+        snapshot.limits = limits;
+        snapshot
+    }
+
+    /// A provider that is answering normally.
+    fn answering() -> ProviderSnapshot {
+        let mut snapshot = provider(Vec::new());
+        snapshot.compact_status = CompactStatus {
+            level: CompactStatusLevel::Healthy,
+            label: "Healthy".to_string(),
+            color: String::new(),
+        };
+        snapshot
+    }
+
+    fn workspace(provider: ProviderSnapshot) -> WorkspaceSnapshot {
+        WorkspaceSnapshot::new(vec![provider])
+    }
+
+    /// The first review after a start is a baseline, not an announcement: the application
+    /// starts with Windows, and greeting every login with yesterday's quota is how a
+    /// notification earns itself a permanent "off".
+    #[test]
+    fn the_state_at_startup_is_recorded_rather_than_announced() {
+        let mut announced = Announced::default();
+        let settings = AppSettings::default();
+        let full = workspace(provider(vec![window(LimitKind::Primary, 96.0, 1_800_003_600)]));
+        assert!(pending(&mut announced, &full, &settings).is_empty());
+    }
+
+    #[test]
+    fn a_window_is_announced_once_per_threshold_it_crosses() {
+        let mut announced = Announced::default();
+        let settings = AppSettings::default();
+        pending(
+            &mut announced,
+            &workspace(provider(vec![window(LimitKind::Primary, 10.0, 1_800_003_600)])),
+            &settings,
+        );
+
+        let warning = pending(
+            &mut announced,
+            &workspace(provider(vec![window(LimitKind::Primary, 72.0, 1_800_003_600)])),
+            &settings,
+        );
+        assert_eq!(warning.len(), 1, "crossing into the warning share is announced");
+        assert!(warning[0].title.contains("running low"));
+        assert!(warning[0].body.contains("72%"), "the body carries the reading: {}", warning[0].body);
+
+        let again = pending(
+            &mut announced,
+            &workspace(provider(vec![window(LimitKind::Primary, 80.0, 1_800_003_600)])),
+            &settings,
+        );
+        assert!(again.is_empty(), "rising within the same share says nothing further");
+
+        let critical = pending(
+            &mut announced,
+            &workspace(provider(vec![window(LimitKind::Primary, 94.0, 1_800_003_600)])),
+            &settings,
+        );
+        assert_eq!(critical.len(), 1, "the louder threshold is its own crossing");
+        assert!(critical[0].title.contains("nearly gone"));
+    }
+
+    #[test]
+    fn a_restarted_window_can_raise_the_same_alert_again() {
+        let mut announced = Announced::default();
+        let settings = AppSettings::default();
+        pending(
+            &mut announced,
+            &workspace(provider(vec![window(LimitKind::Primary, 10.0, 1_800_003_600)])),
+            &settings,
+        );
+        pending(
+            &mut announced,
+            &workspace(provider(vec![window(LimitKind::Primary, 94.0, 1_800_003_600)])),
+            &settings,
+        );
+        // The same share, in the window that opened after the restart.
+        let after_reset = pending(
+            &mut announced,
+            &workspace(provider(vec![window(LimitKind::Primary, 94.0, 1_800_021_600)])),
+            &settings,
+        );
+        assert_eq!(after_reset.len(), 1, "a new window is a new fact");
+    }
+
+    #[test]
+    fn a_stale_reading_raises_nothing_of_its_own() {
+        let mut announced = Announced::default();
+        let settings = AppSettings::default();
+        pending(
+            &mut announced,
+            &workspace(provider(vec![window(LimitKind::Primary, 10.0, 1_800_003_600)])),
+            &settings,
+        );
+        let mut stale = window(LimitKind::Primary, 94.0, 1_800_003_600);
+        stale.freshness = Freshness::Stale;
+        assert!(pending(&mut announced, &workspace(provider(vec![stale])), &settings).is_empty());
+    }
+
+    #[test]
+    fn a_failing_provider_is_announced_once_and_again_only_after_it_recovers() {
+        let mut announced = Announced::default();
+        let settings = AppSettings::default();
+        // A provider with nothing read yet is already unavailable, which is the state this
+        // starts from: the baseline has to be one that is answering.
+        pending(&mut announced, &workspace(answering()), &settings);
+
+        let mut broken = provider(Vec::new());
+        broken.compact_status = CompactStatus {
+            level: CompactStatusLevel::Unavailable,
+            label: "Provider unavailable".to_string(),
+            color: String::new(),
+        };
+        broken.live_error = Some("Quota read failed".to_string());
+        let first = pending(&mut announced, &workspace(broken.clone()), &settings);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].body, "Quota read failed");
+        assert!(
+            pending(&mut announced, &workspace(broken.clone()), &settings).is_empty(),
+            "a failure that is still failing is not news"
+        );
+
+        assert!(pending(&mut announced, &workspace(answering()), &settings).is_empty());
+        assert_eq!(
+            pending(&mut announced, &workspace(broken), &settings).len(),
+            1,
+            "failing again after a recovery is a new failure"
+        );
+    }
+
+    #[test]
+    fn only_a_restart_newer_than_the_last_one_announced_is_reported() {
+        let reset = |anchored_at: i64| LimitResetEvent {
+            window_kind: LimitKind::Primary,
+            window_label: "5h window".to_string(),
+            window_duration_mins: 300,
+            anchored_at,
+            new_resets_at: anchored_at + 18_000,
+            previous_resets_at: anchored_at,
+            used_percent_before: 88.0,
+            early_by_seconds: 0,
+            classification: ResetClassification::Scheduled,
+        };
+        let mut announced = Announced::default();
+        let settings = AppSettings::default();
+        let mut first = provider(Vec::new());
+        first.recent_resets = vec![reset(1_800_000_000)];
+        assert!(
+            pending(&mut announced, &workspace(first.clone()), &settings).is_empty(),
+            "the restarts already on record at startup are history"
+        );
+        assert!(pending(&mut announced, &workspace(first), &settings).is_empty());
+
+        let mut next = provider(Vec::new());
+        next.recent_resets = vec![reset(1_800_018_000)];
+        let alerts = pending(&mut announced, &workspace(next), &settings);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].title.contains("quota reset"));
+    }
+
+    #[test]
+    fn each_kind_of_alert_can_be_turned_off_on_its_own() {
+        let mut announced = Announced::default();
+        let settings = AppSettings { notify_low_quota: false, ..AppSettings::default() };
+        pending(
+            &mut announced,
+            &workspace(provider(vec![window(LimitKind::Primary, 10.0, 1_800_003_600)])),
+            &settings,
+        );
+        assert!(
+            pending(
+                &mut announced,
+                &workspace(provider(vec![window(LimitKind::Primary, 96.0, 1_800_003_600)])),
+                &settings,
+            )
+            .is_empty()
+        );
+    }
+}

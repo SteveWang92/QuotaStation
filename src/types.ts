@@ -165,4 +165,7 @@ export interface AppSettings {
   statusLineProviderLabels: ProviderLabelStyle;
   statusLineOtherProviders: boolean;
   statusLineExtraDetails: boolean;
+  notifyLowQuota: boolean;
+  notifyReadFailures: boolean;
+  notifyQuotaResets: boolean;
 }

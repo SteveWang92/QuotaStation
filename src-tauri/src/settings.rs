@@ -42,6 +42,15 @@ pub struct AppSettings {
     /// shows — the project, the request and the spend. Off leaves the model and the quota.
     #[serde(default = "enabled")]
     pub status_line_extra_details: bool,
+    /// Whether a quota window crossing the shared warning or critical share is announced.
+    #[serde(default = "enabled")]
+    pub notify_low_quota: bool,
+    /// Whether a provider that stops answering, or whose data goes stale, is announced.
+    #[serde(default = "enabled")]
+    pub notify_read_failures: bool,
+    /// Whether a confirmed quota window restart is announced.
+    #[serde(default = "enabled")]
+    pub notify_quota_resets: bool,
 }
 
 fn enabled() -> bool {
@@ -56,6 +65,9 @@ impl Default for AppSettings {
             status_line_provider_labels: ProviderLabelStyle::default(),
             status_line_other_providers: enabled(),
             status_line_extra_details: enabled(),
+            notify_low_quota: enabled(),
+            notify_read_failures: enabled(),
+            notify_quota_resets: enabled(),
         }
     }
 }
@@ -141,6 +153,9 @@ mod tests {
         assert_eq!(settings.status_line_provider_labels, ProviderLabelStyle::Short);
         assert!(settings.status_line_other_providers, "an unrecorded choice takes its default");
         assert!(settings.status_line_extra_details, "an unrecorded choice takes its default");
+        assert!(settings.notify_low_quota, "an unrecorded choice takes its default");
+        assert!(settings.notify_read_failures, "an unrecorded choice takes its default");
+        assert!(settings.notify_quota_resets, "an unrecorded choice takes its default");
     }
 
     #[test]
@@ -151,6 +166,9 @@ mod tests {
             status_line_provider_labels: ProviderLabelStyle::Full,
             status_line_other_providers: false,
             status_line_extra_details: false,
+            notify_low_quota: false,
+            notify_read_failures: false,
+            notify_quota_resets: false,
         };
         let encoded = serde_json::to_string(&settings).expect("encode");
         assert_eq!(serde_json::from_str::<AppSettings>(&encoded).expect("decode"), settings);
@@ -177,6 +195,9 @@ mod tests {
             status_line_provider_labels: ProviderLabelStyle::Full,
             status_line_other_providers: false,
             status_line_extra_details: false,
+            notify_low_quota: false,
+            notify_read_failures: false,
+            notify_quota_resets: false,
         };
         save(&path, &expected).expect("replace the settings");
         assert_eq!(load(&path), expected);
