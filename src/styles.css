@@ -106,12 +106,18 @@ button { font: inherit; }
 .reset-history { border-top: 1px solid var(--line); font-size: 12px; }
 .reset-history summary { padding: 11px 28px; color: var(--muted); cursor: pointer; font-weight: 630; list-style-position: inside; }
 .reset-history summary span { margin-left: 8px; font-weight: 400; }
-.reset-history ul { margin: 0; padding: 0 28px 14px; list-style: none; }
-.reset-history li { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr) 84px minmax(0, 120px); align-items: baseline; gap: 14px; padding: 6px 0; border-top: 1px solid var(--line-soft); }
+/* The columns are measured once for the whole list rather than once per row, which is the
+   only way the verdict can be sized to its own longest phrase and still begin on the same
+   vertical line in every row. The rows carry their own border, so they stay grid items and
+   borrow the columns through `subgrid` instead of dissolving into the list. */
+.reset-history ul { display: grid; grid-template-columns: minmax(0, 128px) minmax(0, 1fr) 72px max-content; column-gap: 12px; margin: 0; padding: 0 28px 14px; list-style: none; }
+.reset-history li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line-soft); }
 .reset-history li time { color: #c4ccd1; font-variant-numeric: tabular-nums; }
 .reset-history li span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.reset-history li strong { font-weight: 620; font-variant-numeric: tabular-nums; }
-.reset-history li em { color: var(--muted); font-style: normal; text-align: right; }
+.reset-history li strong { font-weight: 620; font-variant-numeric: tabular-nums; text-align: right; }
+/* The share ends on one line and the verdict begins on another, so the gap between them is
+   the same on every row rather than closing and opening as the two phrases change length. */
+.reset-history li em { color: var(--muted); font-style: normal; text-align: left; white-space: nowrap; }
 .reset-history li.unplanned em { color: var(--warning); font-weight: 620; }
 .reset-inventory { height: 42px; display: flex; align-items: center; gap: 30px; padding: 0 28px; font-size: 14px; }
 .reset-inventory strong { color: var(--lime); font-size: 16px; }

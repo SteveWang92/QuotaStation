@@ -153,5 +153,6 @@ export type ProviderLabelStyle = "short" | "full";
 export interface AppSettings {
   taskbarWidgetEnabled: boolean;
   statusLineProviderLabels: ProviderLabelStyle;
-  statusLineFullDetails: boolean;
+  statusLineOtherProviders: boolean;
+  statusLineExtraDetails: boolean;
 }

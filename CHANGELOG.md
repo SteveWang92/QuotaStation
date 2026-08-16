@@ -7,6 +7,18 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Added
+
+- A status line setting for the project, branch, context, cache and cost detail.
+
+### Changed
+
+- The status line's other-providers setting now controls the other providers and nothing else.
+
+### Fixed
+
+- The reset history's verdict column no longer wraps onto a second line.
+
 ## [0.2.0] - 2026-08-16
 
 ### Added

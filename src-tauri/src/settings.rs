@@ -29,10 +29,14 @@ pub struct AppSettings {
     pub taskbar_widget_enabled: bool,
     #[serde(default)]
     pub status_line_provider_labels: ProviderLabelStyle,
-    /// Whether the status line carries the session and the other providers, or only what
-    /// Claude Code already knows about itself.
+    /// Whether the status line reports every provider QuotaStation watches, or only the
+    /// client it is being rendered inside.
     #[serde(default = "enabled")]
-    pub status_line_full_details: bool,
+    pub status_line_other_providers: bool,
+    /// Whether the status line carries the session detail Claude Code's own footer never
+    /// shows — the project, the request and the spend. Off leaves the model and the quota.
+    #[serde(default = "enabled")]
+    pub status_line_extra_details: bool,
 }
 
 fn enabled() -> bool {
@@ -44,7 +48,8 @@ impl Default for AppSettings {
         Self {
             taskbar_widget_enabled: enabled(),
             status_line_provider_labels: ProviderLabelStyle::default(),
-            status_line_full_details: enabled(),
+            status_line_other_providers: enabled(),
+            status_line_extra_details: enabled(),
         }
     }
 }
@@ -127,7 +132,8 @@ mod tests {
             serde_json::from_str(r#"{"taskbarWidgetEnabled":false}"#).expect("read old settings");
         assert!(!settings.taskbar_widget_enabled, "the recorded choice survives");
         assert_eq!(settings.status_line_provider_labels, ProviderLabelStyle::Short);
-        assert!(settings.status_line_full_details, "an unrecorded choice takes its default");
+        assert!(settings.status_line_other_providers, "an unrecorded choice takes its default");
+        assert!(settings.status_line_extra_details, "an unrecorded choice takes its default");
     }
 
     #[test]
@@ -135,7 +141,8 @@ mod tests {
         let settings = AppSettings {
             taskbar_widget_enabled: false,
             status_line_provider_labels: ProviderLabelStyle::Full,
-            status_line_full_details: false,
+            status_line_other_providers: false,
+            status_line_extra_details: false,
         };
         let encoded = serde_json::to_string(&settings).expect("encode");
         assert_eq!(serde_json::from_str::<AppSettings>(&encoded).expect("decode"), settings);
@@ -159,7 +166,8 @@ mod tests {
         let expected = AppSettings {
             taskbar_widget_enabled: false,
             status_line_provider_labels: ProviderLabelStyle::Full,
-            status_line_full_details: false,
+            status_line_other_providers: false,
+            status_line_extra_details: false,
         };
         save(&path, &expected).expect("replace the settings");
         assert_eq!(load(&path), expected);

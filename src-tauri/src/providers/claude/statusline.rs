@@ -354,7 +354,8 @@ fn view_of<'a>(input: Option<&'a StatusLineInput>, limits: Option<&RateLimits>) 
             settings.status_line_provider_labels,
             now,
         ),
-        full_details: settings.status_line_full_details,
+        other_providers: settings.status_line_other_providers,
+        extra_details: settings.status_line_extra_details,
         now,
     }
 }
@@ -378,8 +379,11 @@ struct StatusLineView<'a> {
     session_cost_usd: Option<f64>,
     /// One entry per provider, this client's own first.
     quotas: Vec<QuotaSegment>,
-    /// Whether the session row and the other providers are wanted at all.
-    full_details: bool,
+    /// Whether the providers other than this client are wanted. Nothing else depends on it.
+    other_providers: bool,
+    /// Whether the session rows are wanted — everything Claude Code's own footer never
+    /// shows. Off leaves the model and the quota, which is all a status line has to add.
+    extra_details: bool,
     now: i64,
 }
 
@@ -509,6 +513,11 @@ fn joined(groups: Vec<Vec<String>>) -> String {
 /// what is left across every provider QuotaStation watches. The last row is the whole reason
 /// the bridge is worth its screen — Claude Code knows its own quota and nothing about anyone
 /// else's, and this is the one place both can be read without leaving the terminal.
+///
+/// Two settings cut it down, and each cuts one thing. Without the other providers the quota
+/// is this client's alone; without the extra detail the session rows go entirely, which
+/// leaves the model and the quota on one row — Claude Code has no status line of its own to
+/// fall back to, so that row is as close to installing nothing as an installed one gets.
 fn status_line(view: &StatusLineView) -> String {
     let mut model: Vec<String> = Vec::new();
     if let Some(name) = view.model.filter(|model| !model.is_empty()) {
@@ -517,7 +526,7 @@ fn status_line(view: &StatusLineView) -> String {
     let mut project: Vec<String> = Vec::new();
     let mut request: Vec<String> = Vec::new();
     let mut spend: Vec<String> = Vec::new();
-    if view.full_details {
+    if view.extra_details {
         if let Some(effort) = view.effort.filter(|level| !level.is_empty()) {
             model.push(effort.to_string());
         }
@@ -560,15 +569,10 @@ fn status_line(view: &StatusLineView) -> String {
         }
     }
 
-    // Without the session rows there is only one row, so this client's own quota joins it
-    // rather than being left alone on a line that says less than the one above. Nothing
-    // else may join it: the readings are unnamed there, and an unnamed reading beside
-    // Claude Code's own model is read as Claude Code's own quota.
-    let segments: Vec<&QuotaSegment> =
-        view.quotas.iter().filter(|segment| view.full_details || segment.own).collect();
-    let mut quotas: Vec<Vec<String>> = Vec::new();
+    let segments = view.quotas.iter().filter(|segment| view.other_providers || segment.own);
+    let mut quotas: Vec<(&QuotaSegment, Vec<String>)> = Vec::new();
     for segment in segments {
-        let mut windows: Vec<String> = segment
+        let windows: Vec<String> = segment
             .windows
             .iter()
             // A window that has already restarted describes nothing that is running now.
@@ -587,20 +591,31 @@ fn status_line(view: &StatusLineView) -> String {
         if windows.is_empty() {
             continue;
         }
-        // Naming the provider only matters once there is a second one to tell it apart
-        // from; alone inside Claude Code it says what the row is already running in.
-        if view.full_details {
-            let first = windows.remove(0);
-            windows.insert(0, format!("{} {first}", segment.label));
-        }
-        quotas.push(windows);
+        quotas.push((segment, windows));
     }
+    // Naming the provider only matters once there is a second one to tell it apart from;
+    // alone inside Claude Code it says what the line is already running in. A foreign
+    // provider is always named, whatever else survived: an unnamed reading beside Claude
+    // Code's own model is read as Claude Code's own quota.
+    let several = quotas.len() > 1;
+    let quotas: Vec<Vec<String>> = quotas
+        .into_iter()
+        .map(|(segment, mut windows)| {
+            if several || !segment.own {
+                let first = windows.remove(0);
+                windows.insert(0, format!("{} {first}", segment.label));
+            }
+            windows
+        })
+        .collect();
 
-    let rows = if view.full_details {
+    let rows = if view.extra_details {
         // The session line grew past the width a terminal gives it, so what the session is
         // and what it has consumed are read on separate lines.
         vec![joined(vec![model, project]), joined(vec![request, spend]), joined(quotas)]
     } else {
+        // Without the session rows there is one row, so the quota joins the model rather
+        // than being left alone on a line that says less than the one above it.
         vec![joined(std::iter::once(model).chain(quotas).collect())]
     };
     let lines: Vec<String> = rows.into_iter().filter(|line| !line.is_empty()).collect();
@@ -942,7 +957,8 @@ mod tests {
             pull_request: None,
             session_cost_usd: None,
             quotas,
-            full_details: true,
+            other_providers: true,
+            extra_details: true,
             now: NOW,
         }
     }
@@ -1012,16 +1028,42 @@ mod tests {
         );
     }
 
+    /// Each setting cuts one thing, so turning both off is the only way to reach the row
+    /// that carries nothing but this client's own model and quota.
     #[test]
-    fn without_the_details_only_this_client_reports_and_it_shares_the_one_row() {
+    fn without_the_extra_detail_the_session_rows_go_and_the_quota_joins_the_model() {
         let mut session = view(Some("Opus"), two_providers());
         session.directory = Some("QuotaStation".to_string());
         session.context_used = Some(19.0);
-        session.full_details = false;
+        session.extra_details = false;
+        assert_eq!(
+            plain(&status_line(&session)),
+            "Opus | CLD 5h 24% (4h02m) · 7d 41% (5d) | CDX 5h 62% (2h10m)",
+            "no directory and no context, but every provider still reports"
+        );
+
+        session.other_providers = false;
         assert_eq!(
             plain(&status_line(&session)),
             "Opus | 5h 24% (4h02m) · 7d 41% (5d)",
-            "no directory, no context, and nothing about the other provider"
+            "the one provider left needs no name"
+        );
+    }
+
+    #[test]
+    fn without_the_other_providers_the_session_rows_stay_exactly_as_they_were() {
+        let mut session = view(Some("Opus"), two_providers());
+        session.directory = Some("QuotaStation".to_string());
+        session.branch = Some("dev".to_string());
+        session.context_used = Some(19.0);
+        session.session_cost_usd = Some(0.1234);
+        session.other_providers = false;
+        assert_eq!(
+            plain(&status_line(&session)),
+            "Opus | QuotaStation · dev\n\
+             ctx 19% | $0.12\n\
+             5h 24% (4h02m) · 7d 41% (5d)",
+            "only the second provider is gone"
         );
     }
 
@@ -1062,8 +1104,15 @@ mod tests {
             own: false,
             windows: vec![window("5h", 62.0, Some(2 * 3_600))],
         }]);
-        session.full_details = false;
-        assert_eq!(plain(&status_line(&session)), "Opus", "no unnamed foreign quota");
+        session.extra_details = false;
+        session.other_providers = false;
+        assert_eq!(plain(&status_line(&session)), "Opus", "no foreign quota at all");
+        session.other_providers = true;
+        assert_eq!(
+            plain(&status_line(&session)),
+            "Opus | CDX 5h 62% (2h00m)",
+            "a foreign quota alone is still named"
+        );
     }
 
     #[test]

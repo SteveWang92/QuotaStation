@@ -95,11 +95,23 @@ export function ClaudeStatusLine() {
             <label>
               <input
                 type="checkbox"
-                checked={settings.statusLineFullDetails}
+                checked={settings.statusLineOtherProviders}
                 disabled={savingSettings}
-                onChange={(event) => void change({ statusLineFullDetails: event.target.checked })}
+                onChange={(event) => void change({ statusLineOtherProviders: event.target.checked })}
               />
-              Show the session and the other providers, not only Claude's own windows
+              Show the other providers' usage, not only Claude's own windows
+            </label>
+            {/* Claude Code has no status line of its own to fall back to, so turning this
+                off leaves the model and the quota — as close to installing nothing as an
+                installed status line gets. */}
+            <label>
+              <input
+                type="checkbox"
+                checked={settings.statusLineExtraDetails}
+                disabled={savingSettings}
+                onChange={(event) => void change({ statusLineExtraDetails: event.target.checked })}
+              />
+              Show what Claude Code does not: the project, branch, context, cache and cost
             </label>
             <label>
               Provider names
