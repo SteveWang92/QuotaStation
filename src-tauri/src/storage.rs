@@ -88,18 +88,15 @@ impl Storage {
         observed_at: &str,
     ) -> Result<()> {
         let provider_id = self.provider_id(provider).await?;
-        // Reset inference is verified only for Codex app-server windows. Claude and future
-        // providers can expose rolling or differently scoped buckets with similar value
-        // changes, so applying the Codex heuristic to them would manufacture reset events.
-        let previous = if provider == ProviderKind::Codex {
-            self.load_current_observations(provider_id).await?
-        } else {
-            BTreeMap::new()
-        };
+        // A restart is inferred only from the source that publishes the window rather than
+        // deriving it — see `ProviderKind::authoritative_window_source`. Comparing a reading
+        // against one that measured the same window a different way manufactures restarts.
+        let authoritative = provider.authoritative_window_source();
+        let previous = self.load_current_observations(provider_id, authoritative).await?;
         let mut tx = self.pool.begin().await?;
         if let Some(now) = epoch_seconds(observed_at) {
             for limit in &live.limits {
-                if provider != ProviderKind::Codex || limit.source != WindowSource::AppServer {
+                if limit.source != authoritative {
                     continue;
                 }
                 let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) =
@@ -159,12 +156,14 @@ impl Storage {
     async fn load_current_observations(
         &self,
         provider_id: i64,
+        source: WindowSource,
     ) -> Result<BTreeMap<String, WindowObservation>> {
         let rows = sqlx::query(
             "SELECT window_kind, used_percent, window_duration_mins, resets_at, observed_at \
-             FROM limit_current WHERE provider_instance_id = ? AND source = 'app_server'",
+             FROM limit_current WHERE provider_instance_id = ? AND source = ?",
         )
         .bind(provider_id)
+        .bind(source.as_str())
         .fetch_all(&self.pool)
         .await?;
         let mut observations = BTreeMap::new();
@@ -1049,22 +1048,56 @@ mod tests {
         assert!(storage.load_recent_resets(CODEX).await.expect("load resets").is_empty());
     }
 
+    /// Claude's windows come from two sources at once. Only the status line publishes the
+    /// window; the session logs recover its timing from request times, and a reading of that
+    /// kind describes a different thing well enough to look like a restart beside a
+    /// published one.
     #[tokio::test]
-    async fn codex_reset_inference_is_not_applied_to_other_providers() {
+    async fn a_restart_is_inferred_only_from_the_source_that_publishes_the_window() {
         let (storage, _database) = open_storage().await;
+        let claude = ProviderKind::Claude;
+        let logged = |used, resets_at| {
+            let mut live = weekly_live(used, resets_at);
+            live.limits[0].source = WindowSource::SessionLog;
+            live
+        };
         storage
-            .save_live(ProviderKind::Claude, &weekly_live(52.0, 1_786_800_000), "2026-08-10T15:00:00Z")
+            .save_live(claude, &logged(52.0, 1_786_800_000), "2026-08-10T15:00:00Z")
             .await
-            .expect("save the earlier Claude reading");
+            .expect("save the earlier log-derived reading");
         storage
-            .save_live(ProviderKind::Claude, &weekly_live(0.0, 1_787_026_583), "2026-08-11T09:29:00Z")
+            .save_live(claude, &logged(0.0, 1_787_026_583), "2026-08-11T09:29:00Z")
             .await
-            .expect("save the later Claude reading");
-
+            .expect("save the later log-derived reading");
         assert!(
-            storage.load_recent_resets(ProviderKind::Claude).await.expect("load Claude resets").is_empty(),
-            "a Codex-specific heuristic must not infer resets for Claude"
+            storage.load_recent_resets(claude).await.expect("load Claude resets").is_empty(),
+            "a window recovered from local logs cannot evidence a restart"
         );
+    }
+
+    /// The quota Claude Code hands its status line is server-published, exactly like Codex's
+    /// app-server answer, so a restart of one of those windows is recorded the same way.
+    #[tokio::test]
+    async fn a_claude_window_the_status_line_published_records_its_restart() {
+        let (storage, _database) = open_storage().await;
+        let claude = ProviderKind::Claude;
+        let published = |used, resets_at| {
+            let mut live = weekly_live(used, resets_at);
+            live.limits[0].source = WindowSource::StatusLine;
+            live
+        };
+        storage
+            .save_live(claude, &published(78.0, 1_786_800_000), "2026-08-10T15:00:00Z")
+            .await
+            .expect("save the earlier published reading");
+        storage
+            .save_live(claude, &published(1.0, 1_787_026_583), "2026-08-11T09:29:00Z")
+            .await
+            .expect("save the reading after the restart");
+
+        let events = storage.load_recent_resets(claude).await.expect("load Claude resets");
+        assert_eq!(events.len(), 1, "the restart is recorded");
+        assert_eq!(events[0].used_percent_before, 78.0);
     }
 
     #[tokio::test]

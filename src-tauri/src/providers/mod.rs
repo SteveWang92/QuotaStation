@@ -12,7 +12,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    domain::{HistorySnapshot, LiveSnapshot},
+    domain::{HistorySnapshot, LiveSnapshot, WindowSource},
     resets::WindowObservation,
 };
 
@@ -41,6 +41,22 @@ impl ProviderKind {
         match self {
             ProviderKind::Codex => "Codex",
             ProviderKind::Claude => "Claude Code",
+        }
+    }
+
+    /// The one source per provider whose readings a window restart may be inferred from.
+    ///
+    /// A restart is recognised by comparing two consecutive readings of the same window, so
+    /// both have to describe the window the same way. That holds only where the provider's
+    /// own server published the percentage and the restart time: Codex's app-server and the
+    /// quota Claude Code hands its status line. A window recovered from local session logs
+    /// is derived from request times instead, and comparing one of those against a server
+    /// reading — or against the next log-derived guess — would manufacture restarts that
+    /// never happened.
+    pub fn authoritative_window_source(self) -> WindowSource {
+        match self {
+            ProviderKind::Codex => WindowSource::AppServer,
+            ProviderKind::Claude => WindowSource::StatusLine,
         }
     }
 

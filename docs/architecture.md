@@ -137,9 +137,13 @@ A Codex app-server quota reset is inferred when usage falls materially, the publ
 jumps forward, and the restarted window is anchored inside the gap between the two readings. A
 window that appears to have restarted more than two hours before its published expiry is
 classified internally as unplanned. This is a heuristic derived from adjacent samples, so
-the interface labels it as a possible early reset rather than provider-confirmed fact. The
-heuristic is not applied to Claude or future providers unless their window semantics are
-separately verified.
+the interface labels it as a possible early reset rather than provider-confirmed fact.
+
+It is applied per source rather than per provider: only readings from the one source that
+publishes a window — Codex's app-server, and the quota Claude Code hands its status line —
+can evidence a restart of it. A window recovered from local session logs is derived from
+request times instead, and comparing one of those against a published reading, or against
+the next derived guess, would manufacture restarts that never happened.
 Codex writes the same rate-limit answers into its own rollout logs, so a
 startup scan of those logs recovers resets that happened while QuotaStation was closed;
 the scan reads only rate-limit fields, skips files older than its previous run, and never
