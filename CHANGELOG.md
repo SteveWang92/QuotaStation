@@ -7,6 +7,8 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-16
+
 ### Added
 
 - Claude Code's status line now shows every provider's quota, not only Claude's own.
@@ -88,5 +90,6 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/SteveWang92/QuotaStation/releases/tag/v0.1.0
