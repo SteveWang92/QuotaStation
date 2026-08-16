@@ -80,7 +80,32 @@ pub fn save(path: &Path, settings: &AppSettings) -> Result<(), String> {
     std::fs::rename(&staging, path).map_err(|error| {
         let _ = std::fs::remove_file(&staging);
         error.to_string()
-    })
+    })?;
+    remove_abandoned_staging(path);
+    Ok(())
+}
+
+/// A process killed between the write and the rename leaves its staging file behind, and
+/// nothing else would ever collect it. A completed save is the moment to sweep: the
+/// application is single-instance and only it writes these names, so anything still here
+/// belongs to a run that is over.
+fn remove_abandoned_staging(path: &Path) {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
+    else {
+        return;
+    };
+    let prefix = format!("{name}.");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if file_name.starts_with(&prefix) && file_name.ends_with(".tmp") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +139,17 @@ mod tests {
         };
         let encoded = serde_json::to_string(&settings).expect("encode");
         assert_eq!(serde_json::from_str::<AppSettings>(&encoded).expect("decode"), settings);
+    }
+
+    #[test]
+    fn a_save_collects_the_staging_file_a_killed_run_left_behind() {
+        let path = scratch("staging");
+        let abandoned = path.with_extension("json.4294967295.tmp");
+        std::fs::write(&abandoned, "{}").expect("leave a staging file behind");
+        save(&path, &AppSettings::default()).expect("write the settings");
+        assert!(!abandoned.exists(), "the dead run's staging file is collected");
+        assert_eq!(load(&path), AppSettings::default(), "the settings themselves survive");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

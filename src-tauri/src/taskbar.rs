@@ -149,6 +149,12 @@ fn widget_click_transition(
         WM_LBUTTONDOWN if pointer_over_widget => (true, WidgetClickAction::Swallow),
         WM_LBUTTONUP if captured && pointer_over_widget => (false, WidgetClickAction::Open),
         WM_LBUTTONUP if captured => (false, WidgetClickAction::Swallow),
+        // A press elsewhere ends whatever pair was open. The release that should have
+        // closed it can be lost outright — the system skips a hook that exceeds
+        // `LowLevelHooksTimeout`, and the secure desktop and the lock screen both take the
+        // button up with them — and a flag left standing would swallow the next release
+        // anywhere on the machine, leaving that application in a drag it never started.
+        WM_LBUTTONDOWN => (false, WidgetClickAction::Pass),
         _ => (captured, WidgetClickAction::Pass),
     }
 }
@@ -397,6 +403,22 @@ mod tests {
         let (captured, up) = widget_click_transition(captured, WM_LBUTTONUP, false);
         assert!(!captured);
         assert_eq!(up, WidgetClickAction::Swallow);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_press_elsewhere_releases_a_capture_whose_button_up_never_arrived() {
+        let (captured, _) = widget_click_transition(false, WM_LBUTTONDOWN, true);
+        assert!(captured, "the widget press is held");
+
+        // The release is lost — a skipped hook, the secure desktop, the lock screen.
+        let (captured, action) = widget_click_transition(captured, WM_LBUTTONDOWN, false);
+        assert!(!captured, "a press elsewhere ends the abandoned pair");
+        assert_eq!(action, WidgetClickAction::Pass);
+
+        let (captured, action) = widget_click_transition(captured, WM_LBUTTONUP, false);
+        assert!(!captured);
+        assert_eq!(action, WidgetClickAction::Pass, "that click reaches its own window whole");
     }
 
     #[cfg(windows)]
