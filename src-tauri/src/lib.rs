@@ -787,6 +787,7 @@ fn write_desktop_shortcut(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Some(working_directory) = executable.parent() {
         shortcut.set_working_dir(Some(working_directory.to_string_lossy().into_owned()));
     }
+    shortcut.set_icon_location(Some(executable.to_string_lossy().into_owned()));
     shortcut.set_name(Some("QuotaStation".to_string()));
     shortcut.create_lnk(&shortcut_path).map_err(|error| error.to_string())?;
     Ok(shortcut_path)

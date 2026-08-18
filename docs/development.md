@@ -110,17 +110,23 @@ a review of the edited files.
 
 ## Application icon
 
-`src-tauri/icons/` holds two files and is meant to keep holding two: `app-icon.png`, the
-square master artwork, and `icon.ico`, the only icon a Windows build bundles. Replace the
-master and run
+`src-tauri/icons/` holds the square `app-icon.png` master artwork, the crisp
+`app-icon-small.svg` used from 16 through 96 pixels, and `icon.ico`, the only icon a Windows
+build bundles. Replace the applicable source artwork and run
 
 ```powershell
 npm run icons
 ```
 
-which generates into a scratch directory, keeps the `.ico`, and discards the Android, iOS,
-macOS and Store variants `tauri icon` also produces. Running `npx tauri icon` directly writes
-all forty of them into the repository instead.
+which generates both sources into scratch directories, combines their Windows sizes into the
+`.ico`, and discards the Android, iOS, macOS and Store variants `tauri icon` also produces.
+Running `npx tauri icon` directly writes all forty of them into the repository instead. The
+Rust build script watches the generated `.ico`, so the next build also refreshes the icon
+embedded in the executable rather than only the icon Tauri loads at runtime.
+
+The generated ICO carries exact Windows 11 target sizes at every scale factor: 16, 20, 24,
+30, 32, 36, 40, 48, 60, 64, 72, 80, 96 and 256 pixels. `resize-icon.ps1` runs only inside the
+Windows-only icon task and keeps those derived PNGs in the scratch directory.
 
 ## Codex executable discovery
 

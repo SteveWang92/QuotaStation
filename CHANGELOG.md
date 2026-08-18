@@ -15,6 +15,7 @@ on `main`, with the matching section below as its notes.
 
 ### Changed
 
+- The application now uses a dial-and-platform icon with crisp size-specific Windows artwork.
 - The status line's other-providers setting now controls the other providers and nothing else.
 
 ### Fixed

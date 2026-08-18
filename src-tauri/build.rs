@@ -1,6 +1,7 @@
 fn main() {
     let lock_path = "../vendor/ccusage/flake.lock";
     println!("cargo:rerun-if-changed={lock_path}");
+    println!("cargo:rerun-if-changed=icons/icon.ico");
     let lock: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(lock_path).expect("read vendored ccusage flake.lock"),
     )
