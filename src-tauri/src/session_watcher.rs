@@ -171,12 +171,7 @@ async fn run_event_loop(
                     }
                 }
                 while let Some(provider) = pending.pop_first() {
-                    refresh::refresh_history_for_provider(&app, &state, provider).await;
-                    // A provider whose quota window is derived from those same files has
-                    // a new window to report as soon as they change.
-                    if provider.live_follows_logs() {
-                        refresh::refresh_live_for_provider(&app, &state, provider).await;
-                    }
+                    refresh::refresh_changed_provider(&app, &state, provider).await;
                     // Parsing can take long enough for more writes to arrive. Fold those
                     // events into this batch instead of making every queued event open a
                     // fresh two-second debounce window.

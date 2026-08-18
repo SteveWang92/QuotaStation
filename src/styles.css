@@ -193,7 +193,6 @@ button { font: inherit; }
 .custom-range-panel button:disabled { opacity: 0.45; cursor: not-allowed; }
 .range-error { margin: 0; padding: 10px 13px; border: 1px solid #824741; border-radius: 4px; color: #ffaaa3; background: rgba(96, 31, 27, 0.22); font-size: 12px; }
 .history-content { display: flex; flex-direction: column; gap: 16px; transition: opacity 140ms ease; }
-.history-content.loading { opacity: 0.52; }
 .summary-strip { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 5px; background: rgba(16, 23, 29, 0.62); }
 .summary-strip > div { min-height: 78px; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 13px 20px; border-left: 1px solid var(--line); }
 .summary-strip > div:first-child { border-left: 0; }

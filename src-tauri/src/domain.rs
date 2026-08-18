@@ -613,6 +613,7 @@ pub struct DiagnosticsSnapshot {
     pub parser_revision: String,
     pub pricing_catalog_revision: String,
     pub app_version: String,
+    pub build_commit: String,
     /// Which build this is. The same version number ships as a debug build, a portable
     /// executable and an installed one, and they behave differently enough — where the
     /// executable lives, what Claude Code's hooks point at — that a bug report about "0.1.0"

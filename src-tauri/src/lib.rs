@@ -44,6 +44,7 @@ static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 pub struct AppState {
     storage: Storage,
     snapshots: RwLock<BTreeMap<ProviderKind, ProviderSnapshot>>,
+    refresh_publish_lock: Mutex<()>,
     live_refresh_lock: Mutex<()>,
     history_refresh_lock: Mutex<()>,
     watcher_diagnostics: RwLock<WatcherDiagnostics>,
@@ -377,6 +378,7 @@ async fn get_diagnostics(app: tauri::AppHandle, state: State<'_, Arc<AppState>>)
         parser_revision: domain::CCUSAGE_REVISION.to_string(),
         pricing_catalog_revision: domain::PRICING_CATALOG_REVISION.to_string(),
         app_version: app.package_info().version.to_string(),
+        build_commit: env!("QUOTASTATION_BUILD_COMMIT").to_string(),
         build_kind: build_kind(),
     })
 }
@@ -897,6 +899,7 @@ pub fn run() {
             let state = Arc::new(AppState {
                 storage,
                 snapshots: RwLock::new(snapshots),
+                refresh_publish_lock: Mutex::new(()),
                 live_refresh_lock: Mutex::new(()),
                 history_refresh_lock: Mutex::new(()),
                 watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),

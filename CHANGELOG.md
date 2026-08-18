@@ -12,6 +12,7 @@ on `main`, with the matching section below as its notes.
 - A status line setting for the project, branch, context, cache and cost detail.
 - A setting for which display's taskbar carries the quota status.
 - Desktop notifications for a quota window running low, a provider that cannot be read, and a quota reset.
+- Diagnostics show the source commit beside the application version.
 
 ### Changed
 
@@ -20,6 +21,7 @@ on `main`, with the matching section below as its notes.
 
 ### Fixed
 
+- Provider data stays visually stable until a refresh has completed.
 - The reset history's verdict column no longer wraps onto a second line.
 - The application survives an Explorer restart and puts the taskbar status back by itself.
 - The taskbar status no longer draws over the taskbar's application buttons.

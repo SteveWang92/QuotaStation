@@ -44,6 +44,7 @@ const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
   parserRevision: "",
   pricingCatalogRevision: "",
   appVersion: "",
+  buildCommit: "",
   buildKind: "",
 };
 
@@ -90,7 +91,6 @@ function Dashboard() {
   const loadUsageRange = useCallback(async (range: DateRangeSelection, rangeProvider: ProviderKey) => {
     const resolvedRange = resolveDateRange(range);
     activeRangeRef.current = resolvedRange;
-    setActiveRange(resolvedRange);
     const requestId = ++rangeRequestId.current;
     setRangeLoading(true);
     setRangeError(null);
@@ -100,7 +100,10 @@ function Dashboard() {
         startDate: resolvedRange.startDate,
         endDate: resolvedRange.endDate,
       });
-      if (requestId === rangeRequestId.current) setUsageRange(next);
+      if (requestId === rangeRequestId.current) {
+        setUsageRange(next);
+        setActiveRange(resolvedRange);
+      }
     } catch (error) {
       if (requestId === rangeRequestId.current) setRangeError(errorMessage(error));
     } finally {

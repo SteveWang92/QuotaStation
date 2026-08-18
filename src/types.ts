@@ -143,6 +143,7 @@ export interface DiagnosticsSnapshot {
   parserRevision: string;
   pricingCatalogRevision: string;
   appVersion: string;
+  buildCommit: string;
   /** debug, release portable, or release installed — which copy of QuotaStation this is. */
   buildKind: string;
 }

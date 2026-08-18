@@ -139,7 +139,7 @@ export function UsageSummary({
 
       {error ? <p className="range-error">Unable to load this range: {error}</p> : null}
 
-      <div className={`history-content ${loading ? "loading" : ""}`}>
+      <div className="history-content">
         {/* The model count is not a fourth headline figure: the model mix card below both
             counts them and says what they were. */}
         <div className="summary-strip">
