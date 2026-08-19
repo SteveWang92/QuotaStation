@@ -17,8 +17,8 @@ use crate::settings::AppSettings;
 use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex as StdMutex, OnceLock}, time::{Duration, Instant}};
 
 use domain::{
-    DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot, WatcherDiagnostics,
-    WorkspaceSnapshot,
+    DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot, UsageRangeSnapshot,
+    WatcherDiagnostics, WorkspaceSnapshot,
 };
 use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
@@ -139,6 +139,20 @@ async fn get_usage_range(
     state
         .storage
         .load_usage_range(provider, &start_date, &end_date)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_quota_history(
+    provider: ProviderKind,
+    start_date: String,
+    end_date: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<QuotaHistorySnapshot, String> {
+    state
+        .storage
+        .load_quota_history(provider, &start_date, &end_date)
         .await
         .map_err(|error| error.to_string())
 }
@@ -999,6 +1013,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             get_usage_range,
+            get_quota_history,
             refresh_now,
             get_diagnostics,
             get_log_available,

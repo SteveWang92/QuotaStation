@@ -1,21 +1,52 @@
-import { CalendarDays } from "lucide-react";
-import { useState } from "react";
+import { CalendarDays, X } from "lucide-react";
+import { useMemo, useState } from "react";
+import { alignToDays, calendarDays } from "../charts";
 import {
   createCustomRange,
   createPresetRange,
   formatRangeDate,
+  toLocalDateString,
   todayString,
   type DateRangeSelection,
   type RangePreset,
 } from "../dateRanges";
-import { formatCurrency, formatNumber, formatRevision } from "../format";
-import type { ProviderKey, ProviderSnapshot, UsageRangeSnapshot } from "../types";
+import {
+  formatCompactCurrency,
+  formatCompactNumber,
+  formatCurrency,
+  formatDelta,
+  formatNumber,
+  formatRevision,
+} from "../format";
+import { SERIES_LIMIT, SERIES_REST, SERIES_SLOTS } from "../series";
+import type {
+  DailyUsagePoint,
+  ModelUsage,
+  ProviderKey,
+  ProviderSnapshot,
+  QuotaHistorySnapshot,
+  TokenUsage,
+  UsageRangeSnapshot,
+} from "../types";
+import { DayChart, type ChartMarker, type ChartSeries } from "./DayChart";
 
 const PRESETS: Array<{ value: Exclude<RangePreset, "custom">; label: string }> = [
   { value: "today", label: "Today" },
   { value: "3d", label: "3d" },
   { value: "7d", label: "7d" },
   { value: "30d", label: "30d" },
+];
+
+/**
+ * The four token categories, in the order they are stacked and listed. The order is also
+ * the colour order, so a category keeps one colour on the chart, in the tooltip and in the
+ * breakdown beside it.
+ */
+const CATEGORIES: Array<{ key: keyof TokenUsage; label: string; color: string }> = [
+  { key: "input", label: "Input", color: SERIES_SLOTS[0] },
+  { key: "output", label: "Output", color: SERIES_SLOTS[1] },
+  { key: "cacheRead", label: "Cached input", color: SERIES_SLOTS[2] },
+  { key: "reasoning", label: "Reasoning", color: SERIES_SLOTS[3] },
 ];
 
 interface UsageSummaryProps {
@@ -25,10 +56,22 @@ interface UsageSummaryProps {
   activeProvider: ProviderKey;
   onSelectProvider: (provider: ProviderKey) => void;
   range: UsageRangeSnapshot;
+  /** The period of the same length immediately before this one, for the comparison. */
+  previousRange: UsageRangeSnapshot | null;
+  quotaHistory: QuotaHistorySnapshot | null;
   selection: DateRangeSelection;
   loading: boolean;
   error: string | null;
   onSelectRange: (range: DateRangeSelection) => void;
+}
+
+/**
+ * Folds a model list down to the slots the palette has, with everything past them summed
+ * into one "Other" entry. A generated fifth colour would be indistinguishable from one of
+ * the four above it, so the tail is named instead of coloured.
+ */
+function namedModels(models: ModelUsage[]): string[] {
+  return models.slice(0, SERIES_LIMIT).map((model) => model.model);
 }
 
 export function UsageSummary({
@@ -37,6 +80,8 @@ export function UsageSummary({
   activeProvider,
   onSelectProvider,
   range,
+  previousRange,
+  quotaHistory,
   selection,
   loading,
   error,
@@ -45,24 +90,88 @@ export function UsageSummary({
   const [showCustom, setShowCustom] = useState(false);
   const [customStart, setCustomStart] = useState(selection.startDate);
   const [customEnd, setCustomEnd] = useState(selection.endDate);
-  const { usage } = range;
-  const categories = [
-    ["Input", usage.input, "lime"],
-    ["Output", usage.output, "violet"],
-    ["Cached input", usage.cacheRead, "blue"],
-    ["Reasoning", usage.reasoning, "muted"],
-  ] as const;
-  const activeDayAverage = range.days.length === 0 ? 0 : Math.round(usage.total / range.days.length);
+  // Opening a day narrows the breakdown cards to it; the charts and the totals above stay
+  // on the whole range, so the day is always read against its own context.
+  const [openDay, setOpenDay] = useState<string | null>(null);
+
+  const days = useMemo(
+    () => calendarDays(range.startDate, range.endDate),
+    [range.startDate, range.endDate],
+  );
+  const aligned = useMemo(() => alignToDays(range.days, days), [range.days, days]);
+  const openPoint: DailyUsagePoint | null =
+    openDay === null ? null : (range.days.find((day) => day.date === openDay) ?? null);
+  const usage = openPoint?.usage ?? range.usage;
+  const models = openPoint?.models ?? range.models;
+  const cost = openPoint ? openPoint.apiEquivalentCostUsd : range.apiEquivalentCostUsd;
+
+  const activeDayAverage = range.days.length === 0 ? 0 : Math.round(range.usage.total / range.days.length);
+  const previousActiveAverage =
+    previousRange === null || previousRange.days.length === 0
+      ? 0
+      : Math.round(previousRange.usage.total / previousRange.days.length);
   const customInvalid = !customStart || !customEnd || customStart > customEnd;
   const displayDays = [...range.days].reverse();
 
+  const tokenSeries: ChartSeries[] = CATEGORIES.map((category) => ({
+    key: category.key,
+    label: category.label,
+    color: category.color,
+    values: aligned.map((day) => (day ? day.usage[category.key] : 0)),
+  }));
+
+  const costSeries: ChartSeries[] = [
+    {
+      key: "cost",
+      label: "API-equivalent cost",
+      color: SERIES_SLOTS[0],
+      values: aligned.map((day) => day?.apiEquivalentCostUsd ?? 0),
+    },
+  ];
+
+  const chartModels = namedModels(range.models);
+  const modelSeries: ChartSeries[] = chartModels.map((model, index) => ({
+    key: model,
+    label: model,
+    color: SERIES_SLOTS[index],
+    values: aligned.map((day) => day?.models.find((entry) => entry.model === model)?.tokens ?? 0),
+  }));
+  if (range.models.length > chartModels.length) {
+    modelSeries.push({
+      key: "other-models",
+      label: `Other (${range.models.length - chartModels.length})`,
+      color: SERIES_REST,
+      values: aligned.map((day) =>
+        (day?.models ?? [])
+          .filter((entry) => !chartModels.includes(entry.model))
+          .reduce((sum, entry) => sum + entry.tokens, 0),
+      ),
+    });
+  }
+
+  const quotaSeries: ChartSeries[] = (quotaHistory?.windows ?? []).map((window, index) => ({
+    key: window.kind,
+    label: window.label,
+    color: SERIES_SLOTS[index],
+    values: days.map(
+      (day) => window.points.find((point) => point.date === day)?.peakUsedPercent ?? null,
+    ),
+  }));
+  const quotaMarkers: ChartMarker[] = (quotaHistory?.resets ?? []).map((reset) => ({
+    date: toLocalDateString(new Date(reset.anchoredAt * 1_000)),
+    label: `${reset.windowLabel} restarted (${reset.classification})`,
+    tone: reset.classification === "unplanned" ? "warning" : "muted",
+  }));
+
   function applyPreset(preset: Exclude<RangePreset, "custom">) {
     setShowCustom(false);
+    setOpenDay(null);
     onSelectRange(createPresetRange(preset));
   }
 
   function applyCustom() {
     if (customInvalid) return;
+    setOpenDay(null);
     onSelectRange(createCustomRange(customStart, customEnd));
     setShowCustom(false);
   }
@@ -91,7 +200,10 @@ export function UsageSummary({
                 role="tab"
                 aria-selected={provider.provider === activeProvider}
                 className={provider.provider === activeProvider ? "active" : ""}
-                onClick={() => onSelectProvider(provider.provider)}
+                onClick={() => {
+                  setOpenDay(null);
+                  onSelectProvider(provider.provider);
+                }}
               >
                 {provider.displayName}
               </button>
@@ -141,12 +253,103 @@ export function UsageSummary({
 
       <div className="history-content">
         {/* The model count is not a fourth headline figure: the model mix card below both
-            counts them and says what they were. */}
+            counts them and says what they were. Each figure carries how it moved against
+            the period of the same length before this one, so a total means something on
+            its own. */}
         <div className="summary-strip">
-          <div><span>Total tokens</span><strong>{formatNumber(usage.total)}</strong></div>
-          <div><span>API-equivalent cost</span><strong>{formatCurrency(range.apiEquivalentCostUsd)}</strong></div>
-          <div><span>Active-day average</span><strong>{formatNumber(activeDayAverage)}</strong></div>
+          <StatTile
+            label="Total tokens"
+            value={formatNumber(range.usage.total)}
+            delta={previousRange && formatDelta(range.usage.total, previousRange.usage.total)}
+          />
+          <StatTile
+            label="API-equivalent cost"
+            value={formatCurrency(range.apiEquivalentCostUsd)}
+            delta={
+              previousRange &&
+              formatDelta(range.apiEquivalentCostUsd ?? 0, previousRange.apiEquivalentCostUsd ?? 0)
+            }
+          />
+          <StatTile
+            label="Active-day average"
+            value={formatNumber(activeDayAverage)}
+            delta={previousRange && formatDelta(activeDayAverage, previousActiveAverage)}
+          />
         </div>
+
+        {/* One day is not a trend: a single column would be a bar chart of one, and the
+            figures above and the breakdown below already say everything it could. */}
+        {days.length < 2 ? (
+          <p className="chart-hint">
+            Charts compare one day against another. Choose a longer range to see them.
+          </p>
+        ) : null}
+        <div className="chart-grid" hidden={days.length < 2}>
+          <DayChart
+            title="Daily tokens"
+            subtitle="Stacked by category · select a day to open it below"
+            days={days}
+            series={tokenSeries}
+            mode="stacked"
+            formatValue={formatNumber}
+            formatTick={formatCompactNumber}
+            selectedDate={openDay}
+            onSelectDate={setOpenDay}
+            emptyCopy="No usage recorded in this date range."
+            loading={loading}
+          />
+          <DayChart
+            title="Cost trend"
+            subtitle="Estimated API-equivalent cost per day"
+            days={days}
+            series={costSeries}
+            mode="line"
+            formatValue={(value) => formatCurrency(value)}
+            formatTick={formatCompactCurrency}
+            emptyCopy="No cost recorded in this date range."
+            loading={loading}
+          />
+          <DayChart
+            title="Model trend"
+            subtitle={`${range.models.length} models · by tokens per day`}
+            days={days}
+            series={modelSeries}
+            mode="stacked"
+            formatValue={formatNumber}
+            formatTick={formatCompactNumber}
+            selectedDate={openDay}
+            onSelectDate={setOpenDay}
+            emptyCopy="No model usage recorded in this date range."
+            loading={loading}
+          />
+          {quotaSeries.length > 0 ? (
+            <DayChart
+              title="Quota history"
+              subtitle="Highest share of each window used that day"
+              days={days}
+              series={quotaSeries}
+              mode="line"
+              maxValue={100}
+              formatValue={(value) => `${value.toFixed(1)}%`}
+              formatTick={(value) => `${value}%`}
+              markers={quotaMarkers}
+              emptyCopy="No quota readings were recorded in this date range."
+              loading={loading}
+            />
+          ) : null}
+        </div>
+
+        {openPoint ? (
+          <div className="day-drilldown">
+            <span>
+              Showing <strong>{formatRangeDate(openPoint.date)}</strong> — {formatNumber(openPoint.usage.total)} tokens
+              across {openPoint.models.length} model{openPoint.models.length === 1 ? "" : "s"}
+            </span>
+            <button type="button" onClick={() => setOpenDay(null)}>
+              <X aria-hidden="true" /> Back to the range
+            </button>
+          </div>
+        ) : null}
 
         <div className="history-grid">
           <article className="history-card breakdown-card">
@@ -166,7 +369,18 @@ export function UsageSummary({
                   <span role="columnheader">API cost</span>
                 </div>
                 {displayDays.map((day) => (
-                  <div className="daily-table-row" role="row" key={day.date}>
+                  <div
+                    className={`daily-table-row${day.date === openDay ? " open" : ""}`}
+                    role="row"
+                    key={day.date}
+                    tabIndex={0}
+                    onClick={() => setOpenDay(day.date === openDay ? null : day.date)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      setOpenDay(day.date === openDay ? null : day.date);
+                    }}
+                  >
                     <strong role="cell">{formatRangeDate(day.date)}</strong>
                     <span role="cell">{formatNumber(day.usage.total)}</span>
                     <span role="cell">{formatNumber(day.usage.cacheRead)}</span>
@@ -180,12 +394,16 @@ export function UsageSummary({
 
           <article className="history-card model-card">
             <div className="card-heading">
-              <div><h3>Model mix</h3><span>{range.models.length} models · by total tokens</span></div>
+              <div>
+                <h3>Model mix</h3>
+                <span>{models.length} models · by total tokens</span>
+              </div>
+              {openPoint ? <span>{formatRangeDate(openPoint.date)}</span> : null}
             </div>
             <div className="model-list">
-              {range.models.length === 0 ? (
+              {models.length === 0 ? (
                 <p className="empty-copy">No model usage recorded.</p>
-              ) : range.models.slice(0, 6).map((model) => (
+              ) : models.slice(0, 6).map((model) => (
                 <div className="model-row" key={model.model}>
                   <span title={model.model}>{model.model}</span>
                   <span>{model.percent.toFixed(1)}%</span>
@@ -198,15 +416,17 @@ export function UsageSummary({
           <article className="history-card token-card">
             <div className="card-heading">
               <div><h3>Token breakdown</h3><span>Catalog {formatRevision(snapshot.pricingCatalogRevision)}</span></div>
-              <span>{snapshot.planType ?? "Unknown plan"}</span>
+              <span>{openPoint ? formatCompactCurrency(cost ?? 0) : (snapshot.planType ?? "Unknown plan")}</span>
             </div>
             <div className="token-list">
-              {categories.map(([label, value, tone]) => (
-                <div className="token-row" key={label}>
-                  <i className={`token-dot ${tone}`} />
-                  <span>{label}</span>
-                  <strong>{formatNumber(value)}</strong>
-                  <span>{usage.total === 0 ? "0.0" : ((value / usage.total) * 100).toFixed(1)}%</span>
+              {CATEGORIES.map((category) => (
+                <div className="token-row" key={category.key}>
+                  <i className="token-dot" style={{ background: category.color }} />
+                  <span>{category.label}</span>
+                  <strong>{formatNumber(usage[category.key])}</strong>
+                  <span>
+                    {usage.total === 0 ? "0.0" : ((usage[category.key] / usage.total) * 100).toFixed(1)}%
+                  </span>
                 </div>
               ))}
             </div>
@@ -214,5 +434,18 @@ export function UsageSummary({
         </div>
       </div>
     </section>
+  );
+}
+
+/** A headline figure with how it moved against the period before it. */
+function StatTile({ label, value, delta }: { label: string; value: string; delta: string | null | undefined }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {/* Neither direction is good or bad here — more usage is not a failure and less is
+          not a win — so the change is stated rather than coloured. */}
+      {delta ? <em className="delta">{delta} vs previous period</em> : null}
+    </div>
   );
 }

@@ -87,7 +87,9 @@ pub fn aggregate_status(snapshots: &[ProviderSnapshot]) -> CompactStatus {
         .unwrap_or(CompactStatus::unavailable())
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+/// Declaration order is display order, and the ordering derives make it so wherever windows
+/// are collected by kind rather than listed in the order they were read.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum LimitKind {
     Primary,
@@ -560,6 +562,42 @@ pub struct DailyUsagePoint {
     pub date: String,
     pub usage: TokenUsage,
     pub api_equivalent_cost_usd: Option<f64>,
+    /// This day's own model mix, largest first. The daily rows are already stored per
+    /// model, so a day can say which models made it up without a second query and without
+    /// the renderer reparsing anything.
+    pub models: Vec<ModelUsage>,
+}
+
+/// The highest share of a quota window this machine observed on one day.
+///
+/// A day is summarised by its peak rather than its last reading: a window that filled and
+/// restarted inside the same day is described by how full it got, and the restart itself is
+/// carried separately by the reset events.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaHistoryPoint {
+    pub date: String,
+    pub peak_used_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaHistoryWindow {
+    pub kind: LimitKind,
+    pub label: String,
+    pub points: Vec<QuotaHistoryPoint>,
+}
+
+/// What a provider's quota did across a date range, and every restart recorded inside it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaHistorySnapshot {
+    pub start_date: String,
+    pub end_date: String,
+    pub windows: Vec<QuotaHistoryWindow>,
+    /// Restarts anchored inside the range, oldest first, so they can be drawn along the
+    /// same axis as the windows above them.
+    pub resets: Vec<LimitResetEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]

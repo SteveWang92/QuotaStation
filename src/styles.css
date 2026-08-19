@@ -16,6 +16,17 @@
   --blue: #738cff;
   --warning: #f0b84b;
   --danger: #ff7469;
+  /* The chart palette. The four slots are assigned in this fixed order and never cycled,
+     and they were checked as a set against the chart surface below for lightness, chroma
+     and colour-vision separation; changing one means re-checking all of them. Anything past
+     the fourth series folds into --series-rest rather than taking a generated fifth hue. */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-rest: #6b7780;
+  --chart-surface: #10171d;
+  --chart-grid: #212c34;
 }
 
 * { box-sizing: border-box; }
@@ -230,9 +241,72 @@ button { font: inherit; }
 .token-row { display: grid; grid-template-columns: 10px minmax(90px, 1fr) 90px 44px; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--line); color: #c9cfd3; font-size: 12px; }
 .token-row strong, .token-row > span:last-child { text-align: right; font-variant-numeric: tabular-nums; font-weight: 530; }
 .token-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
-.token-dot.lime { background: var(--lime); }
-.token-dot.violet { background: var(--violet); }
-.token-dot.blue { background: var(--blue); }
+
+/* Charts. Every chart on the dashboard is the same component with a different series set,
+   so it is also one block of styling rather than four. */
+.chart-hint { margin: 0; padding: 14px 18px; border: 1px dashed var(--line); border-radius: 5px; color: var(--muted); font-size: 12px; }
+.chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.chart-grid > .chart-card:first-child { grid-column: 1 / -1; }
+.chart-card { min-width: 0; padding: 18px 20px 12px; border: 1px solid var(--line); border-radius: 5px; background: rgba(16, 23, 29, 0.62); }
+.chart-card .card-heading { min-height: 0; margin-bottom: 10px; }
+/* A reload holds the previous render rather than collapsing into a skeleton, so nothing
+   moves under the pointer while the next range arrives. */
+.chart-loading { opacity: 0.55; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0 0 6px; padding: 0; list-style: none; }
+.chart-legend li { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
+.legend-line { width: 14px; height: 2px; border-radius: 1px; }
+.legend-marker { width: 9px; height: 9px; border-radius: 50%; background: transparent; border: 2px solid var(--warning); }
+.chart-plot { position: relative; width: 100%; }
+.chart-surface { position: relative; display: block; width: 100%; border-radius: 4px; }
+.chart-surface:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.chart-surface svg { display: block; width: 100%; }
+.chart-gridline { stroke: var(--chart-grid); stroke-width: 1; }
+.chart-axis-label { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.chart-line { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.chart-area { opacity: 0.1; stroke: none; }
+/* The ring is the chart surface showing through, so a marker stays legible where it
+   crosses the line it belongs to. */
+.chart-endpoint { stroke: var(--chart-surface); stroke-width: 2; }
+.chart-band { transition: filter 120ms ease; }
+.chart-band-active { filter: brightness(1.18); }
+.chart-marker line { stroke: var(--series-rest); stroke-width: 1; }
+.chart-marker circle { fill: var(--series-rest); }
+.chart-marker-warning line { stroke: var(--warning); }
+.chart-marker-warning circle { fill: var(--warning); }
+.chart-hit { fill: transparent; cursor: pointer; }
+.chart-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.chart-tooltip {
+  position: absolute;
+  top: 6px;
+  z-index: 2;
+  min-width: 172px;
+  transform: translateX(-50%);
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(11, 16, 20, 0.95);
+  pointer-events: none;
+  font-size: 11px;
+}
+.chart-tooltip strong { display: block; margin-bottom: 6px; color: var(--text); font-size: 11px; }
+.chart-tooltip p { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 0 0 4px; color: var(--muted); }
+.chart-tooltip p i { width: 12px; height: 2px; border-radius: 1px; }
+.chart-tooltip p span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart-tooltip p b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 620; }
+.chart-tooltip-total { grid-template-columns: minmax(0, 1fr) auto !important; padding-top: 5px; border-top: 1px solid var(--line-soft); }
+.chart-tooltip-note { grid-template-columns: minmax(0, 1fr) !important; color: var(--warning) !important; }
+
+.day-drilldown { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px; border: 1px solid var(--line); border-left: 2px solid var(--series-1); border-radius: 4px; background: rgba(16, 23, 29, 0.62); color: var(--muted); font-size: 12px; }
+.day-drilldown strong { color: var(--text); }
+.day-drilldown button { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid #4b5861; border-radius: 4px; color: #d4d8da; background: transparent; cursor: pointer; font-size: 12px; }
+.day-drilldown button:hover { border-color: #76838d; background: #182129; }
+.day-drilldown button svg { width: 13px; height: 13px; }
+.summary-strip em.delta { color: var(--muted); font-size: 11px; font-style: normal; font-variant-numeric: tabular-nums; letter-spacing: 0; text-transform: none; }
+.daily-table-row:not(.daily-table-header) { cursor: pointer; }
+.daily-table-row:not(.daily-table-header):hover { background: #161f26; }
+.daily-table-row.open { background: #1a242c; box-shadow: inset 2px 0 0 var(--series-1); }
+.daily-table-row:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 
 /* One control, so no panel around it: a bordered strip spanning the window would be a
    container drawn for a single button. */
@@ -283,6 +357,7 @@ button { font: inherit; }
   .quota-reset { padding-left: 18px; }
   .history-heading { align-items: flex-start; flex-direction: column; }
   .history-grid { grid-template-columns: 1fr 1fr; }
+  .chart-grid { grid-template-columns: minmax(0, 1fr); }
   .breakdown-card { grid-column: 1 / -1; }
   .summary-strip strong { font-size: 18px; }
   .diagnostics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

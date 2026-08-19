@@ -108,6 +108,28 @@ export interface DailyUsagePoint {
   date: string;
   usage: TokenUsage;
   apiEquivalentCostUsd: number | null;
+  /** This day's own model mix, largest first, so a day can be opened without a new query. */
+  models: ModelUsage[];
+}
+
+/** The highest share of a quota window observed on one local day. */
+export interface QuotaHistoryPoint {
+  date: string;
+  peakUsedPercent: number;
+}
+
+export interface QuotaHistoryWindow {
+  kind: "primary" | "secondary";
+  label: string;
+  points: QuotaHistoryPoint[];
+}
+
+export interface QuotaHistorySnapshot {
+  startDate: string;
+  endDate: string;
+  windows: QuotaHistoryWindow[];
+  /** Restarts anchored inside the range, oldest first. */
+  resets: LimitResetEvent[];
 }
 
 export interface UsageRangeSnapshot {

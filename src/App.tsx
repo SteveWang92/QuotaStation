@@ -15,6 +15,7 @@ import { UsageSummary } from "./components/UsageSummary";
 import {
   createPresetRange,
   hasRolledOver,
+  previousPeriod,
   resolveDateRange,
   type DateRangeSelection,
 } from "./dateRanges";
@@ -22,6 +23,7 @@ import type {
   DiagnosticsSnapshot,
   ProviderKey,
   ProviderSnapshot,
+  QuotaHistorySnapshot,
   UsageRangeSnapshot,
   WorkspaceSnapshot,
 } from "./types";
@@ -73,6 +75,10 @@ function readErrors(provider: ProviderSnapshot): string[] {
 
 function Dashboard() {
   const [usageRange, setUsageRange] = useState<UsageRangeSnapshot>(EMPTY_USAGE_RANGE);
+  // The comparison and the quota history are read for the same slice as the totals, so a
+  // figure and the change beside it always describe the same two periods.
+  const [previousRange, setPreviousRange] = useState<UsageRangeSnapshot | null>(null);
+  const [quotaHistory, setQuotaHistory] = useState<QuotaHistorySnapshot | null>(null);
   const [activeRange, setActiveRange] = useState<DateRangeSelection>(INITIAL_RANGE);
   const [rangeLoading, setRangeLoading] = useState(false);
   const [rangeError, setRangeError] = useState<string | null>(null);
@@ -94,14 +100,29 @@ function Dashboard() {
     const requestId = ++rangeRequestId.current;
     setRangeLoading(true);
     setRangeError(null);
+    const earlier = previousPeriod(resolvedRange);
     try {
-      const next = await invoke<UsageRangeSnapshot>("get_usage_range", {
-        provider: rangeProvider,
-        startDate: resolvedRange.startDate,
-        endDate: resolvedRange.endDate,
-      });
+      const [next, previous, quota] = await Promise.all([
+        invoke<UsageRangeSnapshot>("get_usage_range", {
+          provider: rangeProvider,
+          startDate: resolvedRange.startDate,
+          endDate: resolvedRange.endDate,
+        }),
+        invoke<UsageRangeSnapshot>("get_usage_range", {
+          provider: rangeProvider,
+          startDate: earlier.startDate,
+          endDate: earlier.endDate,
+        }),
+        invoke<QuotaHistorySnapshot>("get_quota_history", {
+          provider: rangeProvider,
+          startDate: resolvedRange.startDate,
+          endDate: resolvedRange.endDate,
+        }),
+      ]);
       if (requestId === rangeRequestId.current) {
         setUsageRange(next);
+        setPreviousRange(previous);
+        setQuotaHistory(quota);
         setActiveRange(resolvedRange);
       }
     } catch (error) {
@@ -248,6 +269,8 @@ function Dashboard() {
           activeProvider={selectedProvider}
           onSelectProvider={selectProvider}
           range={usageRange}
+          previousRange={previousRange}
+          quotaHistory={quotaHistory}
           selection={activeRange}
           loading={rangeLoading}
           error={rangeError}

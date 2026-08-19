@@ -133,6 +133,13 @@ failed records for 180 days, with the newest record per acquisition path always 
 usage aggregates and quota reset events are retained indefinitely. Raw
 session payloads and complete local paths are never retained.
 
+Quota history over a date range is answered from both stores at once, and they do not
+overlap: the readings inside the retention window come from the samples at the granularity
+they arrived at, and everything older from the daily rollups. Each day is reduced to the
+fullest that window got on it rather than to its last reading, so a window that filled and
+restarted inside one day still reports how full it got; the restart itself is carried by the
+reset events beside it.
+
 A Codex app-server quota reset is inferred when usage falls materially, the published expiry
 jumps forward, and the restarted window is anchored inside the gap between the two readings. A
 window that appears to have restarted more than two hours before its published expiry is
