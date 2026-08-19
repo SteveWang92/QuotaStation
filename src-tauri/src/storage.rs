@@ -598,7 +598,7 @@ impl Storage {
 
         snapshot.recent_resets = self.load_recent_resets(provider).await?;
         let date = jiff::Zoned::now().date().to_string();
-        let today = self.load_usage_range(provider, &date, &date).await?;
+        let today = self.load_usage_range(Some(provider), &date, &date).await?;
         snapshot.today = today.usage;
         snapshot.models = today.models;
         snapshot.api_equivalent_cost_usd = today.api_equivalent_cost_usd;
@@ -607,9 +607,15 @@ impl Storage {
         Ok(snapshot)
     }
 
+    /// The usage in a date range, for one provider or for every provider at once.
+    ///
+    /// `None` is the combined view: the rows of every provider instance are counted
+    /// together, which is what the totals, the per-day stack and the model ranking are
+    /// summed from. Nothing about that sum is provider-specific, so it is one query with
+    /// the filter dropped rather than a second read path.
     pub async fn load_usage_range(
         &self,
-        provider: ProviderKind,
+        provider: Option<ProviderKind>,
         start_date: &str,
         end_date: &str,
     ) -> Result<UsageRangeSnapshot> {
@@ -617,16 +623,20 @@ impl Storage {
         let end = jiff::civil::Date::from_str(end_date).context("invalid end date")?;
         anyhow::ensure!(start <= end, "start date must not be after end date");
 
-        let provider_id = self.provider_id(provider).await?;
+        let provider_id = match provider {
+            Some(kind) => Some(self.provider_id(kind).await?),
+            None => None,
+        };
         let rows = sqlx::query(
             "SELECT usage_date, model, SUM(input_tokens) AS input_tokens, \
              SUM(cache_read_tokens) AS cache_read_tokens, SUM(output_tokens) AS output_tokens, \
              SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens, \
              SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd \
-             FROM daily_usage WHERE provider_instance_id = ? AND usage_date BETWEEN ? AND ? \
+             FROM daily_usage WHERE (? IS NULL OR provider_instance_id = ?) \
+             AND usage_date BETWEEN ? AND ? \
              GROUP BY usage_date, model ORDER BY usage_date ASC, total_tokens DESC",
         )
-        .bind(provider_id).bind(start.to_string()).bind(end.to_string())
+        .bind(provider_id).bind(provider_id).bind(start.to_string()).bind(end.to_string())
         .fetch_all(&self.pool).await?;
 
         let mut total = TokenUsage::default();
@@ -1003,11 +1013,41 @@ mod tests {
             .await
             .expect("save second history");
 
-        let range = storage.load_usage_range(CODEX, "2026-08-01", "2026-08-02").await.expect("load range");
+        let range = storage.load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 2, "the day outside the parse must survive");
         assert_eq!(range.days[0].usage.total, 100);
         assert_eq!(range.days[1].usage.total, 500, "the reparsed day must be replaced, not added to");
         assert_eq!(range.usage.total, 600);
+    }
+
+    /// The dashboard's combined view asks for no provider at all.
+    #[tokio::test]
+    async fn a_range_with_no_provider_counts_every_provider_together() {
+        let (storage, _database) = open_storage().await;
+        let codex = HistorySnapshot { days: vec![day("2026-08-01", "gpt-5", 100)] };
+        let claude = HistorySnapshot { days: vec![day("2026-08-01", "claude-opus-5", 400)] };
+        storage
+            .save_history(CODEX, &codex, "Australia/Brisbane", "2026-08-01T00:00:00Z")
+            .await
+            .expect("save Codex history");
+        storage
+            .save_history(ProviderKind::Claude, &claude, "Australia/Brisbane", "2026-08-01T00:00:00Z")
+            .await
+            .expect("save Claude history");
+
+        let combined = storage
+            .load_usage_range(None, "2026-08-01", "2026-08-01")
+            .await
+            .expect("load combined range");
+        assert_eq!(combined.usage.total, 500);
+        assert_eq!(combined.days.len(), 1, "one calendar day stays one point however many providers filled it");
+        assert_eq!(combined.models.len(), 2, "each provider's models keep their own row");
+
+        let single = storage
+            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-01")
+            .await
+            .expect("load Codex range");
+        assert_eq!(single.usage.total, 100, "asking for one provider still answers for that one alone");
     }
 
     #[tokio::test]
@@ -1027,7 +1067,7 @@ mod tests {
             .await
             .expect("rebuild New York history");
 
-        let range = storage.load_usage_range(CODEX, "2026-08-01", "2026-08-02").await.expect("load range");
+        let range = storage.load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 1, "rows bucketed in the previous timezone must not survive");
         assert_eq!(range.days[0].date, "2026-08-02");
         assert_eq!(range.days[0].usage.total, 250);
@@ -1054,7 +1094,7 @@ mod tests {
             .await
             .expect("adopt the current timezone");
 
-        let range = storage.load_usage_range(CODEX, "2026-08-01", "2026-08-02").await.expect("load range");
+        let range = storage.load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 2, "an unknown legacy timezone must not trigger destructive cleanup");
         assert_eq!(range.days[0].usage.total, 100);
         assert_eq!(range.days[1].usage.total, 250);
@@ -1071,7 +1111,7 @@ mod tests {
             .await
             .expect("save history");
 
-        let range = storage.load_usage_range(CODEX, "2026-08-02", "2026-08-02").await.expect("load range");
+        let range = storage.load_usage_range(Some(CODEX), "2026-08-02", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 1);
         assert_eq!(range.usage.total, 300);
         assert_eq!(range.models.len(), 1);

@@ -21,8 +21,8 @@ import {
 import { SERIES_LIMIT, SERIES_REST, SERIES_SLOTS } from "../series";
 import type {
   DailyUsagePoint,
+  HistoryProvider,
   ModelUsage,
-  ProviderKey,
   ProviderSnapshot,
   QuotaHistorySnapshot,
   TokenUsage,
@@ -53,8 +53,8 @@ interface UsageSummaryProps {
   snapshot: ProviderSnapshot;
   /** All enabled providers, so the history can be switched between them. */
   providers: ProviderSnapshot[];
-  activeProvider: ProviderKey;
-  onSelectProvider: (provider: ProviderKey) => void;
+  activeProvider: HistoryProvider;
+  onSelectProvider: (provider: HistoryProvider) => void;
   range: UsageRangeSnapshot;
   /** The period of the same length immediately before this one, for the comparison. */
   previousRange: UsageRangeSnapshot | null;
@@ -93,6 +93,10 @@ export function UsageSummary({
   // Opening a day narrows the breakdown cards to it; the charts and the totals above stay
   // on the whole range, so the day is always read against its own context.
   const [openDay, setOpenDay] = useState<string | null>(null);
+  // The combined view belongs to no provider, so anything that describes one — its plan,
+  // its pricing catalogue, its quota windows — is left off rather than borrowed from
+  // whichever provider happens to be first.
+  const combined = activeProvider === "all";
 
   const days = useMemo(
     () => calendarDays(range.startDate, range.endDate),
@@ -185,7 +189,10 @@ export function UsageSummary({
   }
 
   return (
-    <section className="history-section" aria-label={`${snapshot.displayName} usage history`}>
+    <section
+      className="history-section"
+      aria-label={`${combined ? "Combined" : snapshot.displayName} usage history`}
+    >
       <div className="history-heading">
         <div>
           <span className="section-kicker">Usage history</span>
@@ -193,6 +200,20 @@ export function UsageSummary({
         </div>
         {providers.length > 1 ? (
           <div className="provider-tabs" role="tablist" aria-label="Usage history provider">
+            {/* Everything counted together comes first, because it is the whole of what
+                this machine spent and each provider below it is a part of that. */}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={combined}
+              className={combined ? "active" : ""}
+              onClick={() => {
+                setOpenDay(null);
+                onSelectProvider("all");
+              }}
+            >
+              All
+            </button>
             {providers.map((provider) => (
               <button
                 type="button"
@@ -415,8 +436,21 @@ export function UsageSummary({
 
           <article className="history-card token-card">
             <div className="card-heading">
-              <div><h3>Token breakdown</h3><span>Catalog {formatRevision(snapshot.pricingCatalogRevision)}</span></div>
-              <span>{openPoint ? formatCompactCurrency(cost ?? 0) : (snapshot.planType ?? "Unknown plan")}</span>
+              <div>
+                <h3>Token breakdown</h3>
+                <span>
+                  {combined
+                    ? `${providers.length} providers combined`
+                    : `Catalog ${formatRevision(snapshot.pricingCatalogRevision)}`}
+                </span>
+              </div>
+              <span>
+                {openPoint
+                  ? formatCompactCurrency(cost ?? 0)
+                  : combined
+                    ? null
+                    : (snapshot.planType ?? "Unknown plan")}
+              </span>
             </div>
             <div className="token-list">
               {CATEGORIES.map((category) => (

@@ -3,6 +3,13 @@ export type Freshness = "fresh" | "stale" | "unavailable";
 /** Matches the Rust `ProviderKind`, which is also the database's provider key. */
 export type ProviderKey = "codex" | "claude";
 
+/**
+ * Which history the dashboard is showing: one provider, or every provider counted
+ * together. The combined view is a read of its own in the core, not a sum the renderer
+ * assembles from separate answers.
+ */
+export type HistoryProvider = ProviderKey | "all";
+
 export interface CompactStatus {
   level: "healthy" | "warning" | "critical" | "stale" | "unavailable";
   label: string;

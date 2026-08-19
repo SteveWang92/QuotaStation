@@ -21,7 +21,7 @@ import {
 } from "./dateRanges";
 import type {
   DiagnosticsSnapshot,
-  ProviderKey,
+  HistoryProvider,
   ProviderSnapshot,
   QuotaHistorySnapshot,
   UsageRangeSnapshot,
@@ -87,37 +87,44 @@ function Dashboard() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const activeRangeRef = useRef(INITIAL_RANGE);
-  // The usage history is long, so it shows one provider at a time while the quota
-  // sections above show them all.
-  const [selectedProvider, setSelectedProvider] = useState<ProviderKey>("codex");
-  const providerRef = useRef<ProviderKey>("codex");
+  // The usage history shows one provider at a time, or all of them counted together,
+  // while the quota sections above always show each provider on its own.
+  const [selectedProvider, setSelectedProvider] = useState<HistoryProvider>("codex");
+  const providerRef = useRef<HistoryProvider>("codex");
   const rangeRequestId = useRef(0);
   const rangeRequested = useRef(false);
 
-  const loadUsageRange = useCallback(async (range: DateRangeSelection, rangeProvider: ProviderKey) => {
+  const loadUsageRange = useCallback(async (range: DateRangeSelection, rangeProvider: HistoryProvider) => {
     const resolvedRange = resolveDateRange(range);
     activeRangeRef.current = resolvedRange;
     const requestId = ++rangeRequestId.current;
     setRangeLoading(true);
     setRangeError(null);
     const earlier = previousPeriod(resolvedRange);
+    // The combined view names no provider, which the core reads as every provider at once.
+    const provider = rangeProvider === "all" ? null : rangeProvider;
     try {
       const [next, previous, quota] = await Promise.all([
         invoke<UsageRangeSnapshot>("get_usage_range", {
-          provider: rangeProvider,
+          provider,
           startDate: resolvedRange.startDate,
           endDate: resolvedRange.endDate,
         }),
         invoke<UsageRangeSnapshot>("get_usage_range", {
-          provider: rangeProvider,
+          provider,
           startDate: earlier.startDate,
           endDate: earlier.endDate,
         }),
-        invoke<QuotaHistorySnapshot>("get_quota_history", {
-          provider: rangeProvider,
-          startDate: resolvedRange.startDate,
-          endDate: resolvedRange.endDate,
-        }),
+        // Quota is not summable: one provider's weekly window says nothing about
+        // another's, so the combined view leaves that chart out rather than adding up
+        // percentages of different allowances.
+        provider === null
+          ? Promise.resolve(null)
+          : invoke<QuotaHistorySnapshot>("get_quota_history", {
+              provider,
+              startDate: resolvedRange.startDate,
+              endDate: resolvedRange.endDate,
+            }),
       ]);
       if (requestId === rangeRequestId.current) {
         setUsageRange(next);
@@ -168,7 +175,7 @@ function Dashboard() {
     workspace.providers[0];
 
   const selectProvider = useCallback(
-    (provider: ProviderKey) => {
+    (provider: HistoryProvider) => {
       providerRef.current = provider;
       setSelectedProvider(provider);
       void loadUsageRange(activeRangeRef.current, provider);

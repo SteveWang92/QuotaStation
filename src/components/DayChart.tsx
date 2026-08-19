@@ -133,6 +133,12 @@ export function DayChart({
   }
 
   const markersByDate = new Map(markers.map((marker) => [marker.date, marker]));
+  const tooltipRows =
+    tooltipIndex === null
+      ? []
+      : series.filter(
+          (entry) => mode === "line" || (entry.values[tooltipIndex] ?? 0) > 0,
+        );
 
   return (
     <article className={`chart-card${loading ? " chart-loading" : ""}`}>
@@ -316,7 +322,10 @@ export function DayChart({
               }}
             >
               <strong>{formatAxisDate(days[tooltipIndex])}</strong>
-              {series.map((entry) => (
+              {/* A stacked series that contributed nothing that day drew nothing either,
+                  so listing it is a row of zeroes between the values being compared. A
+                  line keeps its zero, which is a reading rather than an absence. */}
+              {tooltipRows.map((entry) => (
                 <p key={entry.key}>
                   <i style={{ background: entry.color }} />
                   <span>{entry.label}</span>
@@ -327,7 +336,8 @@ export function DayChart({
                   </b>
                 </p>
               ))}
-              {mode === "stacked" && series.length > 1 ? (
+              {tooltipRows.length === 0 ? <p className="chart-tooltip-note">Nothing recorded</p> : null}
+              {mode === "stacked" && tooltipRows.length > 1 ? (
                 <p className="chart-tooltip-total">
                   <span>Total</span>
                   <b>{formatValue(totals[tooltipIndex])}</b>

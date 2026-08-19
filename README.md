@@ -20,8 +20,9 @@ What it does today:
   dashboard — all three drawn from one normalized snapshot
 - An optional status line for Claude Code that reports every provider's quota alongside the
   session it is running in
-- Daily token and API-equivalent cost history per provider and per model, over preset and
-  custom local-calendar ranges, charted with a comparison against the period before it
+- Daily token and API-equivalent cost history for one provider or all of them together, per
+  model, over preset and custom local-calendar ranges, charted with a comparison against the
+  period before it
 - A day opened from a chart or the table, showing the models and token categories behind it
 - Quota reset history, classified as scheduled or unplanned
 - Redacted acquisition, watcher, retention, and pricing diagnostics

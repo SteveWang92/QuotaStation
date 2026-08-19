@@ -131,7 +131,9 @@ async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<WorkspaceSnapsh
 
 #[tauri::command]
 async fn get_usage_range(
-    provider: ProviderKind,
+    // No provider is the combined history: the dashboard's "All" tab reads every
+    // provider in one query rather than adding up separate answers in the renderer.
+    provider: Option<ProviderKind>,
     start_date: String,
     end_date: String,
     state: State<'_, Arc<AppState>>,

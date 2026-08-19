@@ -10,6 +10,7 @@ on `main`, with the matching section below as its notes.
 ### Added
 
 - The dashboard charts daily tokens, cost, model mix and quota history across the selected range.
+- An All tab beside the providers shows the usage history of every provider counted together.
 - Every headline figure says how it moved against the period of the same length before it.
 - Selecting a day in a chart or the daily table opens that day's model mix and token breakdown.
 - Quota restarts are marked on the quota history chart.

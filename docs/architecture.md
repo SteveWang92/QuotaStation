@@ -133,6 +133,13 @@ failed records for 180 days, with the newest record per acquisition path always 
 usage aggregates and quota reset events are retained indefinitely. Raw
 session payloads and complete local paths are never retained.
 
+The usage history read takes an optional provider: naming one answers for that provider,
+naming none counts every provider instance together. The combined answer is one query with
+the filter dropped rather than separate reads added up in the renderer, so its totals, its
+per-day stack and its model ranking are built exactly as a single provider's are. Quota has
+no combined form — one provider's window says nothing about another's allowance — so that
+chart belongs to a named provider only.
+
 Quota history over a date range is answered from both stores at once, and they do not
 overlap: the readings inside the retention window come from the samples at the granularity
 they arrived at, and everything older from the daily rollups. Each day is reduced to the
