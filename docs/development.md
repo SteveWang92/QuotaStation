@@ -101,6 +101,11 @@ executable by hand.
 instance already running and exits immediately, which looks like the new build crashing.
 Close the running copy — including one started from the tray — before launching another.
 
+A launch with no arguments opens the dashboard. `quotastation.exe --background` comes up in
+the tray with no window, which is how Windows starts it at logon; use it to relaunch a build
+without taking the foreground, and launch without the argument when the window is what you
+are checking.
+
 Every build shares one database and one settings file under
 `%APPDATA%\me.stevewang.quotastation`, so a development build sees the installed
 application's history, quota, and provider settings.

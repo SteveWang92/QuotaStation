@@ -9,6 +9,7 @@ on `main`, with the matching section below as its notes.
 
 ### Added
 
+- A start with Windows at logon now opens no window; a launch you perform still opens the dashboard.
 - A status line setting for the project, branch, context, cache and cost detail.
 - A setting for which display's taskbar carries the quota status.
 - Desktop notifications for a quota window running low, a provider that cannot be read, and a quota reset.

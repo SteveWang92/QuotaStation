@@ -157,6 +157,11 @@ begins when monitoring is enabled.
 
 - The Rust core owns the single-instance lifecycle, tray, provider child processes,
   filesystem watching, scheduling, retries, normalization, persistence, and query services.
+- Whether a start opens a window is the core's decision, and it is made from the launch
+  itself: the logon entry Windows runs is registered with `--background` and comes up in
+  the tray alone, while a launch a person performs opens the dashboard. Either kind reaching
+  an already-running instance hands over to it rather than starting a second one, and a
+  hand-over from a launch carrying no argument is what reopens a dashboard closed to the tray.
 - The Rust taskbar adapter owns a whole-slot width contract with two provider slots reserved.
   Additional providers grow it by a complete slot; if Explorer cannot supply the full width,
   the widget uses its floating fallback instead of clipping normalized provider data. Docked

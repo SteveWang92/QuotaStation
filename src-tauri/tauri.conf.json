@@ -19,7 +19,8 @@
         "minWidth": 1050,
         "minHeight": 720,
         "center": true,
-        "resizable": true
+        "resizable": true,
+        "visible": false
       },
       {
         "label": "quick-panel",

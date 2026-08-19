@@ -1,4 +1,5 @@
 mod alerts;
+mod autostart;
 mod domain;
 mod log;
 mod providers;
@@ -861,13 +862,17 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // A second launch is how an already-running QuotaStation is asked for its
+            // dashboard, unless that launch was itself a background one.
+            if !args.iter().any(|argument| argument == autostart::BACKGROUND_ARG) {
+                show_main(app);
+            }
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec![autostart::BACKGROUND_ARG]),
         ))
         .setup(|app| {
             log::write(format!(
@@ -914,6 +919,14 @@ pub fn run() {
             app.manage(state.clone());
             let _ = APP.set(app.handle().clone());
             build_tray(app)?;
+            // The dashboard is configured hidden so a background start never flashes a
+            // window on its way to the tray; every other start opens it here instead.
+            if autostart::requested() {
+                log::write("started in the background; the dashboard stays closed");
+            } else {
+                show_main(app.handle());
+            }
+            autostart::refresh_logon_entry(app.handle());
             watch_for_finished_turns(app.handle().clone());
             if state.settings().taskbar_widget_enabled {
                 set_taskbar_widget_visible(app.handle(), true);
