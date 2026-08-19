@@ -290,10 +290,14 @@ pub fn run_bridge_if_requested() -> bool {
                 crate::log::write("status line schema incompatible");
             }
         }
-    } else if input.is_some()
-        && let Some(cache) = cache_path()
-    {
-        let _ = std::fs::remove_file(cache);
+    } else {
+        // A payload without `rate_limits` is not a statement that the account has none: a
+        // freshly started Claude Code session renders its status line before it has asked
+        // the server for them, so every restart of the CLI would otherwise throw the last
+        // reading away and leave Claude unavailable until the first turn. The stored
+        // reading is left alone and expires on its own terms — each window is dropped once
+        // its own restart time passes, and the whole reading once it is old enough.
+        crate::log::write("status line reported no rate limits; the stored reading stands");
     }
     println!("{}", status_line(&view_of(input.as_ref(), limits)));
     true

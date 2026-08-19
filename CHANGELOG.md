@@ -21,6 +21,7 @@ on `main`, with the matching section below as its notes.
 
 ### Fixed
 
+- Claude's quota survives a restart of the Claude Code CLI instead of going unavailable until the next turn.
 - Provider data stays visually stable until a refresh has completed.
 - The reset history's verdict column no longer wraps onto a second line.
 - The application survives an Explorer restart and puts the taskbar status back by itself.
