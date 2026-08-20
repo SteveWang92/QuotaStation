@@ -51,14 +51,18 @@ impl Loudness {
 }
 
 /// What the loudest reading already announced for one quota window was, and which run of
-/// that window it belonged to. A restart gives the window a new expiry, and that is what
-/// re-arms it: the same window at 95% before and after a reset is two different facts.
+/// that window it belonged to. A confirmed restart re-arms it: the same window at 95%
+/// before and after a reset is two different facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct QuotaMark {
     /// The newest confirmed restart of this kind. A published expiry can move while a
     /// rolling window merely ages out old requests, so it cannot identify a new run.
     reset_anchor: Option<i64>,
+    /// The loudest reading announced for the current run of this window.
     announced: Loudness,
+    /// The previous reading itself, which is what makes an alert a crossing rather than a
+    /// restatement of something already true.
+    observed: Loudness,
 }
 
 /// Everything already said, so nothing is said twice.
@@ -116,14 +120,33 @@ fn collect_quota(
             .find(|reset| reset.window_kind == window.kind)
             .map(|reset| reset.anchored_at);
         let previous = announced.quota.get(&key);
-        let carried = previous
-            .filter(|mark| mark.reset_anchor == reset_anchor)
-            .map(|mark| mark.announced)
-            .unwrap_or_default();
-        announced
-            .quota
-            .insert(key, QuotaMark { reset_anchor, announced: loudness.max(carried) });
-        if seeding || !settings.notify_low_quota || loudness <= carried {
+        // An anchor that appears, or that moves forward, is a new run of the window and
+        // re-arms the alert. An anchor that disappears is not: the provider carries a
+        // bounded list of recent restarts, so a busy five-hour window can push the weekly
+        // window's restart off the end of it while that window runs on unchanged.
+        let seen_anchor = previous.and_then(|mark| mark.reset_anchor);
+        let restarted = match (reset_anchor, seen_anchor) {
+            (Some(now), Some(seen)) => now > seen,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        let carried =
+            previous.filter(|_| !restarted).map(|mark| mark.announced).unwrap_or_default();
+        let observed = previous.map(|mark| mark.observed).unwrap_or_default();
+        announced.quota.insert(
+            key,
+            QuotaMark {
+                reset_anchor: reset_anchor.max(seen_anchor),
+                announced: loudness.max(carried),
+                observed: loudness,
+            },
+        );
+        // Only a reading that has climbed is worth announcing, whatever the bookkeeping
+        // around it did. The reset backfill puts the running window's first anchor on
+        // record minutes after the reading itself arrived, and re-arming on that alone
+        // would announce a share that has not moved since the start this run deliberately
+        // stayed quiet about.
+        if seeding || !settings.notify_low_quota || loudness <= carried || loudness <= observed {
             continue;
         }
         alerts.push(quota_alert(provider, window, loudness));
@@ -385,24 +408,33 @@ mod tests {
             "an expiry shift without a confirmed restart is still the same window"
         );
 
-        let mut restarted = provider(vec![window(LimitKind::Primary, 94.0, 1_800_039_600)]);
-        restarted.recent_resets = vec![LimitResetEvent {
+        // The window's own restart history has to be on record before a later restart can
+        // be told apart from a history that has only just been read.
+        let restart = |anchored_at: i64| LimitResetEvent {
             window_kind: LimitKind::Primary,
             window_label: "5h window".to_string(),
             window_duration_mins: 300,
-            anchored_at: 1_800_021_600,
-            new_resets_at: 1_800_039_600,
-            previous_resets_at: 1_800_021_600,
+            anchored_at,
+            new_resets_at: anchored_at + 18_000,
+            previous_resets_at: anchored_at,
             used_percent_before: 94.0,
             early_by_seconds: 0,
             classification: ResetClassification::Scheduled,
-        }];
-        let after_reset = pending(&mut announced, &workspace(restarted), &settings);
-        assert_eq!(
-            after_reset.len(),
-            2,
-            "the confirmed reset and the new window are both new facts"
-        );
+        };
+        // A restart is recognised from the collapse in the share itself, so the reading at
+        // the restart is always a low one; the window filling up again is what earns the
+        // alert a second time.
+        let mut restarted = provider(vec![window(LimitKind::Primary, 4.0, 1_800_039_600)]);
+        restarted.recent_resets = vec![restart(1_800_021_600)];
+        let at_restart = pending(&mut announced, &workspace(restarted.clone()), &settings);
+        assert_eq!(at_restart.len(), 1, "the restart itself is the only news it carries");
+        assert!(at_restart[0].title.contains("quota reset"));
+
+        let mut refilled = restarted;
+        refilled.limits = vec![window(LimitKind::Primary, 94.0, 1_800_039_600)];
+        let after_reset = pending(&mut announced, &workspace(refilled), &settings);
+        assert_eq!(after_reset.len(), 1, "the new window filling up is a new fact");
+        assert!(after_reset[0].title.contains("quota nearly gone"));
     }
 
     #[test]
@@ -447,6 +479,41 @@ mod tests {
             pending(&mut announced, &workspace(broken), &settings).len(),
             1,
             "failing again after a recovery is a new failure"
+        );
+    }
+
+    #[test]
+    fn a_restart_ageing_out_of_the_recent_list_does_not_rearm_the_alert() {
+        let mut announced = Announced::default();
+        let settings = AppSettings::default();
+        let restart = LimitResetEvent {
+            window_kind: LimitKind::Secondary,
+            window_label: "Weekly window".to_string(),
+            window_duration_mins: 10_080,
+            anchored_at: 1_800_000_000,
+            new_resets_at: 1_800_604_800,
+            previous_resets_at: 1_800_000_000,
+            used_percent_before: 91.0,
+            early_by_seconds: 0,
+            classification: ResetClassification::Scheduled,
+        };
+        let mut restarted = provider(vec![window(LimitKind::Secondary, 20.0, 1_800_604_800)]);
+        restarted.recent_resets = vec![restart];
+        pending(&mut announced, &workspace(restarted.clone()), &settings);
+        let mut filling = restarted.clone();
+        filling.limits = vec![window(LimitKind::Secondary, 94.0, 1_800_604_800)];
+        assert_eq!(
+            pending(&mut announced, &workspace(filling.clone()), &settings).len(),
+            1,
+            "the window filling up is announced once"
+        );
+        // Enough five-hour restarts have been recorded since to push this one off the end
+        // of the provider's recent list.
+        let mut aged_out = filling;
+        aged_out.recent_resets = Vec::new();
+        assert!(
+            pending(&mut announced, &workspace(aged_out), &settings).is_empty(),
+            "losing sight of the restart does not make the same window new again"
         );
     }
 
