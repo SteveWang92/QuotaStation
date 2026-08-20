@@ -189,8 +189,18 @@ impl Storage {
                  (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
                  VALUES (?, ?, ?, ?, ?, ?)",
             )
+            // The sample is dated by the reading, not by the refresh that carried it. A
+            // cached status-line reading is republished every couple of minutes for as long
+            // as it stays usable, and dating those by the refresh would draw one afternoon's
+            // share as every following day's peak.
             .bind(provider_id).bind(kind).bind(limit.used_percent).bind(limit.window_duration_mins)
-            .bind(limit.resets_at).bind(observed_at).execute(&mut *tx).await?;
+            .bind(limit.resets_at)
+            .bind(
+                jiff::Timestamp::from_second(limit.observed_at)
+                    .map(|reading| reading.to_string())
+                    .unwrap_or_else(|_| observed_at.to_string()),
+            )
+            .execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -953,6 +963,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_sample_is_dated_by_the_reading_rather_than_the_refresh_that_carried_it() {
+        let (storage, _database) = open_storage().await;
+        let live = weekly_live(31.0, 1_786_800_000);
+        storage.save_live(CODEX, &live, "2026-06-04T10:00:00Z").await.expect("first refresh");
+        storage.save_live(CODEX, &live, "2026-06-06T10:00:00Z").await.expect("second refresh");
+        let dates: Vec<String> =
+            sqlx::query_scalar("SELECT observed_at FROM limit_samples ORDER BY id")
+                .fetch_all(&storage.pool)
+                .await
+                .expect("read the samples");
+        let reading = jiff::Timestamp::from_second(live.limits[0].observed_at)
+            .expect("the reading's own time")
+            .to_string();
+        assert_eq!(
+            dates,
+            vec![reading.clone(), reading],
+            "a reading republished by a later refresh keeps the day it was taken on"
+        );
+    }
+
+    #[tokio::test]
     async fn retention_keeps_daily_quota_summaries_without_an_hourly_layer() {
         let (storage, _database) = open_storage().await;
         let provider_id = storage.provider_id(CODEX).await.expect("read provider id");
@@ -1185,6 +1216,15 @@ mod tests {
         }
     }
 
+    /// The same reading, taken at a stated moment rather than at the one `weekly_live`
+    /// derives from the window's expiry.
+    fn weekly_live_read_at(used_percent: f64, resets_at: i64, observed_at: &str) -> LiveSnapshot {
+        let mut live = weekly_live(used_percent, resets_at);
+        live.limits[0].observed_at =
+            observed_at.parse::<jiff::Timestamp>().expect("a reading time").as_second();
+        live
+    }
+
     #[tokio::test]
     async fn a_window_that_restarts_early_is_recorded_against_the_reading_it_replaced() {
         let (storage, _database) = open_storage().await;
@@ -1229,7 +1269,7 @@ mod tests {
             (37.0, "2026-06-04T20:00:00Z"),
         ] {
             storage
-                .save_live(CODEX, &weekly_live(percent, expiry), observed_at)
+                .save_live(CODEX, &weekly_live_read_at(percent, expiry, observed_at), observed_at)
                 .await
                 .expect("save a reading");
         }
