@@ -16,13 +16,16 @@ const STORAGE_FALLBACK: &str = "Local storage write failed";
 /// Refreshes every enabled provider at once. A provider that fails leaves the others
 /// untouched, so one broken client never blanks the whole display.
 pub async fn refresh_all(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSnapshot {
+    let _publish_guard = state.refresh_publish_lock.lock().await;
     // A client can be installed, or signed in for the first time, while this is running.
     let providers = state.detect_providers();
     tokio::join!(
-        refresh_live_for(app, state, &providers),
-        refresh_history_for(app, state, &providers)
+        refresh_live_for(state, &providers),
+        refresh_history_for(state, &providers)
     );
-    state.workspace_snapshot().await
+    let workspace = publish_snapshot(app, state).await;
+    let _ = app.emit("history-updated", ());
+    workspace
 }
 
 /// Refreshes one provider's live quota, for the schedulers that run each provider on its
@@ -32,17 +35,22 @@ pub async fn refresh_live_for_provider(
     state: &Arc<AppState>,
     provider: ProviderKind,
 ) {
+    let _publish_guard = state.refresh_publish_lock.lock().await;
     if !state.enabled_providers().contains(&provider) {
         return;
     }
-    refresh_live_for(app, state, &[provider]).await;
+    refresh_live_for(state, &[provider]).await;
+    publish_snapshot(app, state).await;
 }
 
 pub async fn refresh_history(app: &AppHandle, state: &Arc<AppState>) {
-    refresh_history_for(app, state, &state.enabled_providers()).await;
+    let _publish_guard = state.refresh_publish_lock.lock().await;
+    refresh_history_for(state, &state.enabled_providers()).await;
+    publish_snapshot(app, state).await;
+    let _ = app.emit("history-updated", ());
 }
 
-async fn refresh_live_for(app: &AppHandle, state: &Arc<AppState>, providers: &[ProviderKind]) {
+async fn refresh_live_for(state: &Arc<AppState>, providers: &[ProviderKind]) {
     let _guard = state.live_refresh_lock.lock().await;
     let started_at = now();
     for &provider in providers {
@@ -54,10 +62,9 @@ async fn refresh_live_for(app: &AppHandle, state: &Arc<AppState>, providers: &[P
         let live = providers::read_live(provider).await;
         apply_live(state, provider, &started_at, live).await;
     }
-    publish_snapshot(app, state).await;
 }
 
-async fn refresh_history_for(app: &AppHandle, state: &Arc<AppState>, providers: &[ProviderKind]) {
+async fn refresh_history_for(state: &Arc<AppState>, providers: &[ProviderKind]) {
     let _guard = state.history_refresh_lock.lock().await;
     let started_at = now();
     for &provider in providers {
@@ -74,29 +81,38 @@ async fn refresh_history_for(app: &AppHandle, state: &Arc<AppState>, providers: 
         )
         .await;
     }
-    publish_snapshot(app, state).await;
-    let _ = app.emit("history-updated", ());
 }
 
-/// Refreshes one provider's history, for the watcher that knows which files changed.
-pub async fn refresh_history_for_provider(
+/// A session-file burst may change both history and live quota. Keep the two reads behind
+/// one publication so the renderer never sees the brief half-refreshed state between them.
+pub async fn refresh_changed_provider(
     app: &AppHandle,
     state: &Arc<AppState>,
     provider: ProviderKind,
 ) {
+    let _publish_guard = state.refresh_publish_lock.lock().await;
     if !state.enabled_providers().contains(&provider) {
         return;
     }
-    refresh_history_for(app, state, &[provider]).await;
+    refresh_history_for(state, &[provider]).await;
+    if provider.live_follows_logs() {
+        refresh_live_for(state, &[provider]).await;
+    }
+    publish_snapshot(app, state).await;
+    let _ = app.emit("history-updated", ());
 }
 
-async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) {
+async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSnapshot {
     let workspace = state.workspace_snapshot().await;
     let _ = app.emit("snapshot-updated", &workspace);
     // The event reaches this application's own windows and nothing else. The status-line
     // bridge is a separate process with no way to receive it, so the same snapshot is also
     // left on disk for it to read.
     crate::summary::publish(&workspace);
+    // Every refresh passes through here, whichever scheduler or watcher asked for it, so it
+    // is the one place that sees every change a notification could be about.
+    crate::alerts::review(app, &workspace);
+    workspace
 }
 
 async fn apply_live(

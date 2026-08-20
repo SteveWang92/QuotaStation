@@ -98,3 +98,42 @@ export function formatWindowBadge(durationMins: number | null, fallback: string)
   const { value, unit } = windowParts(durationMins);
   return `${value}${unit.charAt(0).toUpperCase()}`;
 }
+
+/**
+ * The axis and stat-tile form of a token count. Charts have room for four characters, not
+ * for eleven, and an axis of exact figures is read as a wall of digits rather than a scale.
+ */
+export function formatCompactNumber(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  const magnitude = Math.abs(value);
+  if (magnitude >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
+  if (magnitude >= 1_000_000) return `${(value / 1_000_000).toFixed(magnitude >= 10_000_000 ? 0 : 1)}M`;
+  if (magnitude >= 1_000) return `${(value / 1_000).toFixed(magnitude >= 10_000 ? 0 : 1)}K`;
+  return formatNumber(Math.round(value));
+}
+
+/** Same idea for money: the axis says $4.2K, the figure beside it still says $4,231.09. */
+export function formatCompactCurrency(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  if (Math.abs(value) >= 1_000) return `$${formatCompactNumber(value)}`;
+  return `$${value.toFixed(Math.abs(value) >= 10 ? 0 : 2)}`;
+}
+
+/**
+ * How a total moved against the period of the same length before it. `null` means the
+ * comparison cannot be made — there was nothing before to compare with — which reads
+ * differently from no change at all.
+ */
+export function formatDelta(current: number, previous: number): string | null {
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous <= 0) return null;
+  const change = ((current - previous) / previous) * 100;
+  if (Math.abs(change) < 0.05) return "0%";
+  const rounded = Math.abs(change) >= 100 ? change.toFixed(0) : change.toFixed(1);
+  return `${change > 0 ? "+" : ""}${rounded}%`;
+}
+
+/** A calendar day at chart-axis length, for example 3 Aug. */
+export function formatAxisDate(value: string): string {
+  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short" })
+    .format(new Date(`${value}T00:00:00`));
+}

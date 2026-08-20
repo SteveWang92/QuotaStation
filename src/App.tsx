@@ -15,13 +15,15 @@ import { UsageSummary } from "./components/UsageSummary";
 import {
   createPresetRange,
   hasRolledOver,
+  previousPeriod,
   resolveDateRange,
   type DateRangeSelection,
 } from "./dateRanges";
 import type {
   DiagnosticsSnapshot,
-  ProviderKey,
+  HistoryProvider,
   ProviderSnapshot,
+  QuotaHistorySnapshot,
   UsageRangeSnapshot,
   WorkspaceSnapshot,
 } from "./types";
@@ -44,12 +46,19 @@ const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
   parserRevision: "",
   pricingCatalogRevision: "",
   appVersion: "",
+  buildCommit: "",
   buildKind: "",
 };
 
 const CURRENT_WINDOW_LABEL = getCurrentWindow().label;
+/**
+ * The taskbar status is the one surface whose window can be built more than once — Explorer
+ * destroys it when its taskbar is replaced — and each rebuild takes the next label, because
+ * Tauri never gives the previous one back.
+ */
+const IS_TASKBAR_WIDGET = CURRENT_WINDOW_LABEL.startsWith("taskbar-widget");
 document.documentElement.classList.toggle("compact-window", CURRENT_WINDOW_LABEL !== "main");
-document.documentElement.classList.toggle("taskbar-window", CURRENT_WINDOW_LABEL === "taskbar-widget");
+document.documentElement.classList.toggle("taskbar-window", IS_TASKBAR_WIDGET);
 document.documentElement.classList.toggle("quick-panel-window", CURRENT_WINDOW_LABEL === "quick-panel");
 
 /**
@@ -66,6 +75,10 @@ function readErrors(provider: ProviderSnapshot): string[] {
 
 function Dashboard() {
   const [usageRange, setUsageRange] = useState<UsageRangeSnapshot>(EMPTY_USAGE_RANGE);
+  // The comparison and the quota history are read for the same slice as the totals, so a
+  // figure and the change beside it always describe the same two periods.
+  const [previousRange, setPreviousRange] = useState<UsageRangeSnapshot | null>(null);
+  const [quotaHistory, setQuotaHistory] = useState<QuotaHistorySnapshot | null>(null);
   const [activeRange, setActiveRange] = useState<DateRangeSelection>(INITIAL_RANGE);
   const [rangeLoading, setRangeLoading] = useState(false);
   const [rangeError, setRangeError] = useState<string | null>(null);
@@ -74,27 +87,51 @@ function Dashboard() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const activeRangeRef = useRef(INITIAL_RANGE);
-  // The usage history is long, so it shows one provider at a time while the quota
-  // sections above show them all.
-  const [selectedProvider, setSelectedProvider] = useState<ProviderKey>("codex");
-  const providerRef = useRef<ProviderKey>("codex");
+  // The usage history shows one provider at a time, or all of them counted together,
+  // while the quota sections above always show each provider on its own.
+  const [selectedProvider, setSelectedProvider] = useState<HistoryProvider>("codex");
+  const providerRef = useRef<HistoryProvider>("codex");
   const rangeRequestId = useRef(0);
   const rangeRequested = useRef(false);
 
-  const loadUsageRange = useCallback(async (range: DateRangeSelection, rangeProvider: ProviderKey) => {
+  const loadUsageRange = useCallback(async (range: DateRangeSelection, rangeProvider: HistoryProvider) => {
     const resolvedRange = resolveDateRange(range);
     activeRangeRef.current = resolvedRange;
-    setActiveRange(resolvedRange);
     const requestId = ++rangeRequestId.current;
     setRangeLoading(true);
     setRangeError(null);
+    const earlier = previousPeriod(resolvedRange);
+    // The combined view names no provider, which the core reads as every provider at once.
+    const provider = rangeProvider === "all" ? null : rangeProvider;
     try {
-      const next = await invoke<UsageRangeSnapshot>("get_usage_range", {
-        provider: rangeProvider,
-        startDate: resolvedRange.startDate,
-        endDate: resolvedRange.endDate,
-      });
-      if (requestId === rangeRequestId.current) setUsageRange(next);
+      const [next, previous, quota] = await Promise.all([
+        invoke<UsageRangeSnapshot>("get_usage_range", {
+          provider,
+          startDate: resolvedRange.startDate,
+          endDate: resolvedRange.endDate,
+        }),
+        invoke<UsageRangeSnapshot>("get_usage_range", {
+          provider,
+          startDate: earlier.startDate,
+          endDate: earlier.endDate,
+        }),
+        // Quota is not summable: one provider's weekly window says nothing about
+        // another's, so the combined view leaves that chart out rather than adding up
+        // percentages of different allowances.
+        provider === null
+          ? Promise.resolve(null)
+          : invoke<QuotaHistorySnapshot>("get_quota_history", {
+              provider,
+              startDate: resolvedRange.startDate,
+              endDate: resolvedRange.endDate,
+            }),
+      ]);
+      if (requestId === rangeRequestId.current) {
+        setUsageRange(next);
+        setPreviousRange(previous);
+        setQuotaHistory(quota);
+        setActiveRange(resolvedRange);
+      }
     } catch (error) {
       if (requestId === rangeRequestId.current) setRangeError(errorMessage(error));
     } finally {
@@ -138,7 +175,7 @@ function Dashboard() {
     workspace.providers[0];
 
   const selectProvider = useCallback(
-    (provider: ProviderKey) => {
+    (provider: HistoryProvider) => {
       providerRef.current = provider;
       setSelectedProvider(provider);
       void loadUsageRange(activeRangeRef.current, provider);
@@ -239,6 +276,8 @@ function Dashboard() {
           activeProvider={selectedProvider}
           onSelectProvider={selectProvider}
           range={usageRange}
+          previousRange={previousRange}
+          quotaHistory={quotaHistory}
           selection={activeRange}
           loading={rangeLoading}
           error={rangeError}
@@ -260,6 +299,6 @@ function Dashboard() {
 
 export default function App() {
   if (CURRENT_WINDOW_LABEL === "quick-panel") return <QuickPanel initialWorkspace={EMPTY_WORKSPACE} />;
-  if (CURRENT_WINDOW_LABEL === "taskbar-widget") return <TaskbarWidget initialWorkspace={EMPTY_WORKSPACE} />;
+  if (IS_TASKBAR_WIDGET) return <TaskbarWidget initialWorkspace={EMPTY_WORKSPACE} />;
   return <Dashboard />;
 }

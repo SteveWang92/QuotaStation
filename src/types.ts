@@ -3,6 +3,13 @@ export type Freshness = "fresh" | "stale" | "unavailable";
 /** Matches the Rust `ProviderKind`, which is also the database's provider key. */
 export type ProviderKey = "codex" | "claude";
 
+/**
+ * Which history the dashboard is showing: one provider, or every provider counted
+ * together. The combined view is a read of its own in the core, not a sum the renderer
+ * assembles from separate answers.
+ */
+export type HistoryProvider = ProviderKey | "all";
+
 export interface CompactStatus {
   level: "healthy" | "warning" | "critical" | "stale" | "unavailable";
   label: string;
@@ -108,6 +115,28 @@ export interface DailyUsagePoint {
   date: string;
   usage: TokenUsage;
   apiEquivalentCostUsd: number | null;
+  /** This day's own model mix, largest first, so a day can be opened without a new query. */
+  models: ModelUsage[];
+}
+
+/** The highest share of a quota window observed on one local day. */
+export interface QuotaHistoryPoint {
+  date: string;
+  peakUsedPercent: number;
+}
+
+export interface QuotaHistoryWindow {
+  kind: "primary" | "secondary";
+  label: string;
+  points: QuotaHistoryPoint[];
+}
+
+export interface QuotaHistorySnapshot {
+  startDate: string;
+  endDate: string;
+  windows: QuotaHistoryWindow[];
+  /** Restarts anchored inside the range, oldest first. */
+  resets: LimitResetEvent[];
 }
 
 export interface UsageRangeSnapshot {
@@ -143,6 +172,7 @@ export interface DiagnosticsSnapshot {
   parserRevision: string;
   pricingCatalogRevision: string;
   appVersion: string;
+  buildCommit: string;
   /** debug, release portable, or release installed — which copy of QuotaStation this is. */
   buildKind: string;
 }
@@ -150,8 +180,22 @@ export interface DiagnosticsSnapshot {
 /** How a provider is named where the name sits beside a reading rather than above one. */
 export type ProviderLabelStyle = "short" | "full";
 
+/** A display whose taskbar can host the status widget. */
+export interface TaskbarDisplay {
+  /** The Windows device name the choice is recorded as. */
+  id: string;
+  label: string;
+  primary: boolean;
+}
+
 export interface AppSettings {
   taskbarWidgetEnabled: boolean;
+  /** The chosen display's device name, or null for whichever taskbar is the primary one. */
+  taskbarWidgetDisplay: string | null;
   statusLineProviderLabels: ProviderLabelStyle;
-  statusLineFullDetails: boolean;
+  statusLineOtherProviders: boolean;
+  statusLineExtraDetails: boolean;
+  notifyLowQuota: boolean;
+  notifyReadFailures: boolean;
+  notifyQuotaResets: boolean;
 }

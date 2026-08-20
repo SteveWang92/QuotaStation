@@ -7,6 +7,35 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-21
+
+### Added
+
+- The dashboard charts daily tokens, cost, model mix and quota history across the selected range.
+- An All tab beside the providers shows the usage history of every provider counted together.
+- Every headline figure says how it moved against the period of the same length before it.
+- Selecting a day in a chart or the daily table opens that day's model mix and token breakdown.
+- Quota restarts are marked on the quota history chart.
+- A start with Windows at logon now opens no window; a launch you perform still opens the dashboard.
+- A status line setting for the project, branch, context, cache and cost detail.
+- A setting for which display's taskbar carries the quota status.
+- Desktop notifications for a quota window running low, a provider that cannot be read, and a quota reset.
+- Diagnostics show the source commit beside the application version.
+
+### Changed
+
+- The application now uses a dial-and-platform icon with crisp size-specific Windows artwork.
+- The status line's other-providers setting now controls the other providers and nothing else.
+
+### Fixed
+
+- Claude's quota survives a restart of the Claude Code CLI instead of going unavailable until the next turn.
+- Provider data stays visually stable until a refresh has completed.
+- The reset history's verdict column no longer wraps onto a second line.
+- The application survives an Explorer restart and puts the taskbar status back by itself.
+- The taskbar status no longer draws over the taskbar's application buttons.
+- Claude Code's quota window restarts are now recorded and shown in the reset history.
+
 ## [0.2.0] - 2026-08-16
 
 ### Added
@@ -90,6 +119,7 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/SteveWang92/QuotaStation/releases/tag/v0.1.0

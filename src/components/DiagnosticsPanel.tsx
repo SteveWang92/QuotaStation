@@ -90,7 +90,7 @@ export function DiagnosticsPanel({ diagnostics, providers, interfaceError }: Dia
         <span>ccusage <code>{formatRevision(diagnostics.parserRevision)}</code></span>
         <span>Pricing <code>{formatRevision(diagnostics.pricingCatalogRevision)}</code></span>
         <span>
-          QuotaStation <code>{diagnostics.appVersion}</code> {diagnostics.buildKind}
+          QuotaStation <code>{diagnostics.appVersion} ({diagnostics.buildCommit})</code> {diagnostics.buildKind}
         </span>
         {logAvailable ? (
           <button type="button" className="diagnostic-log" onClick={() => void invoke("reveal_log_file")}>

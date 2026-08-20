@@ -8,9 +8,10 @@ API-equivalent costs across AI coding tools.
 
 ## Project status
 
-QuotaStation 0.1.0 is released, with a per-user x64 installer attached to its
-[GitHub release](https://github.com/SteveWang92/QuotaStation/releases). It covers Codex and
-Claude Code; Gemini and other providers are future adapters.
+QuotaStation is released and under active development. It covers Codex and Claude Code;
+Gemini and other providers are future adapters. The current version and what each one
+brought are in [CHANGELOG.md](CHANGELOG.md) and on the
+[releases page](https://github.com/SteveWang92/QuotaStation/releases).
 
 What it does today:
 
@@ -19,13 +20,13 @@ What it does today:
   dashboard — all three drawn from one normalized snapshot
 - An optional status line for Claude Code that reports every provider's quota alongside the
   session it is running in
-- Daily token and API-equivalent cost history per provider and per model, over preset and
-  custom local-calendar ranges
+- Daily token and API-equivalent cost history for one provider or all of them together, per
+  model, over preset and custom local-calendar ranges, charted with a comparison against the
+  period before it
+- A day opened from a chart or the table, showing the models and token categories behind it
 - Quota reset history, classified as scheduled or unplanned
 - Redacted acquisition, watcher, retention, and pricing diagnostics
 - Local-first storage with no prompt or source-code upload, and no network request of its own
-
-See [CHANGELOG.md](CHANGELOG.md) for what has changed since the last release.
 
 ## Principles
 

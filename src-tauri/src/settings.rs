@@ -27,12 +27,30 @@ pub enum ProviderLabelStyle {
 pub struct AppSettings {
     #[serde(default = "enabled")]
     pub taskbar_widget_enabled: bool,
+    /// Which display's taskbar hosts the status, by Windows device name (`\\.\DISPLAY1`).
+    /// Unset — and a name no longer attached — means the primary taskbar, so unplugging a
+    /// monitor moves the status rather than losing it.
+    #[serde(default)]
+    pub taskbar_widget_display: Option<String>,
     #[serde(default)]
     pub status_line_provider_labels: ProviderLabelStyle,
-    /// Whether the status line carries the session and the other providers, or only what
-    /// Claude Code already knows about itself.
+    /// Whether the status line reports every provider QuotaStation watches, or only the
+    /// client it is being rendered inside.
     #[serde(default = "enabled")]
-    pub status_line_full_details: bool,
+    pub status_line_other_providers: bool,
+    /// Whether the status line carries the session detail Claude Code's own footer never
+    /// shows — the project, the request and the spend. Off leaves the model and the quota.
+    #[serde(default = "enabled")]
+    pub status_line_extra_details: bool,
+    /// Whether a quota window crossing the shared warning or critical share is announced.
+    #[serde(default = "enabled")]
+    pub notify_low_quota: bool,
+    /// Whether a provider that stops answering, or whose data goes stale, is announced.
+    #[serde(default = "enabled")]
+    pub notify_read_failures: bool,
+    /// Whether a confirmed quota window restart is announced.
+    #[serde(default = "enabled")]
+    pub notify_quota_resets: bool,
 }
 
 fn enabled() -> bool {
@@ -43,8 +61,13 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             taskbar_widget_enabled: enabled(),
+            taskbar_widget_display: None,
             status_line_provider_labels: ProviderLabelStyle::default(),
-            status_line_full_details: enabled(),
+            status_line_other_providers: enabled(),
+            status_line_extra_details: enabled(),
+            notify_low_quota: enabled(),
+            notify_read_failures: enabled(),
+            notify_quota_resets: enabled(),
         }
     }
 }
@@ -54,7 +77,24 @@ impl Default for AppSettings {
 pub fn load(path: &Path) -> AppSettings {
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|content| serde_json::from_str(&content).ok())
+        .and_then(|content| {
+            let stored: serde_json::Value = serde_json::from_str(&content).ok()?;
+            let mut settings: AppSettings = serde_json::from_value(stored.clone()).ok()?;
+            // v0.2 had one switch for both choices v0.3 split apart. Preserve an expressed
+            // choice wherever the old file does not yet carry its replacement.
+            if let Some(legacy) = stored
+                .get("statusLineFullDetails")
+                .and_then(serde_json::Value::as_bool)
+            {
+                if stored.get("statusLineOtherProviders").is_none() {
+                    settings.status_line_other_providers = legacy;
+                }
+                if stored.get("statusLineExtraDetails").is_none() {
+                    settings.status_line_extra_details = legacy;
+                }
+            }
+            Some(settings)
+        })
         .unwrap_or_default()
 }
 
@@ -126,16 +166,36 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"taskbarWidgetEnabled":false}"#).expect("read old settings");
         assert!(!settings.taskbar_widget_enabled, "the recorded choice survives");
+        assert_eq!(settings.taskbar_widget_display, None, "no display chosen means the primary one");
         assert_eq!(settings.status_line_provider_labels, ProviderLabelStyle::Short);
-        assert!(settings.status_line_full_details, "an unrecorded choice takes its default");
+        assert!(settings.status_line_other_providers, "an unrecorded choice takes its default");
+        assert!(settings.status_line_extra_details, "an unrecorded choice takes its default");
+        assert!(settings.notify_low_quota, "an unrecorded choice takes its default");
+        assert!(settings.notify_read_failures, "an unrecorded choice takes its default");
+        assert!(settings.notify_quota_resets, "an unrecorded choice takes its default");
+    }
+
+    #[test]
+    fn the_old_combined_status_line_choice_migrates_to_both_new_choices() {
+        let path = scratch("legacy-status-line-details");
+        std::fs::write(&path, r#"{"statusLineFullDetails":false}"#).expect("write old settings");
+        let settings = load(&path);
+        assert!(!settings.status_line_other_providers);
+        assert!(!settings.status_line_extra_details);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn settings_survive_a_round_trip_through_the_file_format() {
         let settings = AppSettings {
             taskbar_widget_enabled: false,
+            taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
             status_line_provider_labels: ProviderLabelStyle::Full,
-            status_line_full_details: false,
+            status_line_other_providers: false,
+            status_line_extra_details: false,
+            notify_low_quota: false,
+            notify_read_failures: false,
+            notify_quota_resets: false,
         };
         let encoded = serde_json::to_string(&settings).expect("encode");
         assert_eq!(serde_json::from_str::<AppSettings>(&encoded).expect("decode"), settings);
@@ -158,8 +218,13 @@ mod tests {
         save(&path, &AppSettings::default()).expect("write the first settings");
         let expected = AppSettings {
             taskbar_widget_enabled: false,
+            taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
             status_line_provider_labels: ProviderLabelStyle::Full,
-            status_line_full_details: false,
+            status_line_other_providers: false,
+            status_line_extra_details: false,
+            notify_low_quota: false,
+            notify_read_failures: false,
+            notify_quota_resets: false,
         };
         save(&path, &expected).expect("replace the settings");
         assert_eq!(load(&path), expected);

@@ -1,4 +1,4 @@
-import type { ProviderKey, ProviderSnapshot, WorkspaceSnapshot } from "./types";
+import type { HistoryProvider, ProviderKey, ProviderSnapshot, WorkspaceSnapshot } from "./types";
 
 /**
  * What a window shows before the core answers its first read. Every window mounts
@@ -38,11 +38,15 @@ export function emptySnapshot(
   };
 }
 
-/** Keeps history queries attached to a provider that is still present in the workspace. */
+/**
+ * Keeps history queries attached to a provider that is still present in the workspace.
+ * The combined view survives any change to that list, because it names no provider.
+ */
 export function resolveProviderKey(
   providers: ProviderSnapshot[],
-  preferred: ProviderKey,
-): ProviderKey | undefined {
+  preferred: HistoryProvider,
+): HistoryProvider | undefined {
+  if (preferred === "all") return providers.length > 1 ? "all" : providers[0]?.provider;
   return providers.some((provider) => provider.provider === preferred)
     ? preferred
     : providers[0]?.provider;

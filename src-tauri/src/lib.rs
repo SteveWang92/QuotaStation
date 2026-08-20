@@ -1,3 +1,5 @@
+mod alerts;
+mod autostart;
 mod domain;
 mod log;
 mod providers;
@@ -15,8 +17,8 @@ use crate::settings::AppSettings;
 use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex as StdMutex, OnceLock}, time::{Duration, Instant}};
 
 use domain::{
-    DiagnosticsSnapshot, ProviderSnapshot, UsageRangeSnapshot, WatcherDiagnostics,
-    WorkspaceSnapshot,
+    DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot, UsageRangeSnapshot,
+    WatcherDiagnostics, WorkspaceSnapshot,
 };
 use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
@@ -43,6 +45,7 @@ static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 pub struct AppState {
     storage: Storage,
     snapshots: RwLock<BTreeMap<ProviderKind, ProviderSnapshot>>,
+    refresh_publish_lock: Mutex<()>,
     live_refresh_lock: Mutex<()>,
     history_refresh_lock: Mutex<()>,
     watcher_diagnostics: RwLock<WatcherDiagnostics>,
@@ -128,7 +131,9 @@ async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<WorkspaceSnapsh
 
 #[tauri::command]
 async fn get_usage_range(
-    provider: ProviderKind,
+    // No provider is the combined history: the dashboard's "All" tab reads every
+    // provider in one query rather than adding up separate answers in the renderer.
+    provider: Option<ProviderKind>,
     start_date: String,
     end_date: String,
     state: State<'_, Arc<AppState>>,
@@ -136,6 +141,20 @@ async fn get_usage_range(
     state
         .storage
         .load_usage_range(provider, &start_date, &end_date)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_quota_history(
+    provider: ProviderKind,
+    start_date: String,
+    end_date: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<QuotaHistorySnapshot, String> {
+    state
+        .storage
+        .load_quota_history(provider, &start_date, &end_date)
         .await
         .map_err(|error| error.to_string())
 }
@@ -175,17 +194,34 @@ fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     if let Err(error) = state.update_settings(|settings| settings.taskbar_widget_enabled = visible) {
         log::write(format!("failed to save application settings: {error}"));
     }
-    if let Some(widget) = app.get_webview_window("taskbar-widget") {
-        if visible {
+    if visible {
+        // Placement comes first: it rebuilds the window when Explorer's taskbar took it
+        // with it, and showing a window that no longer exists is what ends the process.
+        place_taskbar_widget(app);
+        if let Some(widget) = app.get_webview_window(&taskbar::widget_label()).filter(|_| taskbar::widget_is_live(app)) {
             let _ = widget.show();
-            place_taskbar_widget(app);
-            // A low-level hook is called on the thread that installed it, so it has to be
-            // installed on the one running the message loop.
-            let _ = app.run_on_main_thread(taskbar::watch_widget_clicks);
-        } else {
-            let _ = widget.hide();
         }
+        // A low-level hook is called on the thread that installed it, so it has to be
+        // installed on the one running the message loop.
+        let _ = app.run_on_main_thread(taskbar::watch_widget_clicks);
+    } else if let Some(widget) = app.get_webview_window(&taskbar::widget_label()).filter(|_| taskbar::widget_is_live(app)) {
+        let _ = widget.hide();
     }
+}
+
+/// Which display's taskbar the user chose to host the status widget, for [`taskbar`].
+///
+/// The placement loop runs before the settings dialog has ever been opened and after the
+/// window it belongs to is gone, so it reads the recorded choice rather than being told.
+pub(crate) fn preferred_taskbar_display(app: &tauri::AppHandle) -> Option<String> {
+    app.try_state::<Arc<AppState>>()?.settings().taskbar_widget_display
+}
+
+/// The displays the status can be shown on. Read live rather than stored: a monitor is
+/// attached and detached while the application runs.
+#[tauri::command]
+fn get_taskbar_displays() -> Vec<taskbar::TaskbarDisplay> {
+    taskbar::taskbar_displays()
 }
 
 #[tauri::command]
@@ -210,10 +246,16 @@ fn set_app_settings(
     state: State<'_, Arc<AppState>>,
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
-    let taskbar_changed = state.settings().taskbar_widget_enabled != settings.taskbar_widget_enabled;
+    let previous = state.settings();
+    let taskbar_changed = previous.taskbar_widget_enabled != settings.taskbar_widget_enabled;
+    let display_changed = previous.taskbar_widget_display != settings.taskbar_widget_display;
     let updated = state.update_settings(|current| *current = settings)?;
     if taskbar_changed {
         set_taskbar_widget_visible(&app, updated.taskbar_widget_enabled);
+    } else if display_changed && updated.taskbar_widget_enabled {
+        // The placement loop would move it within two seconds; doing it here makes the
+        // choice answer immediately, which is what a person changing it is watching for.
+        place_taskbar_widget(&app);
     }
     Ok(updated)
 }
@@ -291,7 +333,6 @@ fn set_claude_notifications(installed: bool) -> Result<bool, String> {
 /// what that costs; the alternative is a filesystem watcher for a file written a handful of
 /// times an hour.
 fn watch_for_finished_turns(app: tauri::AppHandle) {
-    use tauri_plugin_notification::NotificationExt;
     tauri::async_runtime::spawn(async move {
         let mut ticks = tokio::time::interval(Duration::from_secs(2));
         loop {
@@ -300,17 +341,14 @@ fn watch_for_finished_turns(app: tauri::AppHandle) {
             else {
                 continue;
             };
+            // The title says which event this is, the same way the quota notifications do.
+            // Windows already prints the application's name above it, so spending the title
+            // on "QuotaStation" left every notification looking alike in the action centre.
             let body = match event.project {
-                Some(project) => format!("{project} · Claude Code finished responding"),
-                None => "Claude Code finished responding".to_string(),
+                Some(project) => project,
+                None => "A turn has ended".to_string(),
             };
-            if let Err(error) = app.notification().builder().title("QuotaStation").body(body).show()
-            {
-                // Windows refuses a toast from an application it cannot identify, which is
-                // silent from the user's side: the hook fires, nothing appears, and there is
-                // nowhere to look. The log is that place.
-                log::write(format!("desktop notification failed: {error}"));
-            }
+            alerts::raise(&app, "Claude Code finished responding", &body);
         }
     });
 }
@@ -357,6 +395,7 @@ async fn get_diagnostics(app: tauri::AppHandle, state: State<'_, Arc<AppState>>)
         parser_revision: domain::CCUSAGE_REVISION.to_string(),
         pricing_catalog_revision: domain::PRICING_CATALOG_REVISION.to_string(),
         app_version: app.package_info().version.to_string(),
+        build_commit: env!("QUOTASTATION_BUILD_COMMIT").to_string(),
         build_kind: build_kind(),
     })
 }
@@ -767,6 +806,7 @@ fn write_desktop_shortcut(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Some(working_directory) = executable.parent() {
         shortcut.set_working_dir(Some(working_directory.to_string_lossy().into_owned()));
     }
+    shortcut.set_icon_location(Some(executable.to_string_lossy().into_owned()));
     shortcut.set_name(Some("QuotaStation".to_string()));
     shortcut.create_lnk(&shortcut_path).map_err(|error| error.to_string())?;
     Ok(shortcut_path)
@@ -838,13 +878,17 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // A second launch is how an already-running QuotaStation is asked for its
+            // dashboard, unless that launch was itself a background one.
+            if !args.iter().any(|argument| argument == autostart::BACKGROUND_ARG) {
+                show_main(app);
+            }
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec![autostart::BACKGROUND_ARG]),
         ))
         .setup(|app| {
             log::write(format!(
@@ -876,6 +920,7 @@ pub fn run() {
             let state = Arc::new(AppState {
                 storage,
                 snapshots: RwLock::new(snapshots),
+                refresh_publish_lock: Mutex::new(()),
                 live_refresh_lock: Mutex::new(()),
                 history_refresh_lock: Mutex::new(()),
                 watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
@@ -890,6 +935,14 @@ pub fn run() {
             app.manage(state.clone());
             let _ = APP.set(app.handle().clone());
             build_tray(app)?;
+            // The dashboard is configured hidden so a background start never flashes a
+            // window on its way to the tray; every other start opens it here instead.
+            if autostart::requested() {
+                log::write("started in the background; the dashboard stays closed");
+            } else {
+                show_main(app.handle());
+            }
+            autostart::refresh_logon_entry(app.handle());
             watch_for_finished_turns(app.handle().clone());
             if state.settings().taskbar_widget_enabled {
                 set_taskbar_widget_visible(app.handle(), true);
@@ -962,6 +1015,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             get_usage_range,
+            get_quota_history,
             refresh_now,
             get_diagnostics,
             get_log_available,
@@ -972,6 +1026,7 @@ pub fn run() {
             set_claude_notifications,
             open_dashboard,
             set_taskbar_widget_size,
+            get_taskbar_displays,
             set_quick_panel_height,
             get_app_settings,
             set_app_settings,

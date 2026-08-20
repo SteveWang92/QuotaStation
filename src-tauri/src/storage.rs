@@ -6,8 +6,9 @@ use sqlx::{Row, SqlitePool, sqlite::{SqliteConnectOptions, SqlitePoolOptions}};
 use crate::domain::{
     AcquisitionDiagnostics, CCUSAGE_REVISION, DailyModelUsage, DailyUsagePoint, Freshness,
     HistorySnapshot, LimitKind, LimitResetEvent, LimitWindow, LiveSnapshot, ModelUsage,
-    PRICING_CATALOG_REVISION, ProviderSnapshot, ResetClassification, RetentionDiagnostics,
-    TokenUsage, UsageRangeSnapshot, WindowSource,
+    PRICING_CATALOG_REVISION, ProviderSnapshot, QuotaHistoryPoint, QuotaHistorySnapshot,
+    QuotaHistoryWindow, ResetClassification, RetentionDiagnostics, TokenUsage,
+    UsageRangeSnapshot, WindowSource,
 };
 use crate::providers::ProviderKind;
 use crate::resets::{ResetTracker, WindowObservation, detect};
@@ -31,6 +32,48 @@ fn kind_column(kind: LimitKind) -> &'static str {
         LimitKind::Primary => "primary",
         LimitKind::Secondary => "secondary",
     }
+}
+
+/// One recorded restart, from a row carrying the eight columns `limit_resets` stores. The
+/// recent list and the range query select the same columns, so they read them the same way.
+fn reset_event(row: sqlx::sqlite::SqliteRow) -> Option<LimitResetEvent> {
+    let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
+    let window_duration_mins: i64 = row.try_get("window_duration_mins").ok()?;
+    let classification = match row.try_get::<String, _>("classification").ok()?.as_str() {
+        "unplanned" => ResetClassification::Unplanned,
+        _ => ResetClassification::Scheduled,
+    };
+    Some(LimitResetEvent {
+        window_kind: kind,
+        window_label: kind.window_label(Some(window_duration_mins)),
+        window_duration_mins,
+        anchored_at: row.try_get("anchored_at").ok()?,
+        new_resets_at: row.try_get("new_resets_at").ok()?,
+        previous_resets_at: row.try_get("previous_resets_at").ok()?,
+        used_percent_before: row.try_get("used_percent_before").ok()?,
+        early_by_seconds: row.try_get("early_by_seconds").ok()?,
+        classification,
+    })
+}
+
+/// Turns a model's token totals into the share-of-total form every surface draws, largest
+/// first. The same shape describes a range and a single day inside it, so both are built
+/// here rather than each computing percentages of a different denominator.
+fn rank_models(totals: BTreeMap<String, u64>, denominator: u64) -> Vec<ModelUsage> {
+    let mut models: Vec<_> = totals
+        .into_iter()
+        .map(|(model, tokens)| ModelUsage {
+            model,
+            tokens,
+            percent: if denominator == 0 {
+                0.0
+            } else {
+                tokens as f64 / denominator as f64 * 100.0
+            },
+        })
+        .collect();
+    models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+    models
 }
 
 fn parse_kind(value: &str) -> Option<LimitKind> {
@@ -88,18 +131,15 @@ impl Storage {
         observed_at: &str,
     ) -> Result<()> {
         let provider_id = self.provider_id(provider).await?;
-        // Reset inference is verified only for Codex app-server windows. Claude and future
-        // providers can expose rolling or differently scoped buckets with similar value
-        // changes, so applying the Codex heuristic to them would manufacture reset events.
-        let previous = if provider == ProviderKind::Codex {
-            self.load_current_observations(provider_id).await?
-        } else {
-            BTreeMap::new()
-        };
+        // A restart is inferred only from the source that publishes the window rather than
+        // deriving it — see `ProviderKind::authoritative_window_source`. Comparing a reading
+        // against one that measured the same window a different way manufactures restarts.
+        let authoritative = provider.authoritative_window_source();
+        let previous = self.load_current_observations(provider_id, authoritative).await?;
         let mut tx = self.pool.begin().await?;
         if let Some(now) = epoch_seconds(observed_at) {
             for limit in &live.limits {
-                if provider != ProviderKind::Codex || limit.source != WindowSource::AppServer {
+                if limit.source != authoritative {
                     continue;
                 }
                 let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) =
@@ -149,8 +189,18 @@ impl Storage {
                  (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
                  VALUES (?, ?, ?, ?, ?, ?)",
             )
+            // The sample is dated by the reading, not by the refresh that carried it. A
+            // cached status-line reading is republished every couple of minutes for as long
+            // as it stays usable, and dating those by the refresh would draw one afternoon's
+            // share as every following day's peak.
             .bind(provider_id).bind(kind).bind(limit.used_percent).bind(limit.window_duration_mins)
-            .bind(limit.resets_at).bind(observed_at).execute(&mut *tx).await?;
+            .bind(limit.resets_at)
+            .bind(
+                jiff::Timestamp::from_second(limit.observed_at)
+                    .map(|reading| reading.to_string())
+                    .unwrap_or_else(|_| observed_at.to_string()),
+            )
+            .execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -159,12 +209,14 @@ impl Storage {
     async fn load_current_observations(
         &self,
         provider_id: i64,
+        source: WindowSource,
     ) -> Result<BTreeMap<String, WindowObservation>> {
         let rows = sqlx::query(
             "SELECT window_kind, used_percent, window_duration_mins, resets_at, observed_at \
-             FROM limit_current WHERE provider_instance_id = ? AND source = 'app_server'",
+             FROM limit_current WHERE provider_instance_id = ? AND source = ?",
         )
         .bind(provider_id)
+        .bind(source.as_str())
         .fetch_all(&self.pool)
         .await?;
         let mut observations = BTreeMap::new();
@@ -309,28 +361,7 @@ impl Storage {
         .bind(RECENT_RESET_LIMIT)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
-                let window_duration_mins: i64 = row.try_get("window_duration_mins").ok()?;
-                let classification = match row.try_get::<String, _>("classification").ok()?.as_str() {
-                    "unplanned" => ResetClassification::Unplanned,
-                    _ => ResetClassification::Scheduled,
-                };
-                Some(LimitResetEvent {
-                    window_kind: kind,
-                    window_label: kind.window_label(Some(window_duration_mins)),
-                    window_duration_mins,
-                    anchored_at: row.try_get("anchored_at").ok()?,
-                    new_resets_at: row.try_get("new_resets_at").ok()?,
-                    previous_resets_at: row.try_get("previous_resets_at").ok()?,
-                    used_percent_before: row.try_get("used_percent_before").ok()?,
-                    early_by_seconds: row.try_get("early_by_seconds").ok()?,
-                    classification,
-                })
-            })
-            .collect())
+        Ok(rows.into_iter().filter_map(reset_event).collect())
     }
 
     pub async fn save_history(
@@ -455,20 +486,20 @@ impl Storage {
             "INSERT INTO limit_rollups (provider_instance_id, granularity, bucket_start, bucket_end, window_kind, \
                window_duration_mins, resets_at, reset_segment, start_used_percent, end_used_percent, min_used_percent, \
                max_used_percent, average_used_percent, sample_count) \
-             SELECT h.provider_instance_id, 'daily', strftime('%Y-%m-%dT00:00:00Z', h.bucket_start), \
-               strftime('%Y-%m-%dT23:59:59.999999999Z', h.bucket_start), h.window_kind, h.window_duration_mins, \
+             SELECT h.provider_instance_id, 'daily', strftime('%Y-%m-%dT00:00:00', h.bucket_start, 'localtime'), \
+               strftime('%Y-%m-%dT23:59:59.999999999', h.bucket_start, 'localtime'), h.window_kind, h.window_duration_mins, \
                h.resets_at, h.reset_segment, \
                (SELECT x.start_used_percent FROM limit_rollups x WHERE x.provider_instance_id = h.provider_instance_id \
-                 AND x.granularity = 'hourly' AND date(x.bucket_start) = date(h.bucket_start) \
+                 AND x.granularity = 'hourly' AND date(x.bucket_start, 'localtime') = date(h.bucket_start, 'localtime') \
                  AND x.window_kind = h.window_kind AND x.reset_segment = h.reset_segment ORDER BY x.bucket_start LIMIT 1), \
                (SELECT x.end_used_percent FROM limit_rollups x WHERE x.provider_instance_id = h.provider_instance_id \
-                 AND x.granularity = 'hourly' AND date(x.bucket_start) = date(h.bucket_start) \
+                 AND x.granularity = 'hourly' AND date(x.bucket_start, 'localtime') = date(h.bucket_start, 'localtime') \
                  AND x.window_kind = h.window_kind AND x.reset_segment = h.reset_segment ORDER BY x.bucket_start DESC LIMIT 1), \
                MIN(h.min_used_percent), MAX(h.max_used_percent), \
                SUM(h.average_used_percent * h.sample_count) / NULLIF(SUM(CASE WHEN h.average_used_percent IS NOT NULL THEN h.sample_count ELSE 0 END), 0), \
                SUM(h.sample_count) \
              FROM limit_rollups h WHERE h.granularity = 'hourly' \
-             GROUP BY h.provider_instance_id, date(h.bucket_start), h.window_kind, h.window_duration_mins, h.resets_at, h.reset_segment \
+             GROUP BY h.provider_instance_id, date(h.bucket_start, 'localtime'), h.window_kind, h.window_duration_mins, h.resets_at, h.reset_segment \
              ON CONFLICT(provider_instance_id, granularity, bucket_start, window_kind, reset_segment) DO UPDATE SET \
                bucket_end=excluded.bucket_end, window_duration_mins=excluded.window_duration_mins, resets_at=excluded.resets_at, \
                start_used_percent=excluded.start_used_percent, end_used_percent=excluded.end_used_percent, \
@@ -477,7 +508,7 @@ impl Storage {
         ).execute(&mut *tx).await?;
 
         // Keep recent readings at source granularity, then preserve only a daily summary.
-        self.roll_up_samples(&mut tx, "daily", "%Y-%m-%dT00:00:00Z", "%Y-%m-%dT23:59:59.999999999Z", "-14 days", now).await?;
+        self.roll_up_samples(&mut tx, "daily", "%Y-%m-%dT00:00:00", "%Y-%m-%dT23:59:59.999999999", "-14 days", now).await?;
 
         sqlx::query("DELETE FROM limit_samples WHERE datetime(observed_at) < datetime(?, '-14 days')").bind(now).execute(&mut *tx).await?;
         sqlx::query("DELETE FROM limit_rollups WHERE granularity = 'hourly'").execute(&mut *tx).await?;
@@ -508,17 +539,17 @@ impl Storage {
             "INSERT INTO limit_rollups (provider_instance_id, granularity, bucket_start, bucket_end, window_kind, \
                window_duration_mins, resets_at, reset_segment, start_used_percent, end_used_percent, min_used_percent, \
                max_used_percent, average_used_percent, sample_count) \
-             SELECT s.provider_instance_id, ?, strftime('{bucket_start}', s.observed_at), strftime('{bucket_end}', s.observed_at), \
+             SELECT s.provider_instance_id, ?, strftime('{bucket_start}', s.observed_at, 'localtime'), strftime('{bucket_end}', s.observed_at, 'localtime'), \
                s.window_kind, s.window_duration_mins, s.resets_at, COALESCE(CAST(s.resets_at AS TEXT), 'none'), \
                (SELECT x.used_percent FROM limit_samples x WHERE x.provider_instance_id=s.provider_instance_id \
-                 AND strftime('{bucket_start}', x.observed_at)=strftime('{bucket_start}', s.observed_at) AND x.window_kind=s.window_kind \
+                 AND strftime('{bucket_start}', x.observed_at, 'localtime')=strftime('{bucket_start}', s.observed_at, 'localtime') AND x.window_kind=s.window_kind \
                  AND x.window_duration_mins IS s.window_duration_mins AND x.resets_at IS s.resets_at ORDER BY x.observed_at, x.id LIMIT 1), \
                (SELECT x.used_percent FROM limit_samples x WHERE x.provider_instance_id=s.provider_instance_id \
-                 AND strftime('{bucket_start}', x.observed_at)=strftime('{bucket_start}', s.observed_at) AND x.window_kind=s.window_kind \
+                 AND strftime('{bucket_start}', x.observed_at, 'localtime')=strftime('{bucket_start}', s.observed_at, 'localtime') AND x.window_kind=s.window_kind \
                  AND x.window_duration_mins IS s.window_duration_mins AND x.resets_at IS s.resets_at ORDER BY x.observed_at DESC, x.id DESC LIMIT 1), \
                MIN(s.used_percent), MAX(s.used_percent), AVG(s.used_percent), COUNT(*) FROM limit_samples s \
              WHERE datetime(s.observed_at) < datetime(?, '{cutoff}') \
-             GROUP BY s.provider_instance_id, strftime('{bucket_start}', s.observed_at), s.window_kind, s.window_duration_mins, s.resets_at \
+             GROUP BY s.provider_instance_id, strftime('{bucket_start}', s.observed_at, 'localtime'), s.window_kind, s.window_duration_mins, s.resets_at \
              ON CONFLICT(provider_instance_id, granularity, bucket_start, window_kind, reset_segment) DO UPDATE SET \
                bucket_end=excluded.bucket_end, window_duration_mins=excluded.window_duration_mins, resets_at=excluded.resets_at, \
                start_used_percent=excluded.start_used_percent, end_used_percent=excluded.end_used_percent, min_used_percent=excluded.min_used_percent, \
@@ -577,7 +608,7 @@ impl Storage {
 
         snapshot.recent_resets = self.load_recent_resets(provider).await?;
         let date = jiff::Zoned::now().date().to_string();
-        let today = self.load_usage_range(provider, &date, &date).await?;
+        let today = self.load_usage_range(Some(provider), &date, &date).await?;
         snapshot.today = today.usage;
         snapshot.models = today.models;
         snapshot.api_equivalent_cost_usd = today.api_equivalent_cost_usd;
@@ -586,9 +617,15 @@ impl Storage {
         Ok(snapshot)
     }
 
+    /// The usage in a date range, for one provider or for every provider at once.
+    ///
+    /// `None` is the combined view: the rows of every provider instance are counted
+    /// together, which is what the totals, the per-day stack and the model ranking are
+    /// summed from. Nothing about that sum is provider-specific, so it is one query with
+    /// the filter dropped rather than a second read path.
     pub async fn load_usage_range(
         &self,
-        provider: ProviderKind,
+        provider: Option<ProviderKind>,
         start_date: &str,
         end_date: &str,
     ) -> Result<UsageRangeSnapshot> {
@@ -596,22 +633,27 @@ impl Storage {
         let end = jiff::civil::Date::from_str(end_date).context("invalid end date")?;
         anyhow::ensure!(start <= end, "start date must not be after end date");
 
-        let provider_id = self.provider_id(provider).await?;
+        let provider_id = match provider {
+            Some(kind) => Some(self.provider_id(kind).await?),
+            None => None,
+        };
         let rows = sqlx::query(
             "SELECT usage_date, model, SUM(input_tokens) AS input_tokens, \
              SUM(cache_read_tokens) AS cache_read_tokens, SUM(output_tokens) AS output_tokens, \
              SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens, \
              SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd \
-             FROM daily_usage WHERE provider_instance_id = ? AND usage_date BETWEEN ? AND ? \
+             FROM daily_usage WHERE (? IS NULL OR provider_instance_id = ?) \
+             AND usage_date BETWEEN ? AND ? \
              GROUP BY usage_date, model ORDER BY usage_date ASC, total_tokens DESC",
         )
-        .bind(provider_id).bind(start.to_string()).bind(end.to_string())
+        .bind(provider_id).bind(provider_id).bind(start.to_string()).bind(end.to_string())
         .fetch_all(&self.pool).await?;
 
         let mut total = TokenUsage::default();
         let mut total_cost = 0.0;
         let mut model_totals: BTreeMap<String, u64> = BTreeMap::new();
-        let mut day_totals: BTreeMap<String, (TokenUsage, f64)> = BTreeMap::new();
+        let mut day_totals: BTreeMap<String, (TokenUsage, f64, BTreeMap<String, u64>)> =
+            BTreeMap::new();
         for row in rows {
             let date: String = row.get("usage_date");
             let model: String = row.get("model");
@@ -629,27 +671,29 @@ impl Storage {
             total.reasoning += usage.reasoning;
             total.total += usage.total;
             total_cost += cost;
-            *model_totals.entry(model).or_default() += usage.total;
-            let day = day_totals.entry(date).or_insert_with(|| (TokenUsage::default(), 0.0));
+            *model_totals.entry(model.clone()).or_default() += usage.total;
+            let day = day_totals
+                .entry(date)
+                .or_insert_with(|| (TokenUsage::default(), 0.0, BTreeMap::new()));
             day.0.input += usage.input;
             day.0.cache_read += usage.cache_read;
             day.0.output += usage.output;
             day.0.reasoning += usage.reasoning;
             day.0.total += usage.total;
             day.1 += cost;
+            *day.2.entry(model).or_default() += usage.total;
         }
 
-        let mut models: Vec<_> = model_totals.into_iter().map(|(model, tokens)| ModelUsage {
-            model,
-            tokens,
-            percent: if total.total == 0 { 0.0 } else { tokens as f64 / total.total as f64 * 100.0 },
-        }).collect();
-        models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
-        let days = day_totals.into_iter().map(|(date, (usage, cost))| DailyUsagePoint {
-            date,
-            api_equivalent_cost_usd: (usage.total > 0).then_some(cost),
-            usage,
-        }).collect();
+        let models = rank_models(model_totals, total.total);
+        let days = day_totals
+            .into_iter()
+            .map(|(date, (usage, cost, day_models))| DailyUsagePoint {
+                date,
+                api_equivalent_cost_usd: (usage.total > 0).then_some(cost),
+                models: rank_models(day_models, usage.total),
+                usage,
+            })
+            .collect();
 
         Ok(UsageRangeSnapshot {
             start_date: start.to_string(),
@@ -658,6 +702,91 @@ impl Storage {
             usage: total,
             models,
             days,
+        })
+    }
+
+    /// What each quota window did across a date range, one point per local day.
+    ///
+    /// Two stores answer this between them and they do not overlap: readings younger than
+    /// the retention cutoff are still in `limit_samples` at the granularity they arrived
+    /// at, and everything older survives only as the daily rollups. A day is reduced to
+    /// the highest share observed on it, so a window that filled and restarted the same
+    /// day still reports how full it got.
+    pub async fn load_quota_history(
+        &self,
+        provider: ProviderKind,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<QuotaHistorySnapshot> {
+        let start = jiff::civil::Date::from_str(start_date).context("invalid start date")?;
+        let end = jiff::civil::Date::from_str(end_date).context("invalid end date")?;
+        anyhow::ensure!(start <= end, "start date must not be after end date");
+        let (start, end) = (start.to_string(), end.to_string());
+        let provider_id = self.provider_id(provider).await?;
+
+        // The rollups are day buckets already; only the raw samples have to be dated, and
+        // they are dated locally so this chart shares the usage chart's calendar.
+        let rows = sqlx::query(
+            "SELECT day, window_kind, MAX(peak) AS peak, MAX(duration) AS duration FROM ( \
+             SELECT date(observed_at, 'localtime') AS day, window_kind, \
+             MAX(used_percent) AS peak, MAX(window_duration_mins) AS duration \
+             FROM limit_samples WHERE provider_instance_id = ? AND used_percent IS NOT NULL \
+             GROUP BY day, window_kind \
+             UNION ALL \
+             SELECT date(bucket_start) AS day, window_kind, \
+             MAX(max_used_percent) AS peak, MAX(window_duration_mins) AS duration \
+             FROM limit_rollups WHERE provider_instance_id = ? AND granularity = 'daily' \
+             AND max_used_percent IS NOT NULL \
+             GROUP BY day, window_kind \
+             ) WHERE day BETWEEN ? AND ? GROUP BY day, window_kind ORDER BY day ASC"
+        )
+        .bind(provider_id)
+        .bind(provider_id)
+        .bind(&start)
+        .bind(&end)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut windows: BTreeMap<LimitKind, (Option<i64>, Vec<QuotaHistoryPoint>)> =
+            BTreeMap::new();
+        for row in rows {
+            let Some(kind) = row.try_get::<String, _>("window_kind").ok().as_deref().and_then(parse_kind)
+            else {
+                continue;
+            };
+            let window = windows.entry(kind).or_insert_with(|| (None, Vec::new()));
+            window.0 = window.0.max(row.try_get::<Option<i64>, _>("duration").unwrap_or(None));
+            window.1.push(QuotaHistoryPoint {
+                date: row.get("day"),
+                peak_used_percent: row.get::<f64, _>("peak"),
+            });
+        }
+
+        let reset_rows = sqlx::query(
+            "SELECT window_kind, window_duration_mins, anchored_at, new_resets_at, \
+             previous_resets_at, used_percent_before, early_by_seconds, classification \
+             FROM limit_resets WHERE provider_instance_id = ? \
+             AND date(anchored_at, 'unixepoch', 'localtime') BETWEEN ? AND ? \
+             ORDER BY anchored_at ASC",
+        )
+        .bind(provider_id)
+        .bind(&start)
+        .bind(&end)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(QuotaHistorySnapshot {
+            start_date: start,
+            end_date: end,
+            windows: windows
+                .into_iter()
+                .map(|(kind, (duration, points))| QuotaHistoryWindow {
+                    kind,
+                    label: kind.window_label(duration),
+                    points,
+                })
+                .collect(),
+            resets: reset_rows.into_iter().filter_map(reset_event).collect(),
         })
     }
 
@@ -834,9 +963,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_sample_is_dated_by_the_reading_rather_than_the_refresh_that_carried_it() {
+        let (storage, _database) = open_storage().await;
+        let live = weekly_live(31.0, 1_786_800_000);
+        storage.save_live(CODEX, &live, "2026-06-04T10:00:00Z").await.expect("first refresh");
+        storage.save_live(CODEX, &live, "2026-06-06T10:00:00Z").await.expect("second refresh");
+        let dates: Vec<String> =
+            sqlx::query_scalar("SELECT observed_at FROM limit_samples ORDER BY id")
+                .fetch_all(&storage.pool)
+                .await
+                .expect("read the samples");
+        let reading = jiff::Timestamp::from_second(live.limits[0].observed_at)
+            .expect("the reading's own time")
+            .to_string();
+        assert_eq!(
+            dates,
+            vec![reading.clone(), reading],
+            "a reading republished by a later refresh keeps the day it was taken on"
+        );
+    }
+
+    #[tokio::test]
     async fn retention_keeps_daily_quota_summaries_without_an_hourly_layer() {
         let (storage, _database) = open_storage().await;
         let provider_id = storage.provider_id(CODEX).await.expect("read provider id");
+        let observed_at = "2026-01-01T01:00:00Z";
+        let expected_local_bucket: String = sqlx::query_scalar(
+            "SELECT strftime('%Y-%m-%dT00:00:00', ?, 'localtime')",
+        )
+        .bind(observed_at)
+        .fetch_one(&storage.pool)
+        .await
+        .expect("calculate the sample's local day");
         sqlx::query(
             "INSERT INTO limit_samples \
              (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
@@ -876,6 +1034,16 @@ mod tests {
         assert_eq!(samples, 0);
         assert_eq!(hourly, 0);
         assert_eq!(daily, 2, "both old samples and legacy hourly rows become daily summaries");
+        let sample_bucket: String = sqlx::query_scalar(
+            "SELECT bucket_start FROM limit_rollups WHERE granularity = 'daily' AND resets_at = 1767301200",
+        )
+        .fetch_one(&storage.pool)
+        .await
+        .expect("read the retained sample's bucket");
+        assert_eq!(
+            sample_bucket, expected_local_bucket,
+            "retention keeps the sample on its local calendar day"
+        );
     }
 
     #[tokio::test]
@@ -894,11 +1062,41 @@ mod tests {
             .await
             .expect("save second history");
 
-        let range = storage.load_usage_range(CODEX, "2026-08-01", "2026-08-02").await.expect("load range");
+        let range = storage.load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 2, "the day outside the parse must survive");
         assert_eq!(range.days[0].usage.total, 100);
         assert_eq!(range.days[1].usage.total, 500, "the reparsed day must be replaced, not added to");
         assert_eq!(range.usage.total, 600);
+    }
+
+    /// The dashboard's combined view asks for no provider at all.
+    #[tokio::test]
+    async fn a_range_with_no_provider_counts_every_provider_together() {
+        let (storage, _database) = open_storage().await;
+        let codex = HistorySnapshot { days: vec![day("2026-08-01", "gpt-5", 100)] };
+        let claude = HistorySnapshot { days: vec![day("2026-08-01", "claude-opus-5", 400)] };
+        storage
+            .save_history(CODEX, &codex, "Australia/Brisbane", "2026-08-01T00:00:00Z")
+            .await
+            .expect("save Codex history");
+        storage
+            .save_history(ProviderKind::Claude, &claude, "Australia/Brisbane", "2026-08-01T00:00:00Z")
+            .await
+            .expect("save Claude history");
+
+        let combined = storage
+            .load_usage_range(None, "2026-08-01", "2026-08-01")
+            .await
+            .expect("load combined range");
+        assert_eq!(combined.usage.total, 500);
+        assert_eq!(combined.days.len(), 1, "one calendar day stays one point however many providers filled it");
+        assert_eq!(combined.models.len(), 2, "each provider's models keep their own row");
+
+        let single = storage
+            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-01")
+            .await
+            .expect("load Codex range");
+        assert_eq!(single.usage.total, 100, "asking for one provider still answers for that one alone");
     }
 
     #[tokio::test]
@@ -918,7 +1116,7 @@ mod tests {
             .await
             .expect("rebuild New York history");
 
-        let range = storage.load_usage_range(CODEX, "2026-08-01", "2026-08-02").await.expect("load range");
+        let range = storage.load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 1, "rows bucketed in the previous timezone must not survive");
         assert_eq!(range.days[0].date, "2026-08-02");
         assert_eq!(range.days[0].usage.total, 250);
@@ -945,7 +1143,7 @@ mod tests {
             .await
             .expect("adopt the current timezone");
 
-        let range = storage.load_usage_range(CODEX, "2026-08-01", "2026-08-02").await.expect("load range");
+        let range = storage.load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 2, "an unknown legacy timezone must not trigger destructive cleanup");
         assert_eq!(range.days[0].usage.total, 100);
         assert_eq!(range.days[1].usage.total, 250);
@@ -962,7 +1160,7 @@ mod tests {
             .await
             .expect("save history");
 
-        let range = storage.load_usage_range(CODEX, "2026-08-02", "2026-08-02").await.expect("load range");
+        let range = storage.load_usage_range(Some(CODEX), "2026-08-02", "2026-08-02").await.expect("load range");
         assert_eq!(range.days.len(), 1);
         assert_eq!(range.usage.total, 300);
         assert_eq!(range.models.len(), 1);
@@ -1018,6 +1216,15 @@ mod tests {
         }
     }
 
+    /// The same reading, taken at a stated moment rather than at the one `weekly_live`
+    /// derives from the window's expiry.
+    fn weekly_live_read_at(used_percent: f64, resets_at: i64, observed_at: &str) -> LiveSnapshot {
+        let mut live = weekly_live(used_percent, resets_at);
+        live.limits[0].observed_at =
+            observed_at.parse::<jiff::Timestamp>().expect("a reading time").as_second();
+        live
+    }
+
     #[tokio::test]
     async fn a_window_that_restarts_early_is_recorded_against_the_reading_it_replaced() {
         let (storage, _database) = open_storage().await;
@@ -1049,22 +1256,107 @@ mod tests {
         assert!(storage.load_recent_resets(CODEX).await.expect("load resets").is_empty());
     }
 
+    /// The dates the samples fall on are the machine's own, so the assertions here are
+    /// about the shape of a day rather than which day it is: the range is wide enough that
+    /// every reading lands inside it whatever the time zone.
     #[tokio::test]
-    async fn codex_reset_inference_is_not_applied_to_other_providers() {
+    async fn a_day_of_quota_readings_is_summarised_by_its_peak() {
+        let (storage, _database) = open_storage().await;
+        let expiry = 1_786_800_000;
+        for (percent, observed_at) in [
+            (12.0, "2026-06-04T02:00:00Z"),
+            (61.0, "2026-06-04T11:00:00Z"),
+            (37.0, "2026-06-04T20:00:00Z"),
+        ] {
+            storage
+                .save_live(CODEX, &weekly_live_read_at(percent, expiry, observed_at), observed_at)
+                .await
+                .expect("save a reading");
+        }
+
+        let history = storage
+            .load_quota_history(CODEX, "2026-06-01", "2026-06-08")
+            .await
+            .expect("load quota history");
+        assert_eq!(history.windows.len(), 1, "one window was read all day");
+        let window = &history.windows[0];
+        assert_eq!(window.kind, LimitKind::Primary);
+        let highest = window.points.iter().map(|point| point.peak_used_percent).fold(0.0, f64::max);
+        assert_eq!(highest, 61.0, "a day is summarised by the fullest the window got");
+        assert!(window.points.len() <= 2, "the readings span at most two local days");
+        for point in &window.points {
+            assert!(
+                [12.0, 61.0, 37.0].contains(&point.peak_used_percent),
+                "a point is one of the readings, never an average of them",
+            );
+        }
+        assert!(history.resets.is_empty(), "nothing restarted");
+    }
+
+    #[tokio::test]
+    async fn a_range_with_no_readings_has_no_windows_to_draw() {
         let (storage, _database) = open_storage().await;
         storage
-            .save_live(ProviderKind::Claude, &weekly_live(52.0, 1_786_800_000), "2026-08-10T15:00:00Z")
+            .save_live(CODEX, &weekly_live(20.0, 1_786_800_000), "2026-06-04T10:00:00Z")
             .await
-            .expect("save the earlier Claude reading");
-        storage
-            .save_live(ProviderKind::Claude, &weekly_live(0.0, 1_787_026_583), "2026-08-11T09:29:00Z")
+            .expect("save a reading");
+        let history = storage
+            .load_quota_history(CODEX, "2026-07-01", "2026-07-07")
             .await
-            .expect("save the later Claude reading");
+            .expect("load quota history");
+        assert!(history.windows.is_empty());
+    }
 
+    /// Claude's windows come from two sources at once. Only the status line publishes the
+    /// window; the session logs recover its timing from request times, and a reading of that
+    /// kind describes a different thing well enough to look like a restart beside a
+    /// published one.
+    #[tokio::test]
+    async fn a_restart_is_inferred_only_from_the_source_that_publishes_the_window() {
+        let (storage, _database) = open_storage().await;
+        let claude = ProviderKind::Claude;
+        let logged = |used, resets_at| {
+            let mut live = weekly_live(used, resets_at);
+            live.limits[0].source = WindowSource::SessionLog;
+            live
+        };
+        storage
+            .save_live(claude, &logged(52.0, 1_786_800_000), "2026-08-10T15:00:00Z")
+            .await
+            .expect("save the earlier log-derived reading");
+        storage
+            .save_live(claude, &logged(0.0, 1_787_026_583), "2026-08-11T09:29:00Z")
+            .await
+            .expect("save the later log-derived reading");
         assert!(
-            storage.load_recent_resets(ProviderKind::Claude).await.expect("load Claude resets").is_empty(),
-            "a Codex-specific heuristic must not infer resets for Claude"
+            storage.load_recent_resets(claude).await.expect("load Claude resets").is_empty(),
+            "a window recovered from local logs cannot evidence a restart"
         );
+    }
+
+    /// The quota Claude Code hands its status line is server-published, exactly like Codex's
+    /// app-server answer, so a restart of one of those windows is recorded the same way.
+    #[tokio::test]
+    async fn a_claude_window_the_status_line_published_records_its_restart() {
+        let (storage, _database) = open_storage().await;
+        let claude = ProviderKind::Claude;
+        let published = |used, resets_at| {
+            let mut live = weekly_live(used, resets_at);
+            live.limits[0].source = WindowSource::StatusLine;
+            live
+        };
+        storage
+            .save_live(claude, &published(78.0, 1_786_800_000), "2026-08-10T15:00:00Z")
+            .await
+            .expect("save the earlier published reading");
+        storage
+            .save_live(claude, &published(1.0, 1_787_026_583), "2026-08-11T09:29:00Z")
+            .await
+            .expect("save the reading after the restart");
+
+        let events = storage.load_recent_resets(claude).await.expect("load Claude resets");
+        assert_eq!(events.len(), 1, "the restart is recorded");
+        assert_eq!(events[0].used_percent_before, 78.0);
     }
 
     #[tokio::test]

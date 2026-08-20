@@ -2,6 +2,9 @@ import { LOCALE } from "./format";
 
 export type RangePreset = "today" | "3d" | "7d" | "30d" | "custom";
 
+/** A daily SVG stays bounded while still allowing a full year to be inspected at once. */
+export const MAX_CUSTOM_RANGE_DAYS = 366;
+
 export interface DateRangeSelection {
   preset: RangePreset;
   label: string;
@@ -9,7 +12,8 @@ export interface DateRangeSelection {
   endDate: string;
 }
 
-function toLocalDateString(date: Date): string {
+/** A calendar day in the machine's own time zone, which is how every stored date is dated. */
+export function toLocalDateString(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
@@ -42,6 +46,14 @@ export function createCustomRange(startDate: string, endDate: string): DateRange
   };
 }
 
+/** Whether an inclusive custom range is too large to render one mark per calendar day. */
+export function customRangeTooLong(startDate: string, endDate: string): boolean {
+  const start = Date.parse(`${startDate}T00:00:00Z`);
+  const end = Date.parse(`${endDate}T00:00:00Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return false;
+  return Math.floor((end - start) / 86_400_000) + 1 > MAX_CUSTOM_RANGE_DAYS;
+}
+
 /** Recomputes calendar presets at query time so a tray process can cross midnight safely. */
 export function resolveDateRange(selection: DateRangeSelection): DateRangeSelection {
   return selection.preset === "custom" ? selection : createPresetRange(selection.preset);
@@ -60,4 +72,20 @@ export function hasRolledOver(selection: DateRangeSelection): boolean {
 export function formatRangeDate(value: string): string {
   return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short", year: "numeric" })
     .format(new Date(`${value}T00:00:00`));
+}
+
+/**
+ * The period of the same length immediately before `selection`, which is what every figure
+ * on the dashboard is compared against. A range is inclusive of both ends, so the previous
+ * period ends the day before this one starts.
+ */
+export function previousPeriod(selection: DateRangeSelection): { startDate: string; endDate: string } {
+  const start = new Date(`${selection.startDate}T00:00:00`);
+  const end = new Date(`${selection.endDate}T00:00:00`);
+  const length = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;
+  const previousEnd = new Date(start);
+  previousEnd.setDate(start.getDate() - 1);
+  const previousStart = new Date(previousEnd);
+  previousStart.setDate(previousEnd.getDate() - length + 1);
+  return { startDate: toLocalDateString(previousStart), endDate: toLocalDateString(previousEnd) };
 }
