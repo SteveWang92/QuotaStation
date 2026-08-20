@@ -55,7 +55,9 @@ impl Loudness {
 /// re-arms it: the same window at 95% before and after a reset is two different facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct QuotaMark {
-    resets_at: Option<i64>,
+    /// The newest confirmed restart of this kind. A published expiry can move while a
+    /// rolling window merely ages out old requests, so it cannot identify a new run.
+    reset_anchor: Option<i64>,
     announced: Loudness,
 }
 
@@ -108,14 +110,19 @@ fn collect_quota(
         }
         let loudness = Loudness::of(window);
         let key = (provider.provider, window.kind);
+        let reset_anchor = provider
+            .recent_resets
+            .iter()
+            .find(|reset| reset.window_kind == window.kind)
+            .map(|reset| reset.anchored_at);
         let previous = announced.quota.get(&key);
         let carried = previous
-            .filter(|mark| mark.resets_at == window.resets_at)
+            .filter(|mark| mark.reset_anchor == reset_anchor)
             .map(|mark| mark.announced)
             .unwrap_or_default();
         announced
             .quota
-            .insert(key, QuotaMark { resets_at: window.resets_at, announced: loudness.max(carried) });
+            .insert(key, QuotaMark { reset_anchor, announced: loudness.max(carried) });
         if seeding || !settings.notify_low_quota || loudness <= carried {
             continue;
         }
@@ -355,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restarted_window_can_raise_the_same_alert_again() {
+    fn a_moving_expiry_does_not_rearm_a_rolling_window() {
         let mut announced = Announced::default();
         let settings = AppSettings::default();
         pending(
@@ -368,13 +375,34 @@ mod tests {
             &workspace(provider(vec![window(LimitKind::Primary, 94.0, 1_800_003_600)])),
             &settings,
         );
-        // The same share, in the window that opened after the restart.
-        let after_reset = pending(
+        let moved = pending(
             &mut announced,
             &workspace(provider(vec![window(LimitKind::Primary, 94.0, 1_800_021_600)])),
             &settings,
         );
-        assert_eq!(after_reset.len(), 1, "a new window is a new fact");
+        assert!(
+            moved.is_empty(),
+            "an expiry shift without a confirmed restart is still the same window"
+        );
+
+        let mut restarted = provider(vec![window(LimitKind::Primary, 94.0, 1_800_039_600)]);
+        restarted.recent_resets = vec![LimitResetEvent {
+            window_kind: LimitKind::Primary,
+            window_label: "5h window".to_string(),
+            window_duration_mins: 300,
+            anchored_at: 1_800_021_600,
+            new_resets_at: 1_800_039_600,
+            previous_resets_at: 1_800_021_600,
+            used_percent_before: 94.0,
+            early_by_seconds: 0,
+            classification: ResetClassification::Scheduled,
+        }];
+        let after_reset = pending(&mut announced, &workspace(restarted), &settings);
+        assert_eq!(
+            after_reset.len(),
+            2,
+            "the confirmed reset and the new window are both new facts"
+        );
     }
 
     #[test]

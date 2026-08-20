@@ -77,7 +77,24 @@ impl Default for AppSettings {
 pub fn load(path: &Path) -> AppSettings {
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|content| serde_json::from_str(&content).ok())
+        .and_then(|content| {
+            let stored: serde_json::Value = serde_json::from_str(&content).ok()?;
+            let mut settings: AppSettings = serde_json::from_value(stored.clone()).ok()?;
+            // v0.2 had one switch for both choices v0.3 split apart. Preserve an expressed
+            // choice wherever the old file does not yet carry its replacement.
+            if let Some(legacy) = stored
+                .get("statusLineFullDetails")
+                .and_then(serde_json::Value::as_bool)
+            {
+                if stored.get("statusLineOtherProviders").is_none() {
+                    settings.status_line_other_providers = legacy;
+                }
+                if stored.get("statusLineExtraDetails").is_none() {
+                    settings.status_line_extra_details = legacy;
+                }
+            }
+            Some(settings)
+        })
         .unwrap_or_default()
 }
 
@@ -156,6 +173,16 @@ mod tests {
         assert!(settings.notify_low_quota, "an unrecorded choice takes its default");
         assert!(settings.notify_read_failures, "an unrecorded choice takes its default");
         assert!(settings.notify_quota_resets, "an unrecorded choice takes its default");
+    }
+
+    #[test]
+    fn the_old_combined_status_line_choice_migrates_to_both_new_choices() {
+        let path = scratch("legacy-status-line-details");
+        std::fs::write(&path, r#"{"statusLineFullDetails":false}"#).expect("write old settings");
+        let settings = load(&path);
+        assert!(!settings.status_line_other_providers);
+        assert!(!settings.status_line_extra_details);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

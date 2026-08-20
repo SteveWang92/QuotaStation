@@ -16,4 +16,12 @@ describe("resolveProviderKey", () => {
   it("returns no provider for an empty workspace", () => {
     expect(resolveProviderKey([], "codex")).toBeUndefined();
   });
+
+  it("leaves the combined view when only one provider remains", () => {
+    expect(resolveProviderKey([claude], "all")).toBe("claude");
+  });
+
+  it("keeps the combined view while more than one provider remains", () => {
+    expect(resolveProviderKey([codex, claude], "all")).toBe("all");
+  });
 });

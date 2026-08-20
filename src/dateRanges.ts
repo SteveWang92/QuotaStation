@@ -2,6 +2,9 @@ import { LOCALE } from "./format";
 
 export type RangePreset = "today" | "3d" | "7d" | "30d" | "custom";
 
+/** A daily SVG stays bounded while still allowing a full year to be inspected at once. */
+export const MAX_CUSTOM_RANGE_DAYS = 366;
+
 export interface DateRangeSelection {
   preset: RangePreset;
   label: string;
@@ -41,6 +44,14 @@ export function createCustomRange(startDate: string, endDate: string): DateRange
     startDate,
     endDate,
   };
+}
+
+/** Whether an inclusive custom range is too large to render one mark per calendar day. */
+export function customRangeTooLong(startDate: string, endDate: string): boolean {
+  const start = Date.parse(`${startDate}T00:00:00Z`);
+  const end = Date.parse(`${endDate}T00:00:00Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return false;
+  return Math.floor((end - start) / 86_400_000) + 1 > MAX_CUSTOM_RANGE_DAYS;
 }
 
 /** Recomputes calendar presets at query time so a tray process can cross midnight safely. */

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createCustomRange,
   createPresetRange,
+  customRangeTooLong,
   hasRolledOver,
   resolveDateRange,
   todayString,
@@ -77,5 +78,10 @@ describe("custom ranges", () => {
     expect(range.startDate).toBe("2026-07-01");
     expect(range.endDate).toBe("2026-07-31");
     expect(range.label).toContain("–");
+  });
+
+  it("bounds the number of daily chart marks to one year", () => {
+    expect(customRangeTooLong("2025-01-01", "2026-01-01")).toBe(false);
+    expect(customRangeTooLong("2025-01-01", "2026-01-02")).toBe(true);
   });
 });

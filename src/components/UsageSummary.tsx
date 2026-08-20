@@ -4,7 +4,9 @@ import { alignToDays, calendarDays } from "../charts";
 import {
   createCustomRange,
   createPresetRange,
+  customRangeTooLong,
   formatRangeDate,
+  MAX_CUSTOM_RANGE_DAYS,
   toLocalDateString,
   todayString,
   type DateRangeSelection,
@@ -114,7 +116,8 @@ export function UsageSummary({
     previousRange === null || previousRange.days.length === 0
       ? 0
       : Math.round(previousRange.usage.total / previousRange.days.length);
-  const customInvalid = !customStart || !customEnd || customStart > customEnd;
+  const customTooLong = customRangeTooLong(customStart, customEnd);
+  const customInvalid = !customStart || !customEnd || customStart > customEnd || customTooLong;
   const displayDays = [...range.days].reverse();
 
   const tokenSeries: ChartSeries[] = CATEGORIES.map((category) => ({
@@ -266,6 +269,9 @@ export function UsageSummary({
             To
             <input type="date" value={customEnd} min={customStart} max={todayString()} onChange={(event) => setCustomEnd(event.target.value)} />
           </label>
+          {customTooLong ? (
+            <span className="custom-range-error">Choose no more than {MAX_CUSTOM_RANGE_DAYS} days.</span>
+          ) : null}
           <button type="button" onClick={applyCustom} disabled={customInvalid || loading}>Apply range</button>
         </div>
       ) : null}

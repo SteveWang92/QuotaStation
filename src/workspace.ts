@@ -46,7 +46,7 @@ export function resolveProviderKey(
   providers: ProviderSnapshot[],
   preferred: HistoryProvider,
 ): HistoryProvider | undefined {
-  if (preferred === "all") return providers.length === 0 ? undefined : "all";
+  if (preferred === "all") return providers.length > 1 ? "all" : providers[0]?.provider;
   return providers.some((provider) => provider.provider === preferred)
     ? preferred
     : providers[0]?.provider;

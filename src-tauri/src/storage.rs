@@ -476,20 +476,20 @@ impl Storage {
             "INSERT INTO limit_rollups (provider_instance_id, granularity, bucket_start, bucket_end, window_kind, \
                window_duration_mins, resets_at, reset_segment, start_used_percent, end_used_percent, min_used_percent, \
                max_used_percent, average_used_percent, sample_count) \
-             SELECT h.provider_instance_id, 'daily', strftime('%Y-%m-%dT00:00:00Z', h.bucket_start), \
-               strftime('%Y-%m-%dT23:59:59.999999999Z', h.bucket_start), h.window_kind, h.window_duration_mins, \
+             SELECT h.provider_instance_id, 'daily', strftime('%Y-%m-%dT00:00:00', h.bucket_start, 'localtime'), \
+               strftime('%Y-%m-%dT23:59:59.999999999', h.bucket_start, 'localtime'), h.window_kind, h.window_duration_mins, \
                h.resets_at, h.reset_segment, \
                (SELECT x.start_used_percent FROM limit_rollups x WHERE x.provider_instance_id = h.provider_instance_id \
-                 AND x.granularity = 'hourly' AND date(x.bucket_start) = date(h.bucket_start) \
+                 AND x.granularity = 'hourly' AND date(x.bucket_start, 'localtime') = date(h.bucket_start, 'localtime') \
                  AND x.window_kind = h.window_kind AND x.reset_segment = h.reset_segment ORDER BY x.bucket_start LIMIT 1), \
                (SELECT x.end_used_percent FROM limit_rollups x WHERE x.provider_instance_id = h.provider_instance_id \
-                 AND x.granularity = 'hourly' AND date(x.bucket_start) = date(h.bucket_start) \
+                 AND x.granularity = 'hourly' AND date(x.bucket_start, 'localtime') = date(h.bucket_start, 'localtime') \
                  AND x.window_kind = h.window_kind AND x.reset_segment = h.reset_segment ORDER BY x.bucket_start DESC LIMIT 1), \
                MIN(h.min_used_percent), MAX(h.max_used_percent), \
                SUM(h.average_used_percent * h.sample_count) / NULLIF(SUM(CASE WHEN h.average_used_percent IS NOT NULL THEN h.sample_count ELSE 0 END), 0), \
                SUM(h.sample_count) \
              FROM limit_rollups h WHERE h.granularity = 'hourly' \
-             GROUP BY h.provider_instance_id, date(h.bucket_start), h.window_kind, h.window_duration_mins, h.resets_at, h.reset_segment \
+             GROUP BY h.provider_instance_id, date(h.bucket_start, 'localtime'), h.window_kind, h.window_duration_mins, h.resets_at, h.reset_segment \
              ON CONFLICT(provider_instance_id, granularity, bucket_start, window_kind, reset_segment) DO UPDATE SET \
                bucket_end=excluded.bucket_end, window_duration_mins=excluded.window_duration_mins, resets_at=excluded.resets_at, \
                start_used_percent=excluded.start_used_percent, end_used_percent=excluded.end_used_percent, \
@@ -498,7 +498,7 @@ impl Storage {
         ).execute(&mut *tx).await?;
 
         // Keep recent readings at source granularity, then preserve only a daily summary.
-        self.roll_up_samples(&mut tx, "daily", "%Y-%m-%dT00:00:00Z", "%Y-%m-%dT23:59:59.999999999Z", "-14 days", now).await?;
+        self.roll_up_samples(&mut tx, "daily", "%Y-%m-%dT00:00:00", "%Y-%m-%dT23:59:59.999999999", "-14 days", now).await?;
 
         sqlx::query("DELETE FROM limit_samples WHERE datetime(observed_at) < datetime(?, '-14 days')").bind(now).execute(&mut *tx).await?;
         sqlx::query("DELETE FROM limit_rollups WHERE granularity = 'hourly'").execute(&mut *tx).await?;
@@ -529,17 +529,17 @@ impl Storage {
             "INSERT INTO limit_rollups (provider_instance_id, granularity, bucket_start, bucket_end, window_kind, \
                window_duration_mins, resets_at, reset_segment, start_used_percent, end_used_percent, min_used_percent, \
                max_used_percent, average_used_percent, sample_count) \
-             SELECT s.provider_instance_id, ?, strftime('{bucket_start}', s.observed_at), strftime('{bucket_end}', s.observed_at), \
+             SELECT s.provider_instance_id, ?, strftime('{bucket_start}', s.observed_at, 'localtime'), strftime('{bucket_end}', s.observed_at, 'localtime'), \
                s.window_kind, s.window_duration_mins, s.resets_at, COALESCE(CAST(s.resets_at AS TEXT), 'none'), \
                (SELECT x.used_percent FROM limit_samples x WHERE x.provider_instance_id=s.provider_instance_id \
-                 AND strftime('{bucket_start}', x.observed_at)=strftime('{bucket_start}', s.observed_at) AND x.window_kind=s.window_kind \
+                 AND strftime('{bucket_start}', x.observed_at, 'localtime')=strftime('{bucket_start}', s.observed_at, 'localtime') AND x.window_kind=s.window_kind \
                  AND x.window_duration_mins IS s.window_duration_mins AND x.resets_at IS s.resets_at ORDER BY x.observed_at, x.id LIMIT 1), \
                (SELECT x.used_percent FROM limit_samples x WHERE x.provider_instance_id=s.provider_instance_id \
-                 AND strftime('{bucket_start}', x.observed_at)=strftime('{bucket_start}', s.observed_at) AND x.window_kind=s.window_kind \
+                 AND strftime('{bucket_start}', x.observed_at, 'localtime')=strftime('{bucket_start}', s.observed_at, 'localtime') AND x.window_kind=s.window_kind \
                  AND x.window_duration_mins IS s.window_duration_mins AND x.resets_at IS s.resets_at ORDER BY x.observed_at DESC, x.id DESC LIMIT 1), \
                MIN(s.used_percent), MAX(s.used_percent), AVG(s.used_percent), COUNT(*) FROM limit_samples s \
              WHERE datetime(s.observed_at) < datetime(?, '{cutoff}') \
-             GROUP BY s.provider_instance_id, strftime('{bucket_start}', s.observed_at), s.window_kind, s.window_duration_mins, s.resets_at \
+             GROUP BY s.provider_instance_id, strftime('{bucket_start}', s.observed_at, 'localtime'), s.window_kind, s.window_duration_mins, s.resets_at \
              ON CONFLICT(provider_instance_id, granularity, bucket_start, window_kind, reset_segment) DO UPDATE SET \
                bucket_end=excluded.bucket_end, window_duration_mins=excluded.window_duration_mins, resets_at=excluded.resets_at, \
                start_used_percent=excluded.start_used_percent, end_used_percent=excluded.end_used_percent, min_used_percent=excluded.min_used_percent, \
@@ -956,6 +956,14 @@ mod tests {
     async fn retention_keeps_daily_quota_summaries_without_an_hourly_layer() {
         let (storage, _database) = open_storage().await;
         let provider_id = storage.provider_id(CODEX).await.expect("read provider id");
+        let observed_at = "2026-01-01T01:00:00Z";
+        let expected_local_bucket: String = sqlx::query_scalar(
+            "SELECT strftime('%Y-%m-%dT00:00:00', ?, 'localtime')",
+        )
+        .bind(observed_at)
+        .fetch_one(&storage.pool)
+        .await
+        .expect("calculate the sample's local day");
         sqlx::query(
             "INSERT INTO limit_samples \
              (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
@@ -995,6 +1003,16 @@ mod tests {
         assert_eq!(samples, 0);
         assert_eq!(hourly, 0);
         assert_eq!(daily, 2, "both old samples and legacy hourly rows become daily summaries");
+        let sample_bucket: String = sqlx::query_scalar(
+            "SELECT bucket_start FROM limit_rollups WHERE granularity = 'daily' AND resets_at = 1767301200",
+        )
+        .fetch_one(&storage.pool)
+        .await
+        .expect("read the retained sample's bucket");
+        assert_eq!(
+            sample_bucket, expected_local_bucket,
+            "retention keeps the sample on its local calendar day"
+        );
     }
 
     #[tokio::test]

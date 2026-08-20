@@ -202,6 +202,7 @@ button { font: inherit; }
 .custom-range-panel input { height: 36px; min-width: 150px; padding: 0 10px; border: 1px solid #55636d; border-radius: 4px; color: var(--text); background: #0b1116; color-scheme: dark; }
 .custom-range-panel button { height: 36px; padding: 0 15px; border: 0; border-radius: 4px; color: #10150c; background: var(--lime); cursor: pointer; font-weight: 680; }
 .custom-range-panel button:disabled { opacity: 0.45; cursor: not-allowed; }
+.custom-range-error { align-self: center; color: #ffaaa3; font-size: 11px; }
 .range-error { margin: 0; padding: 10px 13px; border: 1px solid #824741; border-radius: 4px; color: #ffaaa3; background: rgba(96, 31, 27, 0.22); font-size: 12px; }
 .history-content { display: flex; flex-direction: column; gap: 16px; transition: opacity 140ms ease; }
 .summary-strip { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 5px; background: rgba(16, 23, 29, 0.62); }
