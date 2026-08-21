@@ -136,9 +136,7 @@ export function DayChart({
   const tooltipRows =
     tooltipIndex === null
       ? []
-      : series.filter(
-          (entry) => mode === "line" || (entry.values[tooltipIndex] ?? 0) > 0,
-        );
+      : series.filter((entry) => mode === "line" || (entry.values[tooltipIndex] ?? 0) > 0);
 
   return (
     <article className={`chart-card${loading ? " chart-loading" : ""}`}>
@@ -154,7 +152,10 @@ export function DayChart({
         <ul className="chart-legend">
           {series.map((entry) => (
             <li key={entry.key}>
-              <i className={mode === "line" ? "legend-line" : "legend-swatch"} style={{ background: entry.color }} />
+              <i
+                className={mode === "line" ? "legend-line" : "legend-swatch"}
+                style={{ background: entry.color }}
+              />
               {entry.label}
             </li>
           ))}
@@ -219,7 +220,9 @@ export function DayChart({
                     return (
                       <g
                         key={day}
-                        className={index === activeIndex ? "chart-band chart-band-active" : "chart-band"}
+                        className={
+                          index === activeIndex ? "chart-band chart-band-active" : "chart-band"
+                        }
                       >
                         {segments.map((segment) =>
                           segment === null ? null : (
@@ -258,7 +261,13 @@ export function DayChart({
                         ) : null}
                         <path className="chart-line" d={linePath(points)} stroke={entry.color} />
                         {last ? (
-                          <circle className="chart-endpoint" cx={last.x} cy={last.y} r={4} fill={entry.color} />
+                          <circle
+                            className="chart-endpoint"
+                            cx={last.x}
+                            cy={last.y}
+                            r={4}
+                            fill={entry.color}
+                          />
                         ) : null}
                         {activeIndex >= 0 && points[activeIndex] ? (
                           <circle
@@ -336,7 +345,9 @@ export function DayChart({
                   </b>
                 </p>
               ))}
-              {tooltipRows.length === 0 ? <p className="chart-tooltip-note">Nothing recorded</p> : null}
+              {tooltipRows.length === 0 ? (
+                <p className="chart-tooltip-note">Nothing recorded</p>
+              ) : null}
               {mode === "stacked" && tooltipRows.length > 1 ? (
                 <p className="chart-tooltip-total">
                   <span>Total</span>

@@ -99,11 +99,7 @@ describe("stacking", () => {
 
 describe("lines", () => {
   it("breaks rather than joining across a day with no reading", () => {
-    const path = linePath([
-      { x: 0, y: 10 },
-      null,
-      { x: 20, y: 30 },
-    ]);
+    const path = linePath([{ x: 0, y: 10 }, null, { x: 20, y: 30 }]);
     expect(path).toBe("M0.00 10.00 M20.00 30.00");
   });
 

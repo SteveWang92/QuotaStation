@@ -10,12 +10,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::AppHandle;
 use tokio::{sync::mpsc, time::Instant};
 
-use crate::{
-    AppState,
-    domain::WatcherDiagnostics,
-    providers::ProviderKind,
-    refresh,
-};
+use crate::{AppState, domain::WatcherDiagnostics, providers::ProviderKind, refresh};
 
 enum WatcherMessage {
     /// Which provider's session files changed, so only that history is reparsed.
@@ -90,8 +85,8 @@ fn reconcile_watchers(
         let event_sender = sender.clone();
         let event_failed = failed.clone();
         let failure_key = key.clone();
-        let Ok(mut watcher) = notify::recommended_watcher(
-            move |result: notify::Result<Event>| match result {
+        let Ok(mut watcher) =
+            notify::recommended_watcher(move |result: notify::Result<Event>| match result {
                 Ok(event) if is_history_event(&event) => {
                     let _ = event_sender.send(WatcherMessage::HistoryChanged(provider));
                 }
@@ -103,8 +98,8 @@ fn reconcile_watchers(
                         .insert(failure_key.clone());
                     let _ = event_sender.send(WatcherMessage::Failed);
                 }
-            },
-        ) else {
+            })
+        else {
             let _ = sender.send(WatcherMessage::Failed);
             continue;
         };
@@ -135,8 +130,7 @@ fn report_reconcile(
 fn is_history_event(event: &Event) -> bool {
     !matches!(event.kind, EventKind::Access(_))
         && event.paths.iter().any(|path| {
-            path.extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+            path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
         })
 }
 
@@ -182,7 +176,9 @@ async fn run_event_loop(
                                 mark_event(&state).await;
                             }
                             WatcherMessage::Failed => mark_failed(&state).await,
-                            WatcherMessage::LocationsChanged(count) => mark_locations(&state, count).await,
+                            WatcherMessage::LocationsChanged(count) => {
+                                mark_locations(&state, count).await
+                            }
                         }
                     }
                 }
@@ -211,7 +207,8 @@ fn update_location_diagnostics(diagnostics: &mut WatcherDiagnostics, count: usiz
     if count == 0 {
         diagnostics.status = "unavailable".to_string();
         diagnostics.error = Some(
-            "No provider session location exists yet; periodic discovery remains active.".to_string(),
+            "No provider session location exists yet; periodic discovery remains active."
+                .to_string(),
         );
     } else {
         diagnostics.status = "active".to_string();
@@ -262,9 +259,6 @@ mod tests {
         assert!(matches!(receiver.try_recv(), Ok(WatcherMessage::Failed)));
 
         report_reconcile(&sender, true, 1);
-        assert!(matches!(
-            receiver.try_recv(),
-            Ok(WatcherMessage::LocationsChanged(1))
-        ));
+        assert!(matches!(receiver.try_recv(), Ok(WatcherMessage::LocationsChanged(1))));
     }
 }

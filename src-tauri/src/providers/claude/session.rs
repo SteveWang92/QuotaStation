@@ -18,8 +18,7 @@ use super::FIVE_HOUR_WINDOW_MINS as WINDOW_MINS;
 const WINDOW_MS: i64 = WINDOW_MINS * 60 * 1_000;
 const HOUR_MS: i64 = 60 * 60 * 1_000;
 
-const NO_LOCAL_HISTORY: &str =
-    "No Claude Code session history was found on this machine. Sign in to Claude Code and \
+const NO_LOCAL_HISTORY: &str = "No Claude Code session history was found on this machine. Sign in to Claude Code and \
      send a request, then refresh.";
 
 pub async fn read_live(plan_type: Option<String>) -> Result<LiveSnapshot> {
@@ -35,7 +34,8 @@ fn read_live_blocking(plan_type: Option<String>) -> Result<LiveSnapshot> {
         bail!("{NO_LOCAL_HISTORY}");
     }
     let now_ms = jiff::Timestamp::now().as_millisecond();
-    let mut timestamps: Vec<i64> = entries.iter().map(|entry| entry.timestamp.as_millis()).collect();
+    let mut timestamps: Vec<i64> =
+        entries.iter().map(|entry| entry.timestamp.as_millis()).collect();
     let observed_at = timestamps.iter().copied().max().unwrap_or(now_ms).div_euclid(1_000);
     // ccusage exposes usage_limit_reset_time without the limit bucket that produced it.
     // Until that field's window semantics can be verified, assigning it to the five-hour
@@ -101,10 +101,7 @@ mod tests {
         let first = 100 * HOUR;
         let later = first + 9 * HOUR;
         let mut timestamps = vec![first, later];
-        assert_eq!(
-            current_window_end(&mut timestamps, later + HOUR),
-            Some(109 * HOUR + WINDOW_MS)
-        );
+        assert_eq!(current_window_end(&mut timestamps, later + HOUR), Some(109 * HOUR + WINDOW_MS));
     }
 
     #[test]
@@ -131,9 +128,6 @@ mod tests {
         let mut ordered = vec![base, base + HOUR, base + 2 * HOUR];
         let mut shuffled = vec![base + 2 * HOUR, base, base + HOUR];
         let now = base + 3 * HOUR;
-        assert_eq!(
-            current_window_end(&mut ordered, now),
-            current_window_end(&mut shuffled, now)
-        );
+        assert_eq!(current_window_end(&mut ordered, now), current_window_end(&mut shuffled, now));
     }
 }

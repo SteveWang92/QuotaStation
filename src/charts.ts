@@ -79,7 +79,13 @@ export function bandGeometry(width: number, count: number, maxBarWidth = 24) {
  * every column ends in: the data-end is rounded, the baseline is not. The radius shrinks
  * on a short bar so a two-pixel value never renders as a lozenge.
  */
-export function columnPath(x: number, y: number, width: number, height: number, radius = 4): string {
+export function columnPath(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius = 4,
+): string {
   const r = Math.max(0, Math.min(radius, width / 2, height));
   const bottom = y + height;
   return [
@@ -132,9 +138,7 @@ export function stackSegments(
  * that day did not sit at zero, and joining across it would draw a slope that never
  * happened.
  */
-export function linePath(
-  points: Array<{ x: number; y: number } | null>,
-): string {
+export function linePath(points: Array<{ x: number; y: number } | null>): string {
   let path = "";
   let penDown = false;
   for (const point of points) {

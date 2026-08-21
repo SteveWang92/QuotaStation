@@ -82,9 +82,8 @@ pub fn load(path: &Path) -> AppSettings {
             let mut settings: AppSettings = serde_json::from_value(stored.clone()).ok()?;
             // v0.2 had one switch for both choices v0.3 split apart. Preserve an expressed
             // choice wherever the old file does not yet carry its replacement.
-            if let Some(legacy) = stored
-                .get("statusLineFullDetails")
-                .and_then(serde_json::Value::as_bool)
+            if let Some(legacy) =
+                stored.get("statusLineFullDetails").and_then(serde_json::Value::as_bool)
             {
                 if stored.get("statusLineOtherProviders").is_none() {
                     settings.status_line_other_providers = legacy;
@@ -155,9 +154,8 @@ mod tests {
     fn scratch(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("quotastation-{name}-settings.json"));
         let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(
-            path.with_extension(format!("json.{}.tmp", std::process::id())),
-        );
+        let _ =
+            std::fs::remove_file(path.with_extension(format!("json.{}.tmp", std::process::id())));
         path
     }
 
@@ -166,7 +164,10 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"taskbarWidgetEnabled":false}"#).expect("read old settings");
         assert!(!settings.taskbar_widget_enabled, "the recorded choice survives");
-        assert_eq!(settings.taskbar_widget_display, None, "no display chosen means the primary one");
+        assert_eq!(
+            settings.taskbar_widget_display, None,
+            "no display chosen means the primary one"
+        );
         assert_eq!(settings.status_line_provider_labels, ProviderLabelStyle::Short);
         assert!(settings.status_line_other_providers, "an unrecorded choice takes its default");
         assert!(settings.status_line_extra_details, "an unrecorded choice takes its default");

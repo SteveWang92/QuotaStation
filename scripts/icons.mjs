@@ -105,7 +105,9 @@ try {
     bitCount: 32,
     image: readFileSync(join(sizeOutput, `${size}.png`)),
   }));
-  const fullEntry = fullEntries.find((candidate) => candidate.width === 256 && candidate.height === 256);
+  const fullEntry = fullEntries.find(
+    (candidate) => candidate.width === 256 && candidate.height === 256,
+  );
   if (!fullEntry) {
     throw new Error("generated full icon.ico is missing its 256x256 entry");
   }

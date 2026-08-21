@@ -30,10 +30,10 @@ fn main() {
     if let Some(git_dir) = git_dir(repo) {
         let head = git_dir.join("HEAD");
         println!("cargo:rerun-if-changed={}", head.display());
-        if let Ok(contents) = std::fs::read_to_string(&head) {
-            if let Some(reference) = contents.strip_prefix("ref: ").map(str::trim) {
-                println!("cargo:rerun-if-changed={}", git_dir.join(reference).display());
-            }
+        if let Ok(contents) = std::fs::read_to_string(&head)
+            && let Some(reference) = contents.strip_prefix("ref: ").map(str::trim)
+        {
+            println!("cargo:rerun-if-changed={}", git_dir.join(reference).display());
         }
     }
     println!("cargo:rustc-env=QUOTASTATION_BUILD_COMMIT={}", build_commit(repo));

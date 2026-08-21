@@ -5,12 +5,12 @@ import {
   createCustomRange,
   createPresetRange,
   customRangeTooLong,
+  type DateRangeSelection,
   formatRangeDate,
   MAX_CUSTOM_RANGE_DAYS,
-  toLocalDateString,
-  todayString,
-  type DateRangeSelection,
   type RangePreset,
+  todayString,
+  toLocalDateString,
 } from "../dateRanges";
 import {
   formatCompactCurrency,
@@ -30,7 +30,7 @@ import type {
   TokenUsage,
   UsageRangeSnapshot,
 } from "../types";
-import { DayChart, type ChartMarker, type ChartSeries } from "./DayChart";
+import { type ChartMarker, type ChartSeries, DayChart } from "./DayChart";
 
 const PRESETS: Array<{ value: Exclude<RangePreset, "custom">; label: string }> = [
   { value: "today", label: "Today" },
@@ -111,7 +111,8 @@ export function UsageSummary({
   const models = openPoint?.models ?? range.models;
   const cost = openPoint ? openPoint.apiEquivalentCostUsd : range.apiEquivalentCostUsd;
 
-  const activeDayAverage = range.days.length === 0 ? 0 : Math.round(range.usage.total / range.days.length);
+  const activeDayAverage =
+    range.days.length === 0 ? 0 : Math.round(range.usage.total / range.days.length);
   const previousActiveAverage =
     previousRange === null || previousRange.days.length === 0
       ? 0
@@ -234,7 +235,7 @@ export function UsageSummary({
             ))}
           </div>
         ) : null}
-        <div className="range-control" aria-label="Usage date range">
+        <div className="range-control" role="group" aria-label="Usage date range">
           {PRESETS.map((preset) => (
             <button
               type="button"
@@ -263,16 +264,31 @@ export function UsageSummary({
         <div className="custom-range-panel">
           <label>
             From
-            <input type="date" value={customStart} max={customEnd || todayString()} onChange={(event) => setCustomStart(event.target.value)} />
+            <input
+              type="date"
+              value={customStart}
+              max={customEnd || todayString()}
+              onChange={(event) => setCustomStart(event.target.value)}
+            />
           </label>
           <label>
             To
-            <input type="date" value={customEnd} min={customStart} max={todayString()} onChange={(event) => setCustomEnd(event.target.value)} />
+            <input
+              type="date"
+              value={customEnd}
+              min={customStart}
+              max={todayString()}
+              onChange={(event) => setCustomEnd(event.target.value)}
+            />
           </label>
           {customTooLong ? (
-            <span className="custom-range-error">Choose no more than {MAX_CUSTOM_RANGE_DAYS} days.</span>
+            <span className="custom-range-error">
+              Choose no more than {MAX_CUSTOM_RANGE_DAYS} days.
+            </span>
           ) : null}
-          <button type="button" onClick={applyCustom} disabled={customInvalid || loading}>Apply range</button>
+          <button type="button" onClick={applyCustom} disabled={customInvalid || loading}>
+            Apply range
+          </button>
         </div>
       ) : null}
 
@@ -369,8 +385,9 @@ export function UsageSummary({
         {openPoint ? (
           <div className="day-drilldown">
             <span>
-              Showing <strong>{formatRangeDate(openPoint.date)}</strong> — {formatNumber(openPoint.usage.total)} tokens
-              across {openPoint.models.length} model{openPoint.models.length === 1 ? "" : "s"}
+              Showing <strong>{formatRangeDate(openPoint.date)}</strong> —{" "}
+              {formatNumber(openPoint.usage.total)} tokens across {openPoint.models.length} model
+              {openPoint.models.length === 1 ? "" : "s"}
             </span>
             <button type="button" onClick={() => setOpenDay(null)}>
               <X aria-hidden="true" /> Back to the range
@@ -381,7 +398,10 @@ export function UsageSummary({
         <div className="history-grid">
           <article className="history-card breakdown-card">
             <div className="card-heading">
-              <div><h3>Daily breakdown</h3><span>Newest first · {range.days.length} active days</span></div>
+              <div>
+                <h3>Daily breakdown</h3>
+                <span>Newest first · {range.days.length} active days</span>
+              </div>
               <span>Tokens and estimated API cost</span>
             </div>
             {range.days.length === 0 ? (
@@ -430,13 +450,17 @@ export function UsageSummary({
             <div className="model-list">
               {models.length === 0 ? (
                 <p className="empty-copy">No model usage recorded.</p>
-              ) : models.slice(0, 6).map((model) => (
-                <div className="model-row" key={model.model}>
-                  <span title={model.model}>{model.model}</span>
-                  <span>{model.percent.toFixed(1)}%</span>
-                  <div className="mini-track"><i style={{ width: `${model.percent}%` }} /></div>
-                </div>
-              ))}
+              ) : (
+                models.slice(0, 6).map((model) => (
+                  <div className="model-row" key={model.model}>
+                    <span title={model.model}>{model.model}</span>
+                    <span>{model.percent.toFixed(1)}%</span>
+                    <div className="mini-track">
+                      <i style={{ width: `${model.percent}%` }} />
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </article>
 
@@ -465,7 +489,10 @@ export function UsageSummary({
                   <span>{category.label}</span>
                   <strong>{formatNumber(usage[category.key])}</strong>
                   <span>
-                    {usage.total === 0 ? "0.0" : ((usage[category.key] / usage.total) * 100).toFixed(1)}%
+                    {usage.total === 0
+                      ? "0.0"
+                      : ((usage[category.key] / usage.total) * 100).toFixed(1)}
+                    %
                   </span>
                 </div>
               ))}
@@ -478,7 +505,15 @@ export function UsageSummary({
 }
 
 /** A headline figure with how it moved against the period before it. */
-function StatTile({ label, value, delta }: { label: string; value: string; delta: string | null | undefined }) {
+function StatTile({
+  label,
+  value,
+  delta,
+}: {
+  label: string;
+  value: string;
+  delta: string | null | undefined;
+}) {
   return (
     <div>
       <span>{label}</span>

@@ -70,8 +70,11 @@ export function hasRolledOver(selection: DateRangeSelection): boolean {
 }
 
 export function formatRangeDate(value: string): string {
-  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short", year: "numeric" })
-    .format(new Date(`${value}T00:00:00`));
+  return new Intl.DateTimeFormat(LOCALE, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(`${value}T00:00:00`));
 }
 
 /**
@@ -79,7 +82,10 @@ export function formatRangeDate(value: string): string {
  * on the dashboard is compared against. A range is inclusive of both ends, so the previous
  * period ends the day before this one starts.
  */
-export function previousPeriod(selection: DateRangeSelection): { startDate: string; endDate: string } {
+export function previousPeriod(selection: DateRangeSelection): {
+  startDate: string;
+  endDate: string;
+} {
   const start = new Date(`${selection.startDate}T00:00:00`);
   const end = new Date(`${selection.endDate}T00:00:00`);
   const length = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;

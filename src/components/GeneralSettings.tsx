@@ -21,12 +21,16 @@ export function GeneralSettings() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void invoke<boolean>("get_autostart").then(setAutostart).catch(() => {
-      // Autostart is one row of this card; the rest still works without it.
-    });
-    void invoke<TaskbarDisplay[]>("get_taskbar_displays").then(setDisplays).catch(() => {
-      // One display and no choice to make is the same as a failed read here.
-    });
+    void invoke<boolean>("get_autostart")
+      .then(setAutostart)
+      .catch(() => {
+        // Autostart is one row of this card; the rest still works without it.
+      });
+    void invoke<TaskbarDisplay[]>("get_taskbar_displays")
+      .then(setDisplays)
+      .catch(() => {
+        // One display and no choice to make is the same as a failed read here.
+      });
   }, []);
 
   const changeAutostart = useCallback(async (enabled: boolean) => {
@@ -83,8 +87,8 @@ export function GeneralSettings() {
       <div className="provider-consent-body">
         <h2>Application</h2>
         <p>
-          Where QuotaStation shows up on this machine. Nothing here reads a provider or
-          leaves the local system.
+          Where QuotaStation shows up on this machine. Nothing here reads a provider or leaves the
+          local system.
         </p>
         {error ? <p className="provider-consent-error">{error}</p> : null}
         <div className="consent-options">

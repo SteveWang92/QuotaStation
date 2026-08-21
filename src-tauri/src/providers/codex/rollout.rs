@@ -5,7 +5,12 @@
 //! running. Only the rate-limit fields are taken; conversation content is never read into
 //! memory beyond the line being decoded, and never leaves this module.
 
-use std::{env, fs::File, io::{BufRead, BufReader}, path::PathBuf};
+use std::{
+    env,
+    fs::File,
+    io::{BufRead, BufReader},
+    path::PathBuf,
+};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -75,10 +80,9 @@ fn read_observation_lines(reader: impl BufRead, observations: &mut Vec<WindowObs
         let Some(limits) = record.payload.rate_limits else { continue };
         let Ok(observed) = record.timestamp.parse::<jiff::Timestamp>() else { continue };
         let observed_at = observed.as_second();
-        for (window, kind) in [
-            (limits.primary, LimitKind::Primary),
-            (limits.secondary, LimitKind::Secondary),
-        ] {
+        for (window, kind) in
+            [(limits.primary, LimitKind::Primary), (limits.secondary, LimitKind::Secondary)]
+        {
             let Some(window) = window else { continue };
             let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) =
                 (window.used_percent, window.window_minutes, window.resets_at)
@@ -108,7 +112,11 @@ fn rollout_files(since: Option<i64>) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn collect_rollout_files(directory: &std::path::Path, since: Option<i64>, files: &mut Vec<PathBuf>) {
+fn collect_rollout_files(
+    directory: &std::path::Path,
+    since: Option<i64>,
+    files: &mut Vec<PathBuf>,
+) {
     let Ok(entries) = std::fs::read_dir(directory) else { return };
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();

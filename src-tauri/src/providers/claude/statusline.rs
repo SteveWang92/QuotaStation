@@ -273,11 +273,8 @@ pub fn run_bridge_if_requested() -> bool {
     ));
     if let Some(limits) = limits {
         let now = jiff::Timestamp::now().as_second();
-        let reading = Reading {
-            observed_at: now,
-            five_hour: limits.five_hour,
-            seven_day: limits.seven_day,
-        };
+        let reading =
+            Reading { observed_at: now, five_hour: limits.five_hour, seven_day: limits.seven_day };
         match windows_from(&reading, now) {
             Ok(_) if store_reading(&reading).is_ok() => {
                 crate::log::write("status line reading stored");
@@ -305,7 +302,10 @@ pub fn run_bridge_if_requested() -> bool {
 
 /// Reads the payload once into the shape the renderer draws from. Every field is optional
 /// in the payload and stays optional here: a missing one costs its column and nothing else.
-fn view_of<'a>(input: Option<&'a StatusLineInput>, limits: Option<&RateLimits>) -> StatusLineView<'a> {
+fn view_of<'a>(
+    input: Option<&'a StatusLineInput>,
+    limits: Option<&RateLimits>,
+) -> StatusLineView<'a> {
     let now = jiff::Timestamp::now().as_second();
     let settings = crate::settings::load_default();
     let workspace = input.and_then(|input| input.workspace.as_ref());
@@ -470,11 +470,7 @@ fn tokens_short(tokens: u64) -> String {
     match tokens {
         tokens if tokens >= 1_000_000 => {
             let millions = tokens as f64 / 1_000_000.0;
-            if millions >= 10.0 {
-                format!("{millions:.0}M")
-            } else {
-                format!("{millions:.1}M")
-            }
+            if millions >= 10.0 { format!("{millions:.0}M") } else { format!("{millions:.1}M") }
         }
         tokens if tokens >= 1_000 => format!("{:.1}k", tokens as f64 / 1_000.0),
         tokens => tokens.to_string(),
@@ -649,7 +645,7 @@ fn windows_from_payload(limits: Option<&RateLimits>) -> Vec<QuotaWindow> {
             window_minutes: Some(minutes),
         })
     })
-        .collect()
+    .collect()
 }
 
 /// Every provider's quota, this client's first.
@@ -667,9 +663,8 @@ fn quota_segments(
         ProviderLabelStyle::Short => provider.short_name.clone(),
         ProviderLabelStyle::Full => provider.display_name.clone(),
     };
-    let mut recorded = crate::summary::load_fresh(now)
-        .map(|summary| summary.providers)
-        .unwrap_or_default();
+    let mut recorded =
+        crate::summary::load_fresh(now).map(|summary| summary.providers).unwrap_or_default();
     let claude = recorded.iter().position(|provider| provider.provider == "claude");
     let mut segments = Vec::new();
     match (payload_windows.is_empty(), claude) {
@@ -739,9 +734,8 @@ fn store_reading(reading: &Reading) -> Result<()> {
     // published by rename: a reader never sees a half-written reading.
     let staging = path.with_extension(format!("{}.tmp", std::process::id()));
     std::fs::write(&staging, serde_json::to_string(reading)?)?;
-    std::fs::rename(&staging, &path).map_err(|error| {
+    std::fs::rename(&staging, &path).inspect_err(|_| {
         let _ = std::fs::remove_file(&staging);
-        error
     })?;
     Ok(())
 }
@@ -783,7 +777,9 @@ fn load_settings(path: &Path) -> Result<serde_json::Value> {
     Ok(load_settings_with_source(path)?.0)
 }
 
-pub(super) fn load_settings_with_source(path: &Path) -> Result<(serde_json::Value, Option<Vec<u8>>)> {
+pub(super) fn load_settings_with_source(
+    path: &Path,
+) -> Result<(serde_json::Value, Option<Vec<u8>>)> {
     let source = match std::fs::read(path) {
         Ok(source) => source,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -843,9 +839,8 @@ fn install_into(path: &Path, command: &str) -> Result<()> {
              then install this one."
         );
     }
-    let object = settings
-        .as_object_mut()
-        .context("the Claude Code settings are not a JSON object")?;
+    let object =
+        settings.as_object_mut().context("the Claude Code settings are not a JSON object")?;
     object.insert(
         "statusLine".to_string(),
         serde_json::json!({ "type": "command", "command": command, "padding": 0 }),
@@ -870,7 +865,8 @@ pub(super) fn write_settings(
     original: Option<&[u8]>,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("create the Claude Code configuration directory")?;
+        std::fs::create_dir_all(parent)
+            .context("create the Claude Code configuration directory")?;
     }
     let current = match std::fs::read(path) {
         Ok(content) => Some(content),
@@ -886,9 +882,8 @@ pub(super) fn write_settings(
     // truncated and rewritten in place.
     let staging = path.with_extension(format!("json.{}.tmp", std::process::id()));
     std::fs::write(&staging, format!("{content}\n")).context("write the Claude Code settings")?;
-    std::fs::rename(&staging, path).map_err(|error| {
+    std::fs::rename(&staging, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&staging);
-        error
     })?;
     Ok(())
 }
@@ -1073,15 +1068,18 @@ mod tests {
 
     #[test]
     fn usage_is_coloured_on_the_thresholds_the_interface_uses() {
-        let line = status_line(&view(None, vec![QuotaSegment {
-            label: "CDX".to_string(),
-            own: false,
-            windows: vec![
-                window("5h", 12.0, None),
-                window("7d", 72.0, None),
-                window("30d", 91.0, None),
-            ],
-        }]));
+        let line = status_line(&view(
+            None,
+            vec![QuotaSegment {
+                label: "CDX".to_string(),
+                own: false,
+                windows: vec![
+                    window("5h", 12.0, None),
+                    window("7d", 72.0, None),
+                    window("30d", 91.0, None),
+                ],
+            }],
+        ));
         assert_eq!(
             line,
             format!("CDX 5h {GREEN}12%{RESET} · 7d {YELLOW}72%{RESET} · 30d {RED}91%{RESET}")
@@ -1090,11 +1088,14 @@ mod tests {
 
     #[test]
     fn a_provider_whose_windows_have_all_restarted_is_left_out_rather_than_shown_empty() {
-        let line = status_line(&view(Some("Opus"), vec![QuotaSegment {
-            label: "CDX".to_string(),
-            own: false,
-            windows: vec![window("5h", 62.0, Some(-60))],
-        }]));
+        let line = status_line(&view(
+            Some("Opus"),
+            vec![QuotaSegment {
+                label: "CDX".to_string(),
+                own: false,
+                windows: vec![window("5h", 62.0, Some(-60))],
+            }],
+        ));
         assert_eq!(line, "Opus", "no second row at all");
     }
 
@@ -1103,11 +1104,14 @@ mod tests {
     /// in the list. Unnamed beside this client's own model it would be read as this client's.
     #[test]
     fn the_one_row_carries_only_this_client_however_the_list_begins() {
-        let mut session = view(Some("Opus"), vec![QuotaSegment {
-            label: "CDX".to_string(),
-            own: false,
-            windows: vec![window("5h", 62.0, Some(2 * 3_600))],
-        }]);
+        let mut session = view(
+            Some("Opus"),
+            vec![QuotaSegment {
+                label: "CDX".to_string(),
+                own: false,
+                windows: vec![window("5h", 62.0, Some(2 * 3_600))],
+            }],
+        );
         session.extra_details = false;
         session.other_providers = false;
         assert_eq!(plain(&status_line(&session)), "Opus", "no foreign quota at all");
@@ -1198,7 +1202,9 @@ cache 78.4%"
 
     #[test]
     fn the_installed_command_is_recognised_however_the_path_is_quoted() {
-        assert!(is_bridge_command("\"C:\\Program Files\\QuotaStation\\quotastation.exe\" --claude-statusline"));
+        assert!(is_bridge_command(
+            "\"C:\\Program Files\\QuotaStation\\quotastation.exe\" --claude-statusline"
+        ));
         assert!(!is_bridge_command("npx ccusage statusline"));
     }
 
@@ -1221,8 +1227,7 @@ cache 78.4%"
         assert_eq!(settings["inputNeededNotifEnabled"], true);
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(
-            written.find("\"env\"").unwrap()
-                < written.find("\"inputNeededNotifEnabled\"").unwrap()
+            written.find("\"env\"").unwrap() < written.find("\"inputNeededNotifEnabled\"").unwrap()
         );
 
         remove_from(&path).expect("remove the status line");

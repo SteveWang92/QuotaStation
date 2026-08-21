@@ -5,12 +5,15 @@
  */
 export function ProviderSetup({ compact = false }: { compact?: boolean }) {
   return (
-    <section className={`provider-setup${compact ? " compact" : ""}`} aria-label="No provider detected">
+    <section
+      className={`provider-setup${compact ? " compact" : ""}`}
+      aria-label="No provider detected"
+    >
       <h2>No provider client detected</h2>
       <p>
-        QuotaStation reads what the provider clients leave on this machine, and found neither
-        Codex nor Claude Code. Check that one is installed and signed in, send a request with
-        it, then refresh.
+        QuotaStation reads what the provider clients leave on this machine, and found neither Codex
+        nor Claude Code. Check that one is installed and signed in, send a request with it, then
+        refresh.
       </p>
     </section>
   );

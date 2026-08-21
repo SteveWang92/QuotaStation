@@ -23,8 +23,16 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
         resets={snapshot.recentResets}
       />
       <section className="quick-usage" aria-label={`${snapshot.displayName} usage today`}>
-        <div><span>Today</span><strong>{formatNumber(snapshot.today.total)}</strong><small>tokens</small></div>
-        <div><span>API equivalent</span><strong>{formatCurrency(snapshot.apiEquivalentCostUsd)}</strong><small>estimated cost</small></div>
+        <div>
+          <span>Today</span>
+          <strong>{formatNumber(snapshot.today.total)}</strong>
+          <small>tokens</small>
+        </div>
+        <div>
+          <span>API equivalent</span>
+          <strong>{formatCurrency(snapshot.apiEquivalentCostUsd)}</strong>
+          <small>estimated cost</small>
+        </div>
       </section>
     </section>
   );
@@ -88,7 +96,12 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
           louder of those two said a second time. */}
       <header className="quick-panel-header">
         <strong>QuotaStation</strong>
-        <button type="button" aria-label="Refresh quota and usage" onClick={() => void refresh()} disabled={refreshing}>
+        <button
+          type="button"
+          aria-label="Refresh quota and usage"
+          onClick={() => void refresh()}
+          disabled={refreshing}
+        >
           <RefreshCw aria-hidden="true" className={refreshing ? "spinning" : ""} />
         </button>
       </header>
@@ -105,7 +118,9 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
       <button
         type="button"
         className="dashboard-link"
-        onClick={() => void invoke("open_dashboard").catch((cause) => setRefreshError(errorMessage(cause)))}
+        onClick={() =>
+          void invoke("open_dashboard").catch((cause) => setRefreshError(errorMessage(cause)))
+        }
       >
         Open dashboard <ArrowUpRight aria-hidden="true" />
       </button>

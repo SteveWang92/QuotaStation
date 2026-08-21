@@ -1,5 +1,5 @@
-import type { LimitResetEvent, LimitWindow } from "../types";
 import { formatCountdown, formatEarlyBy, formatResetTimestamp } from "../format";
+import type { LimitResetEvent, LimitWindow } from "../types";
 
 interface QuotaSectionProps {
   /** Display name of the provider these windows belong to, for labels and empty copy. */
@@ -41,10 +41,12 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
       <div className="quota-label">
         <h2>{limit.label}</h2>
       </div>
-      <div className="quota-meter" aria-label={`${limit.label} usage`}>
+      {/* The bar repeats the share that is written out beside it, so it is hidden from a
+          screen reader rather than labelled twice. */}
+      <div className="quota-meter" aria-hidden="true">
         <div className="quota-track">
           {used === null ? (
-            <span className="unknown" aria-label="Usage unavailable" />
+            <span className="unknown" />
           ) : (
             <span style={{ width: `${Math.min(100, Math.max(0, used))}%` }} />
           )}
@@ -57,14 +59,19 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
       <div className="quota-reset">
         <span>Resets in</span>
         <strong>{formatCountdown(limit.resetsAt)}</strong>
-        <time dateTime={limit.resetsAt === null ? undefined : new Date(limit.resetsAt * 1000).toISOString()}>
+        <time
+          dateTime={
+            limit.resetsAt === null ? undefined : new Date(limit.resetsAt * 1000).toISOString()
+          }
+        >
           {formatResetTimestamp(limit.resetsAt)}
         </time>
       </div>
       {origin ? (
         <p className="quota-origin">
           Possibly restarted early on {formatResetTimestamp(origin.anchoredAt)} — estimated{" "}
-          {formatEarlyBy(origin.earlyBySeconds)}, after a {origin.usedPercentBefore.toFixed(0)}% usage reading.
+          {formatEarlyBy(origin.earlyBySeconds)}, after a {origin.usedPercentBefore.toFixed(0)}%
+          usage reading.
         </p>
       ) : null}
     </div>
@@ -76,7 +83,10 @@ function ResetHistory({ resets }: { resets: LimitResetEvent[] }) {
   return (
     <details className="reset-history">
       <summary>
-        Reset history <span>{resets.length} recorded, {possibleEarly} possibly early</span>
+        Reset history{" "}
+        <span>
+          {resets.length} recorded, {possibleEarly} possibly early
+        </span>
       </summary>
       <ul>
         {resets.map((event) => (
@@ -98,14 +108,22 @@ function ResetHistory({ resets }: { resets: LimitResetEvent[] }) {
   );
 }
 
-export function QuotaSection({ provider, limits, earnedResetCount, resets, compact = false }: QuotaSectionProps) {
+export function QuotaSection({
+  provider,
+  limits,
+  earnedResetCount,
+  resets,
+  compact = false,
+}: QuotaSectionProps) {
   return (
     <section
       className={`quota-section${compact ? " compact" : ""}`}
       aria-label={`${provider} quota windows`}
     >
       {limits.length > 0 ? (
-        limits.map((limit) => <QuotaRow key={limit.kind} limit={limit} origin={originOf(limit, resets)} />)
+        limits.map((limit) => (
+          <QuotaRow key={limit.kind} limit={limit} origin={originOf(limit, resets)} />
+        ))
       ) : (
         <div className="quota-empty">
           <h2>Quota windows unavailable</h2>

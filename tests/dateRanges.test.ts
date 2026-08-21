@@ -37,7 +37,11 @@ describe("preset ranges", () => {
   });
 
   it("counts the current day as part of a multi-day preset", () => {
-    for (const [preset, days] of [["3d", 3], ["7d", 7], ["30d", 30]] as const) {
+    for (const [preset, days] of [
+      ["3d", 3],
+      ["7d", 7],
+      ["30d", 30],
+    ] as const) {
       const range = createPresetRange(preset);
       expect(range.endDate).toBe(todayString());
       expect(calendarDaysBetween(range.startDate, range.endDate)).toBe(days - 1);

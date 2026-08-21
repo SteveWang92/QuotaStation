@@ -66,9 +66,7 @@ pub fn run_hook_if_requested() -> bool {
         .ok()
         .and_then(|input| input.cwd)
         .and_then(|cwd| {
-            std::path::Path::new(&cwd)
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
+            std::path::Path::new(&cwd).file_name().map(|name| name.to_string_lossy().into_owned())
         });
     let event = FinishedEvent { observed_at: jiff::Timestamp::now().as_second(), project };
     if let Some(path) = event_path() {
@@ -125,9 +123,7 @@ fn hook_positions(settings: &serde_json::Value) -> Vec<usize> {
             entry
                 .get("hooks")
                 .and_then(serde_json::Value::as_array)
-                .is_some_and(|commands| {
-                    commands.iter().any(is_notification_handler)
-                })
+                .is_some_and(|commands| commands.iter().any(is_notification_handler))
         })
         .map(|(index, _)| index)
         .collect()
@@ -160,12 +156,10 @@ fn install_into(path: &std::path::Path, command: &str) -> Result<()> {
         "matcher": "",
         "hooks": [{ "type": "command", "command": command }],
     });
-    let object = settings
-        .as_object_mut()
-        .context("the Claude Code settings are not a JSON object")?;
-    let hooks = object
-        .entry("hooks")
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let object =
+        settings.as_object_mut().context("the Claude Code settings are not a JSON object")?;
+    let hooks =
+        object.entry("hooks").or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
     let hooks = hooks.as_object_mut().context("the Claude Code hooks are not a JSON object")?;
     let stop = hooks.entry("Stop").or_insert_with(|| serde_json::Value::Array(Vec::new()));
     stop.as_array_mut().context("the Claude Code Stop hooks are not a JSON array")?.push(entry);
@@ -192,9 +186,8 @@ fn remove_positions(settings: &mut serde_json::Value) -> bool {
     if let Some(stop) = hooks.get_mut("Stop").and_then(serde_json::Value::as_array_mut) {
         for index in (0..stop.len()).rev() {
             let mut remove_group = false;
-            if let Some(handlers) = stop[index]
-                .get_mut("hooks")
-                .and_then(serde_json::Value::as_array_mut)
+            if let Some(handlers) =
+                stop[index].get_mut("hooks").and_then(serde_json::Value::as_array_mut)
             {
                 let before = handlers.len();
                 handlers.retain(|handler| !is_notification_handler(handler));

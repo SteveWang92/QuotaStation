@@ -213,11 +213,7 @@ mod tests {
         assert_eq!(summary.schema, SCHEMA);
         let codex = &summary.providers[0];
         assert_eq!(codex.short_name, "CDX");
-        assert_eq!(
-            codex.windows.len(),
-            1,
-            "unreadable and stale windows are both left out"
-        );
+        assert_eq!(codex.windows.len(), 1, "unreadable and stale windows are both left out");
         assert_eq!(codex.windows[0].label, "5h");
         assert_eq!(codex.windows[0].used_percent, 62.0);
         assert_eq!(codex.today_tokens, 1_234);

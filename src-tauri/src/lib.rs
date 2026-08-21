@@ -14,7 +14,12 @@ mod taskbar;
 
 use crate::settings::AppSettings;
 
-use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex as StdMutex, OnceLock}, time::{Duration, Instant}};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::{Arc, Mutex as StdMutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use domain::{
     DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot, UsageRangeSnapshot,
@@ -64,7 +69,10 @@ impl AppState {
 
     /// Applies a change and records it, so a preference the user expressed survives the
     /// next start whether it came from the tray or from the settings dialog.
-    fn update_settings(&self, change: impl FnOnce(&mut AppSettings)) -> Result<AppSettings, String> {
+    fn update_settings(
+        &self,
+        change: impl FnOnce(&mut AppSettings),
+    ) -> Result<AppSettings, String> {
         let mut settings = self.settings.lock().map_err(|_| "Settings unavailable.".to_string())?;
         let mut updated = settings.clone();
         change(&mut updated);
@@ -90,7 +98,11 @@ impl AppState {
         detected
     }
 
-    async fn with_snapshot(&self, provider: ProviderKind, edit: impl FnOnce(&mut ProviderSnapshot)) {
+    async fn with_snapshot(
+        &self,
+        provider: ProviderKind,
+        edit: impl FnOnce(&mut ProviderSnapshot),
+    ) {
         let mut snapshots = self.snapshots.write().await;
         edit(snapshots.entry(provider).or_insert_with(|| ProviderSnapshot::new(provider)));
     }
@@ -191,20 +203,26 @@ fn place_taskbar_widget(app: &tauri::AppHandle) {
 
 fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     let state = app.state::<Arc<AppState>>();
-    if let Err(error) = state.update_settings(|settings| settings.taskbar_widget_enabled = visible) {
+    if let Err(error) = state.update_settings(|settings| settings.taskbar_widget_enabled = visible)
+    {
         log::write(format!("failed to save application settings: {error}"));
     }
     if visible {
         // Placement comes first: it rebuilds the window when Explorer's taskbar took it
         // with it, and showing a window that no longer exists is what ends the process.
         place_taskbar_widget(app);
-        if let Some(widget) = app.get_webview_window(&taskbar::widget_label()).filter(|_| taskbar::widget_is_live(app)) {
+        if let Some(widget) = app
+            .get_webview_window(&taskbar::widget_label())
+            .filter(|_| taskbar::widget_is_live(app))
+        {
             let _ = widget.show();
         }
         // A low-level hook is called on the thread that installed it, so it has to be
         // installed on the one running the message loop.
         let _ = app.run_on_main_thread(taskbar::watch_widget_clicks);
-    } else if let Some(widget) = app.get_webview_window(&taskbar::widget_label()).filter(|_| taskbar::widget_is_live(app)) {
+    } else if let Some(widget) =
+        app.get_webview_window(&taskbar::widget_label()).filter(|_| taskbar::widget_is_live(app))
+    {
         let _ = widget.hide();
     }
 }
@@ -368,24 +386,18 @@ fn build_kind() -> String {
 }
 
 #[tauri::command]
-async fn get_diagnostics(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<DiagnosticsSnapshot, String> {
+async fn get_diagnostics(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<DiagnosticsSnapshot, String> {
     let mut acquisitions = Vec::new();
     for provider in state.enabled_providers() {
-        acquisitions.extend(
-            state
-                .storage
-                .load_acquisition_diagnostics(provider)
-                .await
-                .map_err(|error| {
-                    sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
-                })?,
-        );
+        acquisitions.extend(state.storage.load_acquisition_diagnostics(provider).await.map_err(
+            |error| sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable"),
+        )?);
     }
-    let retention = state
-        .storage
-        .load_retention_diagnostics()
-        .await
-        .map_err(|error| {
+    let retention =
+        state.storage.load_retention_diagnostics().await.map_err(|error| {
             sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
         })?;
     Ok(DiagnosticsSnapshot {
@@ -412,10 +424,7 @@ async fn backfill_resets(state: &Arc<AppState>) -> anyhow::Result<()> {
             continue;
         }
         let scanned_at = jiff::Timestamp::now().to_string();
-        state
-            .storage
-            .backfill_resets(provider, &observations, &scanned_at)
-            .await?;
+        state.storage.backfill_resets(provider, &observations, &scanned_at).await?;
     }
     Ok(())
 }
@@ -508,10 +517,7 @@ fn quick_panel_growth(
     let bottom_limit = work_area.position.y + work_area.size.height as i32 - margin;
     let bottom = (position.y + size.height as i32).min(bottom_limit);
     let y = (bottom - height as i32).max(top_limit);
-    (
-        PhysicalPosition::new(position.x, y),
-        tauri::PhysicalSize::new(size.width, height),
-    )
+    (PhysicalPosition::new(position.x, y), tauri::PhysicalSize::new(size.width, height))
 }
 
 /// The height the renderer measured, in CSS pixels, for a window that has no frame to
@@ -528,11 +534,7 @@ fn set_quick_panel_height(app: tauri::AppHandle, height: f64) -> Result<(), Stri
     let position = panel.outer_position().map_err(|error| error.to_string())?;
     let requested = ((height * scale_factor).round().clamp(1.0, u32::MAX as f64) as u32)
         .saturating_add(frame.height);
-    let work_area = panel
-        .current_monitor()
-        .ok()
-        .flatten()
-        .map(|monitor| *monitor.work_area());
+    let work_area = panel.current_monitor().ok().flatten().map(|monitor| *monitor.work_area());
     let (next_position, next_size) = match work_area {
         Some(work_area) => quick_panel_growth(work_area, position, size, requested),
         // Without a monitor there is nothing to clamp against, so the request stands and
@@ -650,10 +652,8 @@ fn toggle_quick_panel_beside(
         return false;
     }
 
-    let centre = (
-        anchor_position.x + anchor_size.width / 2.0,
-        anchor_position.y + anchor_size.height / 2.0,
-    );
+    let centre =
+        (anchor_position.x + anchor_size.width / 2.0, anchor_position.y + anchor_size.height / 2.0);
     let monitor = app.monitor_from_point(centre.0, centre.1).ok().flatten();
     let (x, y) = if let Some(monitor) = monitor {
         let (position, fitted_size) = quick_panel_placement(
@@ -682,7 +682,11 @@ fn toggle_quick_panel_beside(
 
 /// The tray reports its icon in whichever unit the platform uses, so the click position —
 /// which is already physical — is what identifies the monitor whose scale converts it.
-fn toggle_quick_panel(app: &tauri::AppHandle, click: PhysicalPosition<f64>, tray_rect: tauri::Rect) {
+fn toggle_quick_panel(
+    app: &tauri::AppHandle,
+    click: PhysicalPosition<f64>,
+    tray_rect: tauri::Rect,
+) {
     let scale_factor = app
         .monitor_from_point(click.x, click.y)
         .ok()
@@ -747,7 +751,8 @@ mod quick_panel_tests {
         let size = tauri::PhysicalSize::new(390, 400);
         let bottom = position.y + size.height as i32;
         for requested in [200, 400, 620] {
-            let (next_position, next_size) = quick_panel_growth(work_area(1000), position, size, requested);
+            let (next_position, next_size) =
+                quick_panel_growth(work_area(1000), position, size, requested);
             assert_eq!(next_size.height, requested);
             assert_eq!(next_size.width, size.width, "only the height follows the contents");
             assert_eq!(next_position.x, position.x);
@@ -778,7 +783,11 @@ mod quick_panel_tests {
             780 + 18,
             "two columns is the widest the panel goes"
         );
-        assert_eq!(quick_panel_size(2, 600, 1.0, frame).height, 600, "the height is passed through");
+        assert_eq!(
+            quick_panel_size(2, 600, 1.0, frame).height,
+            600,
+            "the height is passed through"
+        );
     }
 
     #[test]
@@ -797,11 +806,8 @@ mod quick_panel_tests {
 #[cfg(windows)]
 fn write_desktop_shortcut(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let shortcut_path = app
-        .path()
-        .desktop_dir()
-        .map_err(|error| error.to_string())?
-        .join("QuotaStation.lnk");
+    let shortcut_path =
+        app.path().desktop_dir().map_err(|error| error.to_string())?.join("QuotaStation.lnk");
     let mut shortcut = mslnk::ShellLink::new(&executable).map_err(|error| error.to_string())?;
     if let Some(working_directory) = executable.parent() {
         shortcut.set_working_dir(Some(working_directory.to_string_lossy().into_owned()));
@@ -862,13 +868,22 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "refresh" => {
                 let app = app.clone();
                 let state = app.state::<Arc<AppState>>().inner().clone();
-                tauri::async_runtime::spawn(async move { refresh::refresh_all(&app, &state).await; });
+                tauri::async_runtime::spawn(async move {
+                    refresh::refresh_all(&app, &state).await;
+                });
             }
             "quit" => app.exit(0),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { position, rect, button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+            if let TrayIconEvent::Click {
+                position,
+                rect,
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
                 toggle_quick_panel(tray.app_handle(), position, rect);
             }
         })
@@ -951,7 +966,10 @@ pub fn run() {
                 tauri::async_runtime::block_on(async {
                     let mut diagnostics = state.watcher_diagnostics.write().await;
                     diagnostics.status = "unavailable".to_string();
-                    diagnostics.error = Some("Session watching is unavailable; periodic reconciliation remains active.".to_string());
+                    diagnostics.error = Some(
+                        "Session watching is unavailable; periodic reconciliation remains active."
+                            .to_string(),
+                    );
                 });
             }
             let app_handle = app.handle().clone();
@@ -996,7 +1014,8 @@ pub fn run() {
                     interval.tick().await;
                     loop {
                         interval.tick().await;
-                        refresh::refresh_live_for_provider(&app_handle, &live_state, provider).await;
+                        refresh::refresh_live_for_provider(&app_handle, &live_state, provider)
+                            .await;
                     }
                 });
             }
@@ -1035,7 +1054,9 @@ pub fn run() {
             create_desktop_shortcut
         ])
         .on_window_event(|window, event| {
-            if window.label() == "quick-panel" && matches!(event, tauri::WindowEvent::Focused(false)) {
+            if window.label() == "quick-panel"
+                && matches!(event, tauri::WindowEvent::Focused(false))
+            {
                 let state = window.state::<Arc<AppState>>();
                 // A panel opened by a click on somebody else's window is told it lost focus
                 // before it ever had it — the click belongs to that window, and Windows hands

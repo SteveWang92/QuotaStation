@@ -280,15 +280,9 @@ impl ProviderSnapshot {
                     self.provider.live_refresh_interval().as_secs() as i64 * 3
                 }
                 WindowSource::SessionLog => limit.window_duration_mins.unwrap_or(300) * 60,
-                WindowSource::StatusLine => {
-                    limit.window_duration_mins.unwrap_or(300) * 60 / 5
-                }
+                WindowSource::StatusLine => limit.window_duration_mins.unwrap_or(300) * 60 / 5,
             };
-            limit.freshness = if age <= max_age {
-                Freshness::Fresh
-            } else {
-                Freshness::Stale
-            };
+            limit.freshness = if age <= max_age { Freshness::Fresh } else { Freshness::Stale };
             limit.status_color = quota_color(limit.used_percent);
         }
         self.freshness = if self.last_live_success_at.is_none() || self.limits.is_empty() {
@@ -308,13 +302,12 @@ impl ProviderSnapshot {
             .limits
             .iter()
             .map(|limit| {
-                jiff::Timestamp::now()
-                    .as_second()
-                    .saturating_sub(limit.observed_at) as u64
+                jiff::Timestamp::now().as_second().saturating_sub(limit.observed_at) as u64
             })
             .max()
             .or_else(|| self.last_live_success_at.as_deref().and_then(age_seconds));
-        self.compact_status = if self.freshness == Freshness::Unavailable || self.limits.is_empty() {
+        self.compact_status = if self.freshness == Freshness::Unavailable || self.limits.is_empty()
+        {
             CompactStatus::unavailable()
         } else if self.freshness == Freshness::Stale {
             CompactStatus {
@@ -498,7 +491,6 @@ mod tests {
         assert_eq!(snapshot.compact_status.level, CompactStatusLevel::Stale);
     }
 
-
     #[test]
     fn the_aggregate_reports_the_loudest_provider() {
         let healthy = provider_snapshot(ProviderKind::Codex, 20.0);
@@ -516,10 +508,7 @@ mod tests {
             CompactStatusLevel::Unavailable
         );
 
-        assert_eq!(
-            aggregate_status(&[healthy]).level,
-            CompactStatusLevel::Healthy
-        );
+        assert_eq!(aggregate_status(&[healthy]).level, CompactStatusLevel::Healthy);
     }
 
     #[test]

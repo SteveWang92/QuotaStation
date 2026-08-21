@@ -19,14 +19,13 @@ use windows::{
             HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
-                CallNextHookEx, EnumChildWindows, FindWindowExW, FindWindowW, GA_ROOT, GetAncestor,
-                GetClassNameW, GetForegroundWindow, GetParent, GetWindowLongW, GetWindowRect,
-                GetWindowThreadProcessId, HC_ACTION, IsWindow, IsWindowVisible,
-                MONITORINFOF_PRIMARY, MSLLHOOKSTRUCT, MoveWindow,
-                SetForegroundWindow, SetParent, WindowFromPoint,
-                SetWindowLongW, SetWindowsHookExW, GWL_EXSTYLE, GWL_STYLE, WH_MOUSE_LL,
+                CallNextHookEx, EnumChildWindows, FindWindowExW, FindWindowW, GA_ROOT, GWL_EXSTYLE,
+                GWL_STYLE, GetAncestor, GetClassNameW, GetForegroundWindow, GetParent,
+                GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, HC_ACTION, IsWindow,
+                IsWindowVisible, MONITORINFOF_PRIMARY, MSLLHOOKSTRUCT, MoveWindow,
+                SetForegroundWindow, SetParent, SetWindowLongW, SetWindowsHookExW, WH_MOUSE_LL,
                 WM_LBUTTONDOWN, WM_LBUTTONUP, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE,
-                WS_EX_TOOLWINDOW, WS_POPUP,
+                WS_EX_TOOLWINDOW, WS_POPUP, WindowFromPoint,
             },
         },
     },
@@ -36,7 +35,9 @@ use windows::{
 #[cfg(windows)]
 fn window_rect(hwnd: HWND) -> Option<RECT> {
     let mut rect = RECT::default();
-    unsafe { GetWindowRect(hwnd, &mut rect).ok()?; }
+    unsafe {
+        GetWindowRect(hwnd, &mut rect).ok()?;
+    }
     Some(rect)
 }
 
@@ -108,10 +109,10 @@ fn describe_taskbar(hwnd: HWND) -> Option<Taskbar> {
 fn chosen_taskbar(app: &tauri::AppHandle) -> Option<Taskbar> {
     let preferred = crate::preferred_taskbar_display(app);
     let mut taskbars = taskbars();
-    if let Some(preferred) = preferred.as_deref() {
-        if let Some(index) = taskbars.iter().position(|taskbar| taskbar.display == preferred) {
-            return Some(taskbars.swap_remove(index));
-        }
+    if let Some(preferred) = preferred.as_deref()
+        && let Some(index) = taskbars.iter().position(|taskbar| taskbar.display == preferred)
+    {
+        return Some(taskbars.swap_remove(index));
     }
     if let Some(index) = taskbars.iter().position(|taskbar| taskbar.primary) {
         return Some(taskbars.swap_remove(index));
@@ -270,7 +271,11 @@ pub fn place_widget(app: &tauri::AppHandle) -> Result<(), String> {
     };
     WATCHED_WIDGET.store(hwnd.0 as isize, Ordering::Relaxed);
     let taskbar = chosen_taskbar(app);
-    match taskbar.as_ref().ok_or_else(|| "no taskbar found".to_string()).and_then(|taskbar| dock_widget(app, taskbar)) {
+    match taskbar
+        .as_ref()
+        .ok_or_else(|| "no taskbar found".to_string())
+        .and_then(|taskbar| dock_widget(app, taskbar))
+    {
         Ok(()) => Ok(()),
         Err(reason) => match float_widget(app, taskbar.as_ref()) {
             Ok(()) => Err(format!("{reason}; showing the status as a floating window instead")),
@@ -312,7 +317,11 @@ fn dock_widget(app: &tauri::AppHandle, taskbar: &Taskbar) -> Result<(), String> 
     unsafe {
         if GetParent(hwnd).ok() != Some(taskbar.hwnd) {
             let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-            SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_TOOLWINDOW.0 as i32 | WS_EX_NOACTIVATE.0 as i32);
+            SetWindowLongW(
+                hwnd,
+                GWL_EXSTYLE,
+                ex_style | WS_EX_TOOLWINDOW.0 as i32 | WS_EX_NOACTIVATE.0 as i32,
+            );
             let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
             let child_style = (style & !WS_POPUP.0) | WS_CHILD.0 | WS_CLIPSIBLINGS.0;
             SetWindowLongW(hwnd, GWL_STYLE, child_style as i32);
@@ -365,7 +374,11 @@ fn trailing_edge(taskbar: &Taskbar, rect: RECT, dpi: u32) -> i32 {
 fn leading_edge(taskbar: HWND, rect: RECT) -> i32 {
     let mut right = rect.left;
     let _ = unsafe {
-        EnumChildWindows(Some(taskbar), Some(task_buttons_right), LPARAM(std::ptr::from_mut(&mut right) as isize))
+        EnumChildWindows(
+            Some(taskbar),
+            Some(task_buttons_right),
+            LPARAM(std::ptr::from_mut(&mut right) as isize),
+        )
     };
     right
 }
@@ -374,11 +387,11 @@ fn leading_edge(taskbar: HWND, rect: RECT) -> i32 {
 unsafe extern "system" fn task_buttons_right(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let mut class = [0u16; 64];
     let length = unsafe { GetClassNameW(hwnd, &mut class) } as usize;
-    if String::from_utf16_lossy(&class[..length]) == "MSTaskListWClass" {
-        if let Some(rect) = window_rect(hwnd) {
-            let widest = lparam.0 as *mut i32;
-            unsafe { *widest = (*widest).max(rect.right) };
-        }
+    if String::from_utf16_lossy(&class[..length]) == "MSTaskListWClass"
+        && let Some(rect) = window_rect(hwnd)
+    {
+        let widest = lparam.0 as *mut i32;
+        unsafe { *widest = (*widest).max(rect.right) };
     }
     TRUE
 }
@@ -387,7 +400,9 @@ unsafe extern "system" fn task_buttons_right(hwnd: HWND, lparam: LPARAM) -> BOOL
 fn taskbar_dpi(taskbar: &Taskbar) -> u32 {
     let mut dpi_x = 0;
     let mut dpi_y = 0;
-    match unsafe { GetDpiForMonitor(taskbar.monitor_handle, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) } {
+    match unsafe {
+        GetDpiForMonitor(taskbar.monitor_handle, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y)
+    } {
         Ok(()) if dpi_x > 0 => dpi_x,
         _ => 96,
     }
@@ -413,10 +428,7 @@ pub fn widget_screen_rect(
     let rect = window_rect(hwnd).ok_or("unable to read taskbar widget bounds")?;
     Ok((
         PhysicalPosition::new(f64::from(rect.left), f64::from(rect.top)),
-        PhysicalSize::new(
-            f64::from(rect.right - rect.left),
-            f64::from(rect.bottom - rect.top),
-        ),
+        PhysicalSize::new(f64::from(rect.right - rect.left), f64::from(rect.bottom - rect.top)),
     ))
 }
 
@@ -614,7 +626,8 @@ fn docked_height(taskbar_height: i32) -> i32 {
 
 #[cfg(windows)]
 pub fn set_widget_size(app: &tauri::AppHandle, provider_count: u32) -> Result<(), String> {
-    PROVIDER_SLOTS.store(provider_count.clamp(MIN_PROVIDER_SLOTS, MAX_PROVIDER_SLOTS), Ordering::Relaxed);
+    PROVIDER_SLOTS
+        .store(provider_count.clamp(MIN_PROVIDER_SLOTS, MAX_PROVIDER_SLOTS), Ordering::Relaxed);
     place_widget(app)
 }
 
@@ -651,8 +664,10 @@ fn float_widget(app: &tauri::AppHandle, taskbar: Option<&Taskbar>) -> Result<(),
             taskbar_dpi(taskbar),
         ),
         None => {
-            let monitor =
-                app.primary_monitor().map_err(|error| error.to_string())?.ok_or("primary monitor missing")?;
+            let monitor = app
+                .primary_monitor()
+                .map_err(|error| error.to_string())?
+                .ok_or("primary monitor missing")?;
             let scale = monitor.scale_factor();
             (*monitor.position(), *monitor.size(), (scale * 96.0).round() as u32)
         }
@@ -709,7 +724,7 @@ mod tests {
         // Two providers showing two windows each is the widest the interface goes, and the
         // taskbar clamps anything taller than this.
         assert!(widget_width(2) >= 2 * 200, "two provider columns must fit");
-        assert!(WIDGET_HEIGHT >= 30, "the initial window must fit both rows before docking");
+        const { assert!(WIDGET_HEIGHT >= 30, "the initial window must fit both rows before docking") };
     }
 
     #[test]
@@ -730,7 +745,10 @@ mod tests {
 
     #[test]
     fn a_display_is_named_by_its_number_and_the_size_that_tells_two_screens_apart() {
-        assert_eq!(display_label(r"\\.\DISPLAY2", true, 2752, 1152), "Display 2 (primary) — 2752 × 1152");
+        assert_eq!(
+            display_label(r"\\.\DISPLAY2", true, 2752, 1152),
+            "Display 2 (primary) — 2752 × 1152"
+        );
         assert_eq!(display_label(r"\\.\DISPLAY1", false, 1080, 1920), "Display 1 — 1080 × 1920");
         assert_eq!(display_label("unnamed", false, 800, 600), "unnamed — 800 × 600");
     }

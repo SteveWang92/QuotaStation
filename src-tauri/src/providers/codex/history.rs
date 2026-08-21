@@ -3,7 +3,10 @@ use ccusage_adapter_codex::{
     CodexServiceTier, CodexSpeedPolicy, aggregate_events, calculate_codex_model_cost,
     calculate_group_cost, load_codex_events,
 };
-use ccusage_core::{PricingMap, cli::{AgentReportKind, SharedArgs}};
+use ccusage_core::{
+    PricingMap,
+    cli::{AgentReportKind, SharedArgs},
+};
 
 use crate::domain::{DailyModelUsage, HistoryDay, HistorySnapshot, ModelUsage, TokenUsage};
 
@@ -36,12 +39,19 @@ fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
                 cost_usd: calculate_codex_model_cost(model, usage, &pricing, speed),
             });
         }
-        model_rows.sort_by(|a, b| b.total.cmp(&a.total));
-        let models = model_rows.iter().map(|row| ModelUsage {
-            model: row.model.clone(),
-            tokens: row.total,
-            percent: if group.total_tokens == 0 { 0.0 } else { row.total as f64 / group.total_tokens as f64 * 100.0 },
-        }).collect();
+        model_rows.sort_by_key(|row| std::cmp::Reverse(row.total));
+        let models = model_rows
+            .iter()
+            .map(|row| ModelUsage {
+                model: row.model.clone(),
+                tokens: row.total,
+                percent: if group.total_tokens == 0 {
+                    0.0
+                } else {
+                    row.total as f64 / group.total_tokens as f64 * 100.0
+                },
+            })
+            .collect();
         days.push(HistoryDay {
             date,
             usage: TokenUsage {

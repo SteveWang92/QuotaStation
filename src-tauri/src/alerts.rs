@@ -185,10 +185,7 @@ fn collect_failure(
     if seeding || was_failing || !settings.notify_read_failures {
         return;
     }
-    alerts.push(Alert {
-        title: format!("{} cannot be read", provider.display_name),
-        body: reason,
-    });
+    alerts.push(Alert { title: format!("{} cannot be read", provider.display_name), body: reason });
 }
 
 /// Why a provider is in trouble, or `None` while it is answering.
@@ -218,7 +215,9 @@ fn collect_resets(
 ) {
     let Some(reset) = provider.recent_resets.first() else { return };
     let previous = announced.resets.insert(provider.provider, reset.anchored_at);
-    if seeding || !settings.notify_quota_resets || previous.is_some_and(|at| at >= reset.anchored_at)
+    if seeding
+        || !settings.notify_quota_resets
+        || previous.is_some_and(|at| at >= reset.anchored_at)
     {
         return;
     }
@@ -354,7 +353,11 @@ mod tests {
         );
         assert_eq!(warning.len(), 1, "crossing into the warning share is announced");
         assert!(warning[0].title.contains("running low"));
-        assert!(warning[0].body.contains("72%"), "the body carries the reading: {}", warning[0].body);
+        assert!(
+            warning[0].body.contains("72%"),
+            "the body carries the reading: {}",
+            warning[0].body
+        );
 
         let again = pending(
             &mut announced,

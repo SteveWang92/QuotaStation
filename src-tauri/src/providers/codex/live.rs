@@ -55,7 +55,8 @@ where
 
 fn spawn_app_server(executable: &Path) -> Result<Child> {
     let mut command = Command::new(executable);
-    command.args(["app-server", "--stdio"])
+    command
+        .args(["app-server", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -84,10 +85,8 @@ fn discover_codex_candidates() -> Result<Vec<PathBuf>> {
         add_if_file(&mut candidates, &mut seen, app_data.join("npm").join("codex.cmd"));
         let nvm = app_data.join("nvm");
         if let Ok(versions) = std::fs::read_dir(nvm) {
-            let mut versions = versions
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .collect::<Vec<_>>();
+            let mut versions =
+                versions.filter_map(Result::ok).map(|entry| entry.path()).collect::<Vec<_>>();
             versions.sort_by_key(|path| std::cmp::Reverse(version_key(path)));
             for version in versions {
                 add_if_file(&mut candidates, &mut seen, version.join("codex.cmd"));
@@ -96,7 +95,9 @@ fn discover_codex_candidates() -> Result<Vec<PathBuf>> {
         }
     }
     if candidates.is_empty() {
-        bail!("Codex CLI was not found; install the official @openai/codex package or set QUOTASTATION_CODEX_EXECUTABLE");
+        bail!(
+            "Codex CLI was not found; install the official @openai/codex package or set QUOTASTATION_CODEX_EXECUTABLE"
+        );
     }
     Ok(candidates)
 }
@@ -128,7 +129,11 @@ async fn exchange(child: &mut Child) -> Result<LiveSnapshot> {
     })).await?;
     wait_for_id(&mut lines, 1).await?;
     send(&mut stdin, json!({ "method": "initialized", "params": {} })).await?;
-    send(&mut stdin, json!({ "method": "account/read", "id": 2, "params": { "refreshToken": false } })).await?;
+    send(
+        &mut stdin,
+        json!({ "method": "account/read", "id": 2, "params": { "refreshToken": false } }),
+    )
+    .await?;
     send(&mut stdin, json!({ "method": "account/rateLimits/read", "id": 3 })).await?;
 
     let mut account = None;
@@ -142,47 +147,6 @@ async fn exchange(child: &mut Child) -> Result<LiveSnapshot> {
         }
     }
     normalize(account.unwrap(), rate_limits.unwrap())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn a_failed_exchange_falls_back_to_the_next_candidate() {
-        let candidates = vec![PathBuf::from("first"), PathBuf::from("second")];
-        let snapshot = first_success(candidates, |candidate| async move {
-            if candidate == Path::new("first") {
-                bail!("protocol handshake failed");
-            }
-            Ok(LiveSnapshot {
-                plan_type: Some("test".to_string()),
-                limits: Vec::new(),
-                earned_reset_count: None,
-            })
-        })
-        .await
-        .expect("second candidate succeeds");
-        assert_eq!(snapshot.plan_type.as_deref(), Some("test"));
-    }
-
-    #[test]
-    fn nvm_versions_sort_semantically() {
-        let mut versions = [
-            PathBuf::from("v9.0.0"),
-            PathBuf::from("v24.2.0"),
-            PathBuf::from("v24.18.1"),
-        ];
-        versions.sort_by_key(|path| std::cmp::Reverse(version_key(path)));
-        assert_eq!(versions[0], Path::new("v24.18.1"));
-    }
-
-    #[test]
-    fn missing_known_rate_limit_buckets_are_schema_incompatible() {
-        let error = normalize(json!({ "account": {} }), json!({ "rateLimits": {} }))
-            .expect_err("empty rate-limit shape must fail");
-        assert!(error.to_string().contains("schema_incompatible"));
-    }
 }
 
 async fn send(stdin: &mut tokio::process::ChildStdin, value: Value) -> Result<()> {
@@ -204,20 +168,29 @@ async fn wait_for_id(
     }
 }
 
-async fn next_value(lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>) -> Result<Value> {
-    let line = lines.next_line().await?.ok_or_else(|| anyhow!("Codex app-server closed the connection"))?;
+async fn next_value(
+    lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+) -> Result<Value> {
+    let line = lines
+        .next_line()
+        .await?
+        .ok_or_else(|| anyhow!("Codex app-server closed the connection"))?;
     serde_json::from_str(&line).context("decode Codex app-server response")
 }
 
 fn response_result(value: Value) -> Result<Value> {
     if let Some(error) = value.get("error") {
-        bail!("Codex app-server request failed: {}", error.get("message").and_then(Value::as_str).unwrap_or("unknown error"));
+        bail!(
+            "Codex app-server request failed: {}",
+            error.get("message").and_then(Value::as_str).unwrap_or("unknown error")
+        );
     }
     value.get("result").cloned().ok_or_else(|| anyhow!("Codex app-server response omitted result"))
 }
 
 fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
-    let plan_type = account.pointer("/account/planType").and_then(Value::as_str).map(str::to_string);
+    let plan_type =
+        account.pointer("/account/planType").and_then(Value::as_str).map(str::to_string);
     let rate_limits = rate_result
         .get("rateLimits")
         .and_then(Value::as_object)
@@ -271,7 +244,47 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
     Ok(LiveSnapshot {
         plan_type,
         limits,
-        earned_reset_count: rate_result.pointer("/rateLimitResetCredits/availableCount").and_then(Value::as_u64),
+        earned_reset_count: rate_result
+            .pointer("/rateLimitResetCredits/availableCount")
+            .and_then(Value::as_u64),
         // Codex publishes its own percentages, so nothing needs corroborating.
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_failed_exchange_falls_back_to_the_next_candidate() {
+        let candidates = vec![PathBuf::from("first"), PathBuf::from("second")];
+        let snapshot = first_success(candidates, |candidate| async move {
+            if candidate == Path::new("first") {
+                bail!("protocol handshake failed");
+            }
+            Ok(LiveSnapshot {
+                plan_type: Some("test".to_string()),
+                limits: Vec::new(),
+                earned_reset_count: None,
+            })
+        })
+        .await
+        .expect("second candidate succeeds");
+        assert_eq!(snapshot.plan_type.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn nvm_versions_sort_semantically() {
+        let mut versions =
+            [PathBuf::from("v9.0.0"), PathBuf::from("v24.2.0"), PathBuf::from("v24.18.1")];
+        versions.sort_by_key(|path| std::cmp::Reverse(version_key(path)));
+        assert_eq!(versions[0], Path::new("v24.18.1"));
+    }
+
+    #[test]
+    fn missing_known_rate_limit_buckets_are_schema_incompatible() {
+        let error = normalize(json!({ "account": {} }), json!({ "rateLimits": {} }))
+            .expect_err("empty rate-limit shape must fail");
+        assert!(error.to_string().contains("schema_incompatible"));
+    }
 }

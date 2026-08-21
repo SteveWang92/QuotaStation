@@ -1,14 +1,21 @@
-use std::{collections::{BTreeMap, BTreeSet}, path::Path, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    str::FromStr,
+};
 
 use anyhow::{Context, Result};
-use sqlx::{Row, SqlitePool, sqlite::{SqliteConnectOptions, SqlitePoolOptions}};
+use sqlx::{
+    Row, SqlitePool,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+};
 
 use crate::domain::{
     AcquisitionDiagnostics, CCUSAGE_REVISION, DailyModelUsage, DailyUsagePoint, Freshness,
     HistorySnapshot, LimitKind, LimitResetEvent, LimitWindow, LiveSnapshot, ModelUsage,
     PRICING_CATALOG_REVISION, ProviderSnapshot, QuotaHistoryPoint, QuotaHistorySnapshot,
-    QuotaHistoryWindow, ResetClassification, RetentionDiagnostics, TokenUsage,
-    UsageRangeSnapshot, WindowSource,
+    QuotaHistoryWindow, ResetClassification, RetentionDiagnostics, TokenUsage, UsageRangeSnapshot,
+    WindowSource,
 };
 use crate::providers::ProviderKind;
 use crate::resets::{ResetTracker, WindowObservation, detect};
@@ -72,7 +79,7 @@ fn rank_models(totals: BTreeMap<String, u64>, denominator: u64) -> Vec<ModelUsag
             },
         })
         .collect();
-    models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+    models.sort_by_key(|model| std::cmp::Reverse(model.tokens));
     models
 }
 
@@ -106,22 +113,18 @@ impl Storage {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).context("create application data directory")?;
         }
-        let options = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .foreign_keys(true);
+        let options =
+            SqliteConnectOptions::new().filename(path).create_if_missing(true).foreign_keys(true);
         let pool = SqlitePoolOptions::new().max_connections(4).connect_with(options).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self { pool })
     }
 
     async fn provider_id(&self, provider: ProviderKind) -> Result<i64> {
-        Ok(
-            sqlx::query_scalar("SELECT id FROM provider_instances WHERE provider = ?")
-                .bind(provider.key())
-                .fetch_one(&self.pool)
-                .await?,
-        )
+        Ok(sqlx::query_scalar("SELECT id FROM provider_instances WHERE provider = ?")
+            .bind(provider.key())
+            .fetch_one(&self.pool)
+            .await?)
     }
 
     pub async fn save_live(
@@ -261,7 +264,13 @@ impl Storage {
             };
             observations.insert(
                 name,
-                WindowObservation { observed_at, kind, used_percent, window_duration_mins, resets_at },
+                WindowObservation {
+                    observed_at,
+                    kind,
+                    used_percent,
+                    window_duration_mins,
+                    resets_at,
+                },
             );
         }
         Ok(observations)
@@ -299,13 +308,12 @@ impl Storage {
     /// The instant a rollout scan may start from, leaving enough overlap for a window
     /// that reset either side of the previous scan to still be paired with a reading.
     pub async fn reset_backfill_start(&self, provider: ProviderKind) -> Result<Option<i64>> {
-        let last_completed: Option<String> = sqlx::query_scalar(
-            "SELECT last_completed_at FROM retention_state WHERE job_name = ?",
-        )
-        .bind(backfill_job_name(provider))
-        .fetch_optional(&self.pool)
-        .await?
-        .flatten();
+        let last_completed: Option<String> =
+            sqlx::query_scalar("SELECT last_completed_at FROM retention_state WHERE job_name = ?")
+                .bind(backfill_job_name(provider))
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
         Ok(last_completed
             .as_deref()
             .and_then(epoch_seconds)
@@ -367,7 +375,9 @@ impl Storage {
                     observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
                     kind,
                     used_percent: row.try_get::<Option<f64>, _>("used_percent").ok()??,
-                    window_duration_mins: row.try_get::<Option<i64>, _>("window_duration_mins").ok()??,
+                    window_duration_mins: row
+                        .try_get::<Option<i64>, _>("window_duration_mins")
+                        .ok()??,
                     resets_at: row.try_get::<Option<i64>, _>("resets_at").ok()??,
                 })
             })
@@ -397,12 +407,11 @@ impl Storage {
     ) -> Result<()> {
         let provider_id = self.provider_id(provider).await?;
         let mut tx = self.pool.begin().await?;
-        let previous_timezone: Option<String> = sqlx::query_scalar(
-            "SELECT aggregation_timezone FROM provider_instances WHERE id = ?",
-        )
-        .bind(provider_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let previous_timezone: Option<String> =
+            sqlx::query_scalar("SELECT aggregation_timezone FROM provider_instances WHERE id = ?")
+                .bind(provider_id)
+                .fetch_one(&mut *tx)
+                .await?;
         if previous_timezone.as_deref().is_some_and(|previous| previous != aggregation_timezone) {
             sqlx::query("DELETE FROM daily_usage WHERE provider_instance_id = ?")
                 .bind(provider_id)
@@ -413,13 +422,23 @@ impl Storage {
             "UPDATE provider_instances SET parser_revision = ?, aggregation_timezone = ?, \
              last_history_success_at = ?, updated_at = ? WHERE id = ?",
         )
-        .bind(CCUSAGE_REVISION).bind(aggregation_timezone).bind(observed_at).bind(observed_at).bind(provider_id)
-        .execute(&mut *tx).await?;
+        .bind(CCUSAGE_REVISION)
+        .bind(aggregation_timezone)
+        .bind(observed_at)
+        .bind(observed_at)
+        .bind(provider_id)
+        .execute(&mut *tx)
+        .await?;
         // Replace only the days the current parse covers. Sessions Codex has already
         // rotated away are absent from a parse, and their stored days must survive.
         for day in &history.days {
-            sqlx::query("DELETE FROM daily_usage WHERE provider_instance_id = ? AND usage_date = ?")
-                .bind(provider_id).bind(&day.date).execute(&mut *tx).await?;
+            sqlx::query(
+                "DELETE FROM daily_usage WHERE provider_instance_id = ? AND usage_date = ?",
+            )
+            .bind(provider_id)
+            .bind(&day.date)
+            .execute(&mut *tx)
+            .await?;
             for row in &day.model_rows {
                 self.insert_daily_model(&mut tx, provider_id, &day.date, row, observed_at).await?;
             }
@@ -532,10 +551,25 @@ impl Storage {
         ).execute(&mut *tx).await?;
 
         // Keep recent readings at source granularity, then preserve only a daily summary.
-        self.roll_up_samples(&mut tx, "daily", "%Y-%m-%dT00:00:00", "%Y-%m-%dT23:59:59.999999999", "-14 days", now).await?;
+        self.roll_up_samples(
+            &mut tx,
+            "daily",
+            "%Y-%m-%dT00:00:00",
+            "%Y-%m-%dT23:59:59.999999999",
+            "-14 days",
+            now,
+        )
+        .await?;
 
-        sqlx::query("DELETE FROM limit_samples WHERE datetime(observed_at) < datetime(?, '-14 days')").bind(now).execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM limit_rollups WHERE granularity = 'hourly'").execute(&mut *tx).await?;
+        sqlx::query(
+            "DELETE FROM limit_samples WHERE datetime(observed_at) < datetime(?, '-14 days')",
+        )
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM limit_rollups WHERE granularity = 'hourly'")
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             "DELETE FROM refresh_runs WHERE id NOT IN (SELECT MAX(id) FROM refresh_runs GROUP BY provider_instance_id, acquisition_path) \
              AND ((status = 'succeeded' AND datetime(completed_at) < datetime(?, '-30 days')) \
@@ -592,7 +626,11 @@ impl Storage {
                 last_completed_at: row.try_get("last_completed_at")?,
                 error: row.try_get("last_error")?,
             },
-            None => RetentionDiagnostics { status: "pending".into(), last_completed_at: None, error: None },
+            None => RetentionDiagnostics {
+                status: "pending".into(),
+                last_completed_at: None,
+                error: None,
+            },
         })
     }
 
@@ -601,10 +639,14 @@ impl Storage {
         let instance = sqlx::query(
             "SELECT plan_type, earned_reset_count, last_live_success_at, last_history_success_at \
              FROM provider_instances WHERE id = ?",
-        ).bind(provider_id).fetch_one(&self.pool).await?;
+        )
+        .bind(provider_id)
+        .fetch_one(&self.pool)
+        .await?;
         let mut snapshot = ProviderSnapshot::new(provider);
         snapshot.plan_type = instance.try_get("plan_type")?;
-        snapshot.earned_reset_count = instance.try_get::<Option<i64>, _>("earned_reset_count")?.map(|v| v as u64);
+        snapshot.earned_reset_count =
+            instance.try_get::<Option<i64>, _>("earned_reset_count")?.map(|v| v as u64);
         let live_success: Option<String> = instance.try_get("last_live_success_at")?;
         let history_success: Option<String> = instance.try_get("last_history_success_at")?;
         snapshot.last_live_success_at = live_success;
@@ -614,25 +656,29 @@ impl Storage {
             "SELECT window_kind, used_percent, window_duration_mins, resets_at, observed_at, source \
              FROM limit_current WHERE provider_instance_id = ? ORDER BY window_kind",
         ).bind(provider_id).fetch_all(&self.pool).await?;
-        snapshot.limits = limits.into_iter().filter_map(|row| {
-            let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
-            // Each of these three is nullable, and SQLite hands a null column to a decode
-            // that did not ask for an option as a zero rather than as an error. Read them as
-            // options, or a window nothing has measured comes back reading 0% used and
-            // restarting at the epoch.
-            let window_duration_mins = row.try_get::<Option<i64>, _>("window_duration_mins").ok()?;
-            Some(LimitWindow {
-                kind,
-                label: kind.window_label(window_duration_mins),
-                used_percent: row.try_get::<Option<f64>, _>("used_percent").ok()?,
-                window_duration_mins,
-                resets_at: row.try_get::<Option<i64>, _>("resets_at").ok()?,
-                source: WindowSource::parse(&row.try_get::<String, _>("source").ok()?)?,
-                observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
-                freshness: Freshness::Stale,
-                status_color: String::new(),
+        snapshot.limits = limits
+            .into_iter()
+            .filter_map(|row| {
+                let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
+                // Each of these three is nullable, and SQLite hands a null column to a decode
+                // that did not ask for an option as a zero rather than as an error. Read them as
+                // options, or a window nothing has measured comes back reading 0% used and
+                // restarting at the epoch.
+                let window_duration_mins =
+                    row.try_get::<Option<i64>, _>("window_duration_mins").ok()?;
+                Some(LimitWindow {
+                    kind,
+                    label: kind.window_label(window_duration_mins),
+                    used_percent: row.try_get::<Option<f64>, _>("used_percent").ok()?,
+                    window_duration_mins,
+                    resets_at: row.try_get::<Option<i64>, _>("resets_at").ok()?,
+                    source: WindowSource::parse(&row.try_get::<String, _>("source").ok()?)?,
+                    observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
+                    freshness: Freshness::Stale,
+                    status_color: String::new(),
+                })
             })
-        }).collect();
+            .collect();
 
         snapshot.recent_resets = self.load_recent_resets(provider).await?;
         let date = jiff::Zoned::now().date().to_string();
@@ -674,8 +720,12 @@ impl Storage {
              AND usage_date BETWEEN ? AND ? \
              GROUP BY usage_date, model ORDER BY usage_date ASC, total_tokens DESC",
         )
-        .bind(provider_id).bind(provider_id).bind(start.to_string()).bind(end.to_string())
-        .fetch_all(&self.pool).await?;
+        .bind(provider_id)
+        .bind(provider_id)
+        .bind(start.to_string())
+        .bind(end.to_string())
+        .fetch_all(&self.pool)
+        .await?;
 
         let mut total = TokenUsage::default();
         let mut total_cost = 0.0;
@@ -766,7 +816,7 @@ impl Storage {
              FROM limit_rollups WHERE provider_instance_id = ? AND granularity = 'daily' \
              AND max_used_percent IS NOT NULL \
              GROUP BY day, window_kind \
-             ) WHERE day BETWEEN ? AND ? GROUP BY day, window_kind ORDER BY day ASC"
+             ) WHERE day BETWEEN ? AND ? GROUP BY day, window_kind ORDER BY day ASC",
         )
         .bind(provider_id)
         .bind(provider_id)
@@ -778,7 +828,8 @@ impl Storage {
         let mut windows: BTreeMap<LimitKind, (Option<i64>, Vec<QuotaHistoryPoint>)> =
             BTreeMap::new();
         for row in rows {
-            let Some(kind) = row.try_get::<String, _>("window_kind").ok().as_deref().and_then(parse_kind)
+            let Some(kind) =
+                row.try_get::<String, _>("window_kind").ok().as_deref().and_then(parse_kind)
             else {
                 continue;
             };
@@ -870,19 +921,21 @@ impl Storage {
             (provider.history_path(), format!("{name} local history"), history_success),
         ];
         Ok(paths
-        .into_iter()
-        .map(|(path, label, last_success_at)| {
-            let run = latest.get(&path);
-            AcquisitionDiagnostics {
-                acquisition_path: path,
-                label,
-                status: run.map(|(_, status, _)| status.clone()).unwrap_or_else(|| "pending".to_string()),
-                last_attempt_at: run.map(|(started_at, _, _)| started_at.clone()),
-                last_success_at,
-                error: run.and_then(|(_, _, error)| error.clone()),
-            }
-        })
-        .collect())
+            .into_iter()
+            .map(|(path, label, last_success_at)| {
+                let run = latest.get(&path);
+                AcquisitionDiagnostics {
+                    acquisition_path: path,
+                    label,
+                    status: run
+                        .map(|(_, status, _)| status.clone())
+                        .unwrap_or_else(|| "pending".to_string()),
+                    last_attempt_at: run.map(|(started_at, _, _)| started_at.clone()),
+                    last_success_at,
+                    error: run.and_then(|(_, _, error)| error.clone()),
+                }
+            })
+            .collect())
     }
 }
 
@@ -920,10 +973,7 @@ mod tests {
                 std::process::id(),
                 COUNTER.fetch_add(1, Ordering::Relaxed)
             ));
-            Self {
-                path: directory.join("quota station.db"),
-                directory: Some(directory),
-            }
+            Self { path: directory.join("quota station.db"), directory: Some(directory) }
         }
     }
 
@@ -957,7 +1007,13 @@ mod tests {
     fn day(date: &str, model: &str, total: u64) -> HistoryDay {
         HistoryDay {
             date: date.to_string(),
-            usage: TokenUsage { input: total / 2, cache_read: 0, output: total / 2, reasoning: 0, total },
+            usage: TokenUsage {
+                input: total / 2,
+                cache_read: 0,
+                output: total / 2,
+                reasoning: 0,
+                total,
+            },
             models: vec![ModelUsage { model: model.to_string(), tokens: total, percent: 100.0 }],
             cost_usd: 1.5,
             model_rows: vec![DailyModelUsage {
@@ -1016,13 +1072,12 @@ mod tests {
         let (storage, _database) = open_storage().await;
         let provider_id = storage.provider_id(CODEX).await.expect("read provider id");
         let observed_at = "2026-01-01T01:00:00Z";
-        let expected_local_bucket: String = sqlx::query_scalar(
-            "SELECT strftime('%Y-%m-%dT00:00:00', ?, 'localtime')",
-        )
-        .bind(observed_at)
-        .fetch_one(&storage.pool)
-        .await
-        .expect("calculate the sample's local day");
+        let expected_local_bucket: String =
+            sqlx::query_scalar("SELECT strftime('%Y-%m-%dT00:00:00', ?, 'localtime')")
+                .bind(observed_at)
+                .fetch_one(&storage.pool)
+                .await
+                .expect("calculate the sample's local day");
         sqlx::query(
             "INSERT INTO limit_samples \
              (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
@@ -1051,14 +1106,16 @@ mod tests {
             .fetch_one(&storage.pool)
             .await
             .expect("count samples");
-        let hourly: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM limit_rollups WHERE granularity = 'hourly'")
-            .fetch_one(&storage.pool)
-            .await
-            .expect("count hourly rollups");
-        let daily: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM limit_rollups WHERE granularity = 'daily'")
-            .fetch_one(&storage.pool)
-            .await
-            .expect("count daily rollups");
+        let hourly: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM limit_rollups WHERE granularity = 'hourly'")
+                .fetch_one(&storage.pool)
+                .await
+                .expect("count hourly rollups");
+        let daily: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM limit_rollups WHERE granularity = 'daily'")
+                .fetch_one(&storage.pool)
+                .await
+                .expect("count daily rollups");
         assert_eq!(samples, 0);
         assert_eq!(hourly, 0);
         assert_eq!(daily, 2, "both old samples and legacy hourly rows become daily summaries");
@@ -1077,7 +1134,9 @@ mod tests {
     #[tokio::test]
     async fn a_history_refresh_replaces_only_the_days_it_parsed() {
         let (storage, _database) = open_storage().await;
-        let first = HistorySnapshot { days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5", 200)] };
+        let first = HistorySnapshot {
+            days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5", 200)],
+        };
         storage
             .save_history(CODEX, &first, "Australia/Brisbane", "2026-08-02T00:00:00Z")
             .await
@@ -1090,10 +1149,16 @@ mod tests {
             .await
             .expect("save second history");
 
-        let range = storage.load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02").await.expect("load range");
+        let range = storage
+            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02")
+            .await
+            .expect("load range");
         assert_eq!(range.days.len(), 2, "the day outside the parse must survive");
         assert_eq!(range.days[0].usage.total, 100);
-        assert_eq!(range.days[1].usage.total, 500, "the reparsed day must be replaced, not added to");
+        assert_eq!(
+            range.days[1].usage.total, 500,
+            "the reparsed day must be replaced, not added to"
+        );
         assert_eq!(range.usage.total, 600);
     }
 
@@ -1108,7 +1173,12 @@ mod tests {
             .await
             .expect("save Codex history");
         storage
-            .save_history(ProviderKind::Claude, &claude, "Australia/Brisbane", "2026-08-01T00:00:00Z")
+            .save_history(
+                ProviderKind::Claude,
+                &claude,
+                "Australia/Brisbane",
+                "2026-08-01T00:00:00Z",
+            )
             .await
             .expect("save Claude history");
 
@@ -1117,14 +1187,21 @@ mod tests {
             .await
             .expect("load combined range");
         assert_eq!(combined.usage.total, 500);
-        assert_eq!(combined.days.len(), 1, "one calendar day stays one point however many providers filled it");
+        assert_eq!(
+            combined.days.len(),
+            1,
+            "one calendar day stays one point however many providers filled it"
+        );
         assert_eq!(combined.models.len(), 2, "each provider's models keep their own row");
 
         let single = storage
             .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-01")
             .await
             .expect("load Codex range");
-        assert_eq!(single.usage.total, 100, "asking for one provider still answers for that one alone");
+        assert_eq!(
+            single.usage.total, 100,
+            "asking for one provider still answers for that one alone"
+        );
     }
 
     #[tokio::test]
@@ -1144,7 +1221,10 @@ mod tests {
             .await
             .expect("rebuild New York history");
 
-        let range = storage.load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02").await.expect("load range");
+        let range = storage
+            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02")
+            .await
+            .expect("load range");
         assert_eq!(range.days.len(), 1, "rows bucketed in the previous timezone must not survive");
         assert_eq!(range.days[0].date, "2026-08-02");
         assert_eq!(range.days[0].usage.total, 250);
@@ -1160,10 +1240,12 @@ mod tests {
             .save_history(CODEX, &first, "Australia/Brisbane", "2026-08-02T00:00:00Z")
             .await
             .expect("save initial history");
-        sqlx::query("UPDATE provider_instances SET aggregation_timezone = NULL WHERE provider = 'codex'")
-            .execute(&storage.pool)
-            .await
-            .expect("simulate an upgraded database");
+        sqlx::query(
+            "UPDATE provider_instances SET aggregation_timezone = NULL WHERE provider = 'codex'",
+        )
+        .execute(&storage.pool)
+        .await
+        .expect("simulate an upgraded database");
 
         let latest = HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 250)] };
         storage
@@ -1171,8 +1253,15 @@ mod tests {
             .await
             .expect("adopt the current timezone");
 
-        let range = storage.load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02").await.expect("load range");
-        assert_eq!(range.days.len(), 2, "an unknown legacy timezone must not trigger destructive cleanup");
+        let range = storage
+            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02")
+            .await
+            .expect("load range");
+        assert_eq!(
+            range.days.len(),
+            2,
+            "an unknown legacy timezone must not trigger destructive cleanup"
+        );
         assert_eq!(range.days[0].usage.total, 100);
         assert_eq!(range.days[1].usage.total, 250);
     }
@@ -1188,7 +1277,10 @@ mod tests {
             .await
             .expect("save history");
 
-        let range = storage.load_usage_range(Some(CODEX), "2026-08-02", "2026-08-02").await.expect("load range");
+        let range = storage
+            .load_usage_range(Some(CODEX), "2026-08-02", "2026-08-02")
+            .await
+            .expect("load range");
         assert_eq!(range.days.len(), 1);
         assert_eq!(range.usage.total, 300);
         assert_eq!(range.models.len(), 1);
@@ -1221,7 +1313,11 @@ mod tests {
         assert_eq!(snapshot.limits.len(), 1);
         assert_eq!(snapshot.limits[0].label, "5-hour window");
         assert_eq!(snapshot.limits[0].used_percent, Some(40.0));
-        assert_eq!(snapshot.freshness, Freshness::Fresh, "freshness follows the stored observation");
+        assert_eq!(
+            snapshot.freshness,
+            Freshness::Fresh,
+            "freshness follows the stored observation"
+        );
     }
 
     const WEEK_MINUTES: i64 = 10_080;
@@ -1279,8 +1375,14 @@ mod tests {
     async fn a_window_ageing_out_earlier_requests_is_not_recorded_as_a_restart() {
         let (storage, _database) = open_storage().await;
         let expiry = 1_786_800_000;
-        storage.save_live(CODEX, &weekly_live(15.0, expiry), "2026-06-04T10:00:00Z").await.expect("save first");
-        storage.save_live(CODEX, &weekly_live(4.0, expiry + 7_200), "2026-06-04T15:00:00Z").await.expect("save second");
+        storage
+            .save_live(CODEX, &weekly_live(15.0, expiry), "2026-06-04T10:00:00Z")
+            .await
+            .expect("save first");
+        storage
+            .save_live(CODEX, &weekly_live(4.0, expiry + 7_200), "2026-06-04T15:00:00Z")
+            .await
+            .expect("save second");
         assert!(storage.load_recent_resets(CODEX).await.expect("load resets").is_empty());
     }
 
@@ -1477,7 +1579,10 @@ mod tests {
         assert_eq!(recorded, 1);
 
         // A second scan sees the same readings again and must not duplicate the event.
-        storage.backfill_resets(CODEX, &observations, "2026-08-12T01:00:00Z").await.expect("rerun the backfill");
+        storage
+            .backfill_resets(CODEX, &observations, "2026-08-12T01:00:00Z")
+            .await
+            .expect("rerun the backfill");
         let events = storage.load_recent_resets(CODEX).await.expect("load resets");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].classification, ResetClassification::Unplanned);

@@ -47,7 +47,7 @@ fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
                 cost_usd: breakdown.cost,
             })
             .collect::<Vec<_>>();
-        model_rows.sort_by(|a, b| b.total.cmp(&a.total));
+        model_rows.sort_by_key(|row| std::cmp::Reverse(row.total));
 
         let models = model_rows
             .iter()
@@ -80,6 +80,14 @@ fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
     Ok(HistorySnapshot { days })
 }
 
+/// Claude reports cache creation as its own category and reports no reasoning tokens,
+/// while the shared model carries reasoning but not cache creation. Counting cache
+/// creation as input keeps the four categories adding up to the same total the parser
+/// reported, which matters more on screen than a category Codex alone can fill.
+fn input_tokens(input: u64, cache_creation: u64) -> u64 {
+    input + cache_creation
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,16 +118,9 @@ mod tests {
             last.models.len()
         );
         for day in &history.days {
-            let parts = day.usage.input + day.usage.cache_read + day.usage.output + day.usage.reasoning;
+            let parts =
+                day.usage.input + day.usage.cache_read + day.usage.output + day.usage.reasoning;
             assert_eq!(parts, day.usage.total, "categories must add up on {}", day.date);
         }
     }
-}
-
-/// Claude reports cache creation as its own category and reports no reasoning tokens,
-/// while the shared model carries reasoning but not cache creation. Counting cache
-/// creation as input keeps the four categories adding up to the same total the parser
-/// reported, which matters more on screen than a category Codex alone can fill.
-fn input_tokens(input: u64, cache_creation: u64) -> u64 {
-    input + cache_creation
 }
