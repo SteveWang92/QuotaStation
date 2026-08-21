@@ -64,10 +64,20 @@ it, and a paragraph found in two of them is a bug in the documentation.
   `--debug` and `npm run tauri dev` forms in `docs/development.md` exist for diagnosing a
   specific problem, not for finishing a change.
 - After the gates pass, close the running instance, rebuild it with `npm run build` then
-  `cargo build --release --manifest-path src-tauri/Cargo.toml`, and start it again with
-  `explorer.exe src-tauri\target\release\quotastation.exe` so it comes up owned by the shell
-  exactly as a double-click would rather than tied to the agent's terminal. Keep that
-  executable path stable: Claude Code's registered status-line command points at it.
+  `cargo build --release --manifest-path src-tauri/Cargo.toml`, and start it again **in the
+  background** — always with `--background`, which comes up in the tray and opens no window:
+
+  ```powershell
+  (New-Object -ComObject Shell.Application).ShellExecute(
+    "<repo>\src-tauri\target\release\quotastation.exe", "--background")
+  ```
+
+  The argument is the point. A launch with no arguments opens the dashboard and takes over
+  Steve's screen for a restart he did not ask for; the logon entry carries `--background` for
+  that reason, and a verification start is no different. The COM call is what carries an
+  argument while leaving the process detached from the agent's terminal, which
+  `explorer.exe <path>` cannot do and `Start-Process` does not do. Keep the executable path
+  stable: Claude Code's registered status-line command points at it.
 - Only one instance runs at a time — a second one hands over to the first and exits, which
   looks like a crash. Close the running copy, including one started from the tray, first.
 
