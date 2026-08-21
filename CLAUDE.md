@@ -55,9 +55,14 @@ it, and a paragraph found in two of them is a bug in the documentation.
 ## Verification
 
 - Documentation-only work needs only a focused file review.
-- Use the minimum local check required by the global rules. The three gates CI enforces are
-  `npm test`, `npm run build`, and `cargo test --locked --manifest-path src-tauri/Cargo.toml`.
-  There is no lint or format gate.
+- Use the minimum local check required by the global rules. The gates CI enforces are
+  `npm run lint`, `npm test`, `npm run build`, `cargo fmt --manifest-path src-tauri/Cargo.toml
+  --check`, `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D
+  warnings`, and `cargo test --locked --manifest-path src-tauri/Cargo.toml`.
+- `npm run format` writes the renderer's formatting and import order; `cargo fmt` does the
+  same for the core. Run them rather than hand-correcting what the gate reports. A rule the
+  code deliberately breaks is turned off in `biome.jsonc` with the reason beside it — never
+  with an inline suppression comment.
 - **The verification artifact is the unbundled release build, never the debug one.** Steve
   runs `src-tauri/target/release/quotastation.exe` — a debug build is a different binary with
   different performance, and handing him one is handing him something he does not run. The
@@ -126,7 +131,7 @@ Releasing is manual here, and Steve starts it. Never bump a version, tag, create
 
 The full sequence, once Steve asks for it:
 
-1. On a clean `dev`: `git fetch origin` then `git merge --ff-only origin/dev`. Run the three
+1. On a clean `dev`: `git fetch origin` then `git merge --ff-only origin/dev`. Run the
    verification gates.
 2. Open the `dev` → `main` pull request titled `chore(release): vX.Y.Z` — the title becomes
    the squash subject verbatim, so it has to be a Conventional Commit line — with the
@@ -139,8 +144,8 @@ The full sequence, once Steve asks for it:
    happens before that confirmation.
 5. Now bump the three version fields, refresh `Cargo.lock` and `package-lock.json`, rename
    `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, open a fresh empty `[Unreleased]` above
-   it, update the compare links at the bottom of the file, re-run the three gates, and
-   commit it as `chore(release): vX.Y.Z`. Push `dev`. This is the last commit on the branch.
+   it, update the compare links at the bottom of the file, re-run the gates, and commit it
+   as `chore(release): vX.Y.Z`. Push `dev`. This is the last commit on the branch.
 6. Update the pull request body to the finished changelog section if the entries changed
    during the review.
 7. Squash-merge it: `gh pr merge --squash --body ""`.

@@ -66,8 +66,24 @@ only the days it parsed:
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-Both suites, plus the renderer build, run on a Windows runner for every pull request into
-`dev` and every push to `dev` or `main`; see `.github/workflows/ci.yml`.
+Check the renderer's formatting, import order, and lint rules. `npm run format` writes what
+the check reports; the rules this project turns off, and why, are listed in `biome.jsonc`:
+
+```powershell
+npm run lint
+```
+
+Check the core the same way. Formatting is `rustfmt.toml`; the lint gate treats every clippy
+warning as an error, and `cargo fmt --manifest-path src-tauri/Cargo.toml` writes the
+formatting:
+
+```powershell
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+```
+
+Both suites and both lint gates, plus the renderer build, run on a Windows runner for every
+pull request into `dev` and every push to `dev` or `main`; see `.github/workflows/ci.yml`.
 
 ### What each build command produces
 

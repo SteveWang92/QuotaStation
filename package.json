@@ -9,6 +9,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "lint": "biome check",
+    "format": "biome check --write",
     "tauri": "tauri",
     "icons": "node scripts/icons.mjs"
   },
@@ -22,6 +24,7 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.9",
     "@tauri-apps/cli": "2.11.4",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
