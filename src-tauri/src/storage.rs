@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::Path, str::FromStr};
+use std::{collections::{BTreeMap, BTreeSet}, path::Path, str::FromStr};
 
 use anyhow::{Context, Result};
 use sqlx::{Row, SqlitePool, sqlite::{SqliteConnectOptions, SqlitePoolOptions}};
@@ -136,6 +136,7 @@ impl Storage {
         // against one that measured the same window a different way manufactures restarts.
         let authoritative = provider.authoritative_window_source();
         let previous = self.load_current_observations(provider_id, authoritative).await?;
+        let measured = self.windows_with_an_allowance(provider_id).await?;
         let mut tx = self.pool.begin().await?;
         if let Some(now) = epoch_seconds(observed_at) {
             for limit in &live.limits {
@@ -173,6 +174,16 @@ impl Storage {
         .await?;
         for limit in &live.limits {
             let kind = kind_column(limit.kind);
+            // A window that arrives without an allowance is a weaker reading of a window
+            // already measured, not news about it: Claude Code publishes the five-hour window
+            // with a restart but no percentage while one closes, and the session-log fallback
+            // beneath it never carries a percentage at all. Such a reading is ignored whole —
+            // stored, it empties every surface and, worse, discards the reading a restart
+            // would have been recognised against, which is how the Claude five-hour reset of
+            // 2026-08-21 went unrecorded. The log still records what arrived.
+            if limit.used_percent.is_none() && measured.contains(kind) {
+                continue;
+            }
             sqlx::query(
                 "INSERT INTO limit_current \
                  (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at, source) \
@@ -204,6 +215,19 @@ impl Storage {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// The windows a percentage has already been measured for. A reading that has none
+    /// cannot replace one of these; see the guard in [`Storage::save_live`].
+    async fn windows_with_an_allowance(&self, provider_id: i64) -> Result<BTreeSet<String>> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT window_kind FROM limit_current \
+             WHERE provider_instance_id = ? AND used_percent IS NOT NULL",
+        )
+        .bind(provider_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
     }
 
     async fn load_current_observations(
@@ -592,13 +616,17 @@ impl Storage {
         ).bind(provider_id).fetch_all(&self.pool).await?;
         snapshot.limits = limits.into_iter().filter_map(|row| {
             let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
-            let window_duration_mins = row.try_get("window_duration_mins").ok();
+            // Each of these three is nullable, and SQLite hands a null column to a decode
+            // that did not ask for an option as a zero rather than as an error. Read them as
+            // options, or a window nothing has measured comes back reading 0% used and
+            // restarting at the epoch.
+            let window_duration_mins = row.try_get::<Option<i64>, _>("window_duration_mins").ok()?;
             Some(LimitWindow {
                 kind,
                 label: kind.window_label(window_duration_mins),
-                used_percent: row.try_get("used_percent").ok(),
+                used_percent: row.try_get::<Option<f64>, _>("used_percent").ok()?,
                 window_duration_mins,
-                resets_at: row.try_get("resets_at").ok(),
+                resets_at: row.try_get::<Option<i64>, _>("resets_at").ok()?,
                 source: WindowSource::parse(&row.try_get::<String, _>("source").ok()?)?,
                 observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
                 freshness: Freshness::Stale,
@@ -1332,6 +1360,69 @@ mod tests {
             storage.load_recent_resets(claude).await.expect("load Claude resets").is_empty(),
             "a window recovered from local logs cannot evidence a restart"
         );
+    }
+
+    /// Claude Code publishes the five-hour window with a restart but no percentage while one
+    /// closes, and the session-log fallback fills the gap with a window it can time but not
+    /// measure. Storing that reading is what lost the reset of 2026-08-21: it replaced the
+    /// last published percentage, so the first reading of the new window had nothing left to
+    /// be a restart against.
+    #[tokio::test]
+    async fn a_reading_without_an_allowance_leaves_the_measured_window_it_cannot_replace() {
+        let (storage, _database) = open_storage().await;
+        let claude = ProviderKind::Claude;
+        let published = |used, resets_at| {
+            let mut live = weekly_live(used, resets_at);
+            live.limits[0].source = WindowSource::StatusLine;
+            live
+        };
+        let unmeasured = |resets_at| {
+            let mut live = published(0.0, resets_at);
+            live.limits[0].used_percent = None;
+            live.limits[0].source = WindowSource::SessionLog;
+            live
+        };
+        storage
+            .save_live(claude, &published(78.0, 1_786_800_000), "2026-08-10T15:00:00Z")
+            .await
+            .expect("save the published reading");
+        storage
+            .save_live(claude, &unmeasured(1_786_810_000), "2026-08-11T09:28:00Z")
+            .await
+            .expect("save the reading that carries no percentage");
+
+        let snapshot = storage.load_snapshot(claude).await.expect("load snapshot");
+        assert_eq!(snapshot.limits.len(), 1);
+        assert_eq!(
+            snapshot.limits[0].used_percent,
+            Some(78.0),
+            "the measured reading stands until another measurement replaces it",
+        );
+        assert_eq!(snapshot.limits[0].resets_at, Some(1_786_800_000));
+
+        storage
+            .save_live(claude, &published(1.0, 1_787_026_583), "2026-08-11T09:29:00Z")
+            .await
+            .expect("save the reading after the restart");
+        let events = storage.load_recent_resets(claude).await.expect("load Claude resets");
+        assert_eq!(events.len(), 1, "the restart is still recognised across the gap");
+        assert_eq!(events[0].used_percent_before, 78.0);
+    }
+
+    /// A window nothing has ever measured is still worth storing: the session logs are the
+    /// only source when Claude Code has never run beside QuotaStation.
+    #[tokio::test]
+    async fn a_window_no_source_has_measured_is_stored_from_the_timing_alone() {
+        let (storage, _database) = open_storage().await;
+        let claude = ProviderKind::Claude;
+        let mut live = weekly_live(0.0, 1_786_800_000);
+        live.limits[0].used_percent = None;
+        live.limits[0].source = WindowSource::SessionLog;
+        storage.save_live(claude, &live, "2026-08-10T15:00:00Z").await.expect("save the reading");
+
+        let snapshot = storage.load_snapshot(claude).await.expect("load snapshot");
+        assert_eq!(snapshot.limits.len(), 1, "the window is known even without an allowance");
+        assert_eq!(snapshot.limits[0].used_percent, None);
     }
 
     /// The quota Claude Code hands its status line is server-published, exactly like Codex's
