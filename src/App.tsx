@@ -96,9 +96,12 @@ function Dashboard() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const activeRangeRef = useRef(INITIAL_RANGE);
   // The usage history shows one provider at a time, or all of them counted together,
-  // while the quota sections above always show each provider on its own.
-  const [selectedProvider, setSelectedProvider] = useState<HistoryProvider>("codex");
-  const providerRef = useRef<HistoryProvider>("codex");
+  // while the quota sections above always show each provider on its own. It opens on the
+  // combined view: the window is read first for how much has been spent today, and naming
+  // one provider there answers a narrower question than the one being asked. A workspace
+  // with a single provider falls back to it, because "all" of one is that one.
+  const [selectedProvider, setSelectedProvider] = useState<HistoryProvider>("all");
+  const providerRef = useRef<HistoryProvider>("all");
   const rangeRequestId = useRef(0);
   const rangeRequested = useRef(false);
 

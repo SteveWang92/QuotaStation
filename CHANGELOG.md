@@ -13,6 +13,10 @@ on `main`, with the matching section below as its notes.
 - The status line marks uncommitted files and how far the branch stands from its remote.
 - A finished-turn notification names the Claude Code session as well as the project.
 
+### Changed
+
+- The usage history opens on All rather than on the first provider.
+
 ### Fixed
 
 - The window title bar and the scrollbars are drawn dark instead of light.
