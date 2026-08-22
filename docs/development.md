@@ -82,8 +82,9 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-Both suites and both lint gates, plus the renderer build, run on a Windows runner for every
-pull request into `dev` and every push to `dev` or `main`; see `.github/workflows/ci.yml`.
+Both suites and both lint gates, plus the renderer build, run on a Windows runner for the
+`dev` to `main` release pull request and every push to `main`; see `.github/workflows/ci.yml`.
+Commits on `dev` rely on the same local gates before they are pushed.
 
 ### What each build command produces
 

@@ -48,6 +48,17 @@ pub fn load_daily_summaries(
     })
 }
 
+/// Daily and hourly summaries from the same file load and deduplication pass.
+pub fn load_daily_and_hourly_summaries(
+    shared: &SharedArgs,
+    project_filter: Option<&str>,
+    group_by_project: bool,
+) -> Result<(Vec<UsageSummary>, Vec<(String, UsageSummary)>)> {
+    progress::track_usage_load(progress::UsageLoadAgent("Claude"), shared.json, || {
+        daily::load_daily_and_hourly_summaries_inner(shared, project_filter, group_by_project)
+    })
+}
+
 /// The daily report's own parse, grouped by local hour instead. Each key is a local
 /// `YYYY-MM-DDTHH:00`; the summaries are the same shape the daily report returns.
 pub fn load_hourly_summaries(

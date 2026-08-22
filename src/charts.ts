@@ -8,6 +8,26 @@
  * geometry the marks are drawn from; nothing here knows about SVG.
  */
 import { toLocalDateString } from "./dateRanges";
+import type { TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot } from "./types";
+
+const TOKEN_FIELDS: Array<keyof TokenUsage> = [
+  "input",
+  "cacheRead",
+  "output",
+  "reasoning",
+  "total",
+];
+
+/** Whether hourly rows are a complete representation of the same stored range. */
+export function hourlyUsageMatchesRange(
+  hours: UsageHoursSnapshot,
+  range: UsageRangeSnapshot,
+): boolean {
+  if (hours.startDate !== range.startDate || hours.endDate !== range.endDate) return false;
+  return TOKEN_FIELDS.every(
+    (field) => hours.hours.reduce((sum, hour) => sum + hour.usage[field], 0) === range.usage[field],
+  );
+}
 
 /** Every calendar day from `startDate` to `endDate` inclusive, as `YYYY-MM-DD`. */
 export function calendarDays(startDate: string, endDate: string): string[] {

@@ -17,13 +17,22 @@
 /// carried as a number because it is written to a file in between.
 pub type WindowHandle = isize;
 
+use serde::{Deserialize, Serialize};
+
+/// A recorded window and the process that owned it when the hook found it.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TerminalTarget {
+    pub window: WindowHandle,
+    pub process_id: u32,
+}
+
 /// The terminal window the process that called this is running inside, if there is one.
 ///
 /// Every failure along the way — no parent, no window, a console host with nothing visible —
 /// costs the handle and nothing else. The notification is still raised; it simply has
 /// nowhere to send a click.
 #[cfg(windows)]
-pub fn owning_window() -> Option<WindowHandle> {
+pub fn owning_window() -> Option<TerminalTarget> {
     use windows::Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, LPARAM, TRUE},
         System::Diagnostics::ToolHelp::{
@@ -95,7 +104,7 @@ pub fn owning_window() -> Option<WindowHandle> {
     // the bound is only there so a cycle in a corrupt process table cannot spin forever.
     for _ in 0..12 {
         if let Some(window) = window_of(current) {
-            return Some(window.0 as WindowHandle);
+            return Some(TerminalTarget { window: window.0 as WindowHandle, process_id: current });
         }
         let parent =
             pairs.iter().find(|(process, _)| *process == current).map(|(_, parent)| *parent);
@@ -108,7 +117,7 @@ pub fn owning_window() -> Option<WindowHandle> {
 }
 
 #[cfg(not(windows))]
-pub fn owning_window() -> Option<WindowHandle> {
+pub fn owning_window() -> Option<TerminalTarget> {
     None
 }
 
@@ -119,21 +128,23 @@ pub fn owning_window() -> Option<WindowHandle> {
 /// QuotaStation. Attaching to the foreground thread's input queue for the length of the
 /// call is the documented way through that, and it is bounded to exactly this one action.
 #[cfg(windows)]
-pub fn focus(handle: WindowHandle) -> bool {
+pub fn focus(target: TerminalTarget) -> bool {
     use windows::Win32::{
         Foundation::HWND,
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
-        UI::{
-            Input::KeyboardAndMouse::{SetActiveWindow, SetFocus},
-            WindowsAndMessaging::{
-                GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow, SW_RESTORE,
-                SetForegroundWindow, ShowWindow,
-            },
+        UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow, SW_RESTORE,
+            SetForegroundWindow, ShowWindow,
         },
     };
 
-    let window = HWND(handle as *mut std::ffi::c_void);
+    let window = HWND(target.window as *mut std::ffi::c_void);
     if !unsafe { IsWindow(Some(window)) }.as_bool() {
+        return false;
+    }
+    let mut owner = 0u32;
+    unsafe { GetWindowThreadProcessId(window, Some(&mut owner)) };
+    if owner != target.process_id {
         return false;
     }
     unsafe {
@@ -146,17 +157,15 @@ pub fn focus(handle: WindowHandle) -> bool {
         if IsIconic(window).as_bool() {
             let _ = ShowWindow(window, SW_RESTORE);
         }
-        let _ = SetForegroundWindow(window);
-        let _ = SetActiveWindow(window);
-        let _ = SetFocus(Some(window));
+        let focused = SetForegroundWindow(window).as_bool();
         if attached {
             let _ = AttachThreadInput(this_thread, foreground_thread, false);
         }
+        focused
     }
-    true
 }
 
 #[cfg(not(windows))]
-pub fn focus(_handle: WindowHandle) -> bool {
+pub fn focus(_target: TerminalTarget) -> bool {
     false
 }

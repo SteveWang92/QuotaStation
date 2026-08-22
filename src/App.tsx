@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { hourlyUsageMatchesRange } from "./charts";
 import { ProviderSetup } from "./components/ProviderSetup";
 import { QuickPanel } from "./components/QuickPanel";
 import { QuotaSection } from "./components/QuotaSection";
@@ -152,12 +153,10 @@ function Dashboard() {
         if (requestId === rangeRequestId.current) {
           setUsageRange(next);
           setPreviousRange(previous);
-          // Hourly rows only start existing at the first refresh after this build, and a
-          // range that has usage but no hours would otherwise draw an empty hourly chart
-          // over data the daily shape can show.
-          setUsageHours(
-            hourly === null || (hourly.hours.length === 0 && next.usage.total > 0) ? null : hourly,
-          );
+          // Hourly rows only start existing after each provider's first refresh on this
+          // build. Until every provider covers the whole range, keep the complete daily
+          // shape instead of drawing a plausible but partial hourly chart.
+          setUsageHours(hourly !== null && hourlyUsageMatchesRange(hourly, next) ? hourly : null);
           setQuotaHistory(quota);
           setActiveRange(resolvedRange);
         }

@@ -25,6 +25,10 @@ on `main`, with the matching section below as its notes.
 - Opening and closing the reset history quickly no longer selects the heading text.
 - Sessions that finish at the same moment each raise their own notification.
 - A quota window reset is no longer missed when the provider reports that window without a percentage.
+- Hourly charts fall back to complete daily data until every provider has current hourly history.
+- Claude history refreshes no longer parse the same session files twice for daily and hourly summaries.
+- The status line counts every untracked file, resolves relative worktree pointers, and times out a slow Git status read.
+- Notification clicks validate the original terminal process before bringing its window forward.
 
 ## [0.3.0] - 2026-08-21
 

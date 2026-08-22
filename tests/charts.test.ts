@@ -6,10 +6,58 @@ import {
   calendarDays,
   calendarHours,
   columnPath,
+  hourlyUsageMatchesRange,
   labelStride,
   linePath,
   stackSegments,
 } from "../src/charts";
+
+describe("hourly range completeness", () => {
+  const usage = (total: number) => ({
+    input: total,
+    cacheRead: 0,
+    output: 0,
+    reasoning: 0,
+    total,
+  });
+
+  it("waits for every provider's hourly rows before replacing complete daily data", () => {
+    const range = {
+      startDate: "2026-08-20",
+      endDate: "2026-08-20",
+      usage: usage(30),
+      apiEquivalentCostUsd: null,
+      models: [],
+      days: [],
+    };
+    const partial = {
+      startDate: range.startDate,
+      endDate: range.endDate,
+      hours: [
+        { hourStart: "2026-08-20T09:00", usage: usage(10), apiEquivalentCostUsd: null, models: [] },
+      ],
+    };
+
+    expect(hourlyUsageMatchesRange(partial, range)).toBe(false);
+    expect(
+      hourlyUsageMatchesRange(
+        {
+          ...partial,
+          hours: [
+            ...partial.hours,
+            {
+              hourStart: "2026-08-20T10:00",
+              usage: usage(20),
+              apiEquivalentCostUsd: null,
+              models: [],
+            },
+          ],
+        },
+        range,
+      ),
+    ).toBe(true);
+  });
+});
 
 describe("the day axis", () => {
   it("covers both ends of the range", () => {

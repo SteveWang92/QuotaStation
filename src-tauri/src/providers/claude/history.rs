@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use ccusage_adapter_claude::{load_daily_summaries, load_hourly_summaries};
+use ccusage_adapter_claude::load_daily_and_hourly_summaries;
 use ccusage_core::{UsageSummary, cli::SharedArgs};
 
 use crate::{
@@ -16,7 +16,7 @@ pub async fn read_history(timezone: &str) -> Result<HistorySnapshot> {
 
 fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
     // `breakdown` is what populates the per-model rows the dashboard shows.
-    let summaries = load_daily_summaries(
+    let (summaries, hourly) = load_daily_and_hourly_summaries(
         &SharedArgs {
             json: true,
             breakdown: true,
@@ -63,35 +63,24 @@ fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
         });
     }
     days.sort_by(|a, b| a.date.cmp(&b.date));
-    Ok(HistorySnapshot { days, hours: hourly_buckets(timezone)? })
+    Ok(HistorySnapshot { days, hours: hourly_buckets(hourly, timezone) })
 }
 
 /// The same session files, summarised by local hour instead of by local day.
 ///
 /// The adapter answers both from one parse and one deduplication, so an hour never
 /// disagrees with the day it belongs to.
-fn hourly_buckets(timezone: &str) -> Result<Vec<HistoryHour>> {
-    let summaries = load_hourly_summaries(
-        &SharedArgs {
-            json: true,
-            breakdown: true,
-            timezone: Some(timezone.to_string()),
-            ..SharedArgs::default()
-        },
-        None,
-    )
-    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-
+fn hourly_buckets(summaries: Vec<(String, UsageSummary)>, timezone: &str) -> Vec<HistoryHour> {
     let zone = jiff::tz::TimeZone::get(timezone).unwrap_or_else(|_| jiff::tz::TimeZone::system());
     let cutoff = hours::cutoff_date(&zone);
-    Ok(summaries
+    summaries
         .into_iter()
         .filter(|(hour_start, _)| hours::within_window(hour_start, &cutoff))
         .map(|(hour_start, summary)| HistoryHour {
             hour_start,
             model_rows: model_rows_of(&summary),
         })
-        .collect())
+        .collect()
 }
 
 /// One summary's per-model rows, largest first, in the shared shape both resolutions are

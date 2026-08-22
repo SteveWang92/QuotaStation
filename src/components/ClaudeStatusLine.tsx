@@ -190,9 +190,9 @@ export function ClaudeFinishedNotifications() {
         <h2>Notify me when Claude Code finishes</h2>
         <p>
           A desktop notification when a turn ends, so a long one can be left running. This adds a{" "}
-          <code>Stop</code> hook to Claude Code's settings and leaves every other hook alone.
-          Nothing from the conversation is read or stored — the notification names the project
-          directory and nothing else.
+          <code>Stop</code> hook to Claude Code's settings and leaves every other hook alone. No
+          prompt or response content is read or stored. Only the project directory name and Claude
+          Code session title are kept locally so the notification can identify the turn.
         </p>
         {error ? <p className="provider-consent-error">{error}</p> : null}
       </div>

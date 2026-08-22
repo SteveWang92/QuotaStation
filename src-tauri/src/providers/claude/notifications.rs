@@ -71,7 +71,7 @@ pub struct FinishedEvent {
     /// The terminal window the turn was running in, so clicking the notification can go
     /// back to it. Absent whenever the hook could not find one.
     #[serde(default)]
-    pub terminal: Option<crate::terminal::WindowHandle>,
+    pub terminal: Option<crate::terminal::TerminalTarget>,
 }
 
 /// What the status-line bridge knows about a session, for the hook to read back.
@@ -446,7 +446,7 @@ mod tests {
             observed_at: now,
             project: Some("Q".into()),
             session: Some("Dark theme".into()),
-            terminal: Some(1234),
+            terminal: Some(crate::terminal::TerminalTarget { window: 1234, process_id: 5678 }),
         };
         write_event(&path, &written).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();

@@ -29,6 +29,8 @@ chunking, and ordered parallel reads.
 - `paths::usage_files`
 - `load_entries`
 - `load_daily_summaries`
+- `load_hourly_summaries`
+- `load_daily_and_hourly_summaries`
 - `usage_limit_reset_time_from_line`
 
 ## Depends on

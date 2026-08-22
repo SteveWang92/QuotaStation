@@ -385,14 +385,16 @@ fn watch_for_finished_turns(app: tauri::AppHandle) {
                 match event.terminal {
                     // Clicking goes back to the terminal the turn ran in. The tab inside it
                     // is the user's to pick: nothing outside Windows Terminal can choose one.
-                    Some(window) => {
+                    Some(target) => {
                         alerts::raise_with_action(
                             &app,
                             "Claude Code finished responding",
                             &body,
                             move || {
-                                if !terminal::focus(window) {
-                                    log::write("the terminal a finished turn ran in has closed");
+                                if !terminal::focus(target) {
+                                    log::write(
+                                        "the terminal a finished turn ran in could not be raised",
+                                    );
                                 }
                             },
                         );
@@ -423,7 +425,7 @@ fn apply_theme(app: &tauri::AppHandle, preference: theme::ThemePreference) -> th
         theme::ThemePreference::Light => Some(tauri::Theme::Light),
     };
     for window in app.webview_windows().values() {
-        if window.label() != "taskbar-widget" {
+        if !window.label().starts_with("taskbar-widget") {
             let _ = window.set_theme(frame);
         }
     }

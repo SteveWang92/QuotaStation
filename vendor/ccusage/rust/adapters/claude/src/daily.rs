@@ -31,16 +31,31 @@ pub(super) fn load_daily_summaries_inner(
     group_by_project: bool,
 ) -> Result<Vec<UsageSummary>> {
     let deduped = load_deduped_entries(shared, project_filter)?;
+    Ok(daily_summaries(&deduped, group_by_project))
+}
 
+pub(super) fn load_daily_and_hourly_summaries_inner(
+    shared: &SharedArgs,
+    project_filter: Option<&str>,
+    group_by_project: bool,
+) -> Result<(Vec<UsageSummary>, Vec<(String, UsageSummary)>)> {
+    let deduped = load_deduped_entries(shared, project_filter)?;
+    Ok((daily_summaries(&deduped, group_by_project), hourly_summaries(&deduped)))
+}
+
+fn daily_summaries(
+    deduped: &[DailyLoadedEntry],
+    group_by_project: bool,
+) -> Vec<UsageSummary> {
     if group_by_project {
         let mut groups = BTreeMap::<(String, Arc<str>), DailyAccumulator>::new();
-        for entry in &deduped {
+        for entry in deduped {
             groups
                 .entry((entry.date.clone(), Arc::clone(&entry.project)))
                 .or_default()
                 .add_entry(entry);
         }
-        return Ok(groups
+        return groups
             .into_iter()
             .map(|((date, project), group)| {
                 let mut summary = group.into_summary();
@@ -48,48 +63,47 @@ pub(super) fn load_daily_summaries_inner(
                 summary.project = Some(project.to_string());
                 summary
             })
-            .collect());
+            .collect();
     }
 
     let mut groups = BTreeMap::<String, DailyAccumulator>::new();
-    for entry in &deduped {
+    for entry in deduped {
         groups
             .entry(entry.date.clone())
             .or_default()
             .add_entry(entry);
     }
-    Ok(groups
+    groups
         .into_iter()
         .map(|(key, group)| {
             let mut summary = group.into_summary();
             summary.date = Some(key);
             summary
         })
-        .collect())
+        .collect()
 }
 
-/// The same parse, bucketed by local hour instead of by local day.
-///
-/// The dashboard shows an hourly shape for short ranges, and reading the session files a
-/// second time to get it would risk the two views disagreeing whenever a write landed
-/// between the passes. Both reports therefore come from one load and one deduplication;
-/// only the grouping key differs. The key is a local `YYYY-MM-DDTHH:00`.
+/// The daily parse, bucketed by local hour. The key is a local `YYYY-MM-DDTHH:00`.
 pub(super) fn load_hourly_summaries_inner(
     shared: &SharedArgs,
     project_filter: Option<&str>,
 ) -> Result<Vec<(String, UsageSummary)>> {
     let deduped = load_deduped_entries(shared, project_filter)?;
+    Ok(hourly_summaries(&deduped))
+}
+
+fn hourly_summaries(deduped: &[DailyLoadedEntry]) -> Vec<(String, UsageSummary)> {
     let mut groups = BTreeMap::<String, DailyAccumulator>::new();
-    for entry in &deduped {
+    for entry in deduped {
         groups
             .entry(entry.hour.clone())
             .or_default()
             .add_entry(entry);
     }
-    Ok(groups
+    groups
         .into_iter()
         .map(|(hour, group)| (hour, group.into_summary()))
-        .collect())
+        .collect()
 }
 
 /// Every usage entry on this machine, read once and deduplicated once.
