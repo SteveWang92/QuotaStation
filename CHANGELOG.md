@@ -20,6 +20,7 @@ on `main`, with the matching section below as its notes.
 ### Fixed
 
 - The window title bar and the scrollbars are drawn dark instead of light.
+- Opening and closing the reset history quickly no longer selects the heading text.
 - Sessions that finish at the same moment each raise their own notification.
 - A quota window reset is no longer missed when the provider reports that window without a percentage.
 

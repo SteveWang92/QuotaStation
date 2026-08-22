@@ -82,7 +82,14 @@ function ResetHistory({ resets }: { resets: LimitResetEvent[] }) {
   const possibleEarly = resets.filter((event) => event.classification === "unplanned").length;
   return (
     <details className="reset-history">
-      <summary>
+      {/* Opening and closing the panel is two clicks in quick succession, which the browser
+          also reads as a double click and answers by selecting the word under the pointer.
+          Only the repeat is cancelled, so dragging across the line still selects it. */}
+      <summary
+        onMouseDown={(event) => {
+          if (event.detail > 1) event.preventDefault();
+        }}
+      >
         Reset history{" "}
         <span>
           {resets.length} recorded, {possibleEarly} possibly early
