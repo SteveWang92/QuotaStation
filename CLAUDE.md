@@ -106,11 +106,13 @@ Releasing is manual here, and Steve starts it. Never bump a version, tag, create
 - The version appears in three files that must always move together: `package.json`,
   `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`. `Cargo.lock` and
   `package-lock.json` record it too, so refresh them in the same commit.
-- **The release commit is the last commit before the merge.** The pull request is opened,
-  reviewed and fixed on the unbumped branch; the version bump and the changelog dating are
-  committed only after Steve confirms the pull request is ready to merge. A release commit
-  pushed before the review, or left sitting under later fixes, means the tagged commit is
-  not the state that was reviewed — drop it and force-push with lease if it happens.
+- **The release commit is the first commit of the release.** The version bump and the
+  changelog dating are committed and pushed *before* the pull request is opened, so the
+  review and CI both run against the exact tree that will be tagged; review fixes then land
+  as ordinary commits on top of it. The squash merge is what makes the order irrelevant —
+  the branch becomes one commit on `main` and the tag goes on `main` afterwards. QuotaStation
+  has no release script, so this sequence is run by hand, matching what `release.mjs` /
+  `release.py` do in the scripted repositories.
 - `main` holds the released state and nothing deploys from it — QuotaStation is a desktop
   application, so a release is a tag and its changelog notes. The repository's GitHub default
   branch is `dev`.
@@ -128,21 +130,26 @@ The full sequence, once Steve asks for it:
 
 1. On a clean `dev`: `git fetch origin` then `git merge --ff-only origin/dev`. Run the
    verification gates.
-2. Open the `dev` → `main` pull request titled `chore(release): vX.Y.Z` — the title becomes
-   the squash subject verbatim, so it has to be a Conventional Commit line — with the
-   `[Unreleased]` entries as its body. **No version bump yet:** `dev` still carries the
-   previous version at this point.
-3. Review the release pull request with the `/code-review` skill and resolve what it finds.
-   The global rules require a real review here; a diff scan is not one. Fixes are ordinary
-   commits pushed to `dev`; the pull request updates itself.
-4. Wait for Steve to confirm the pull request is ready to merge. Nothing below this line
-   happens before that confirmation.
-5. Now bump the three version fields, refresh `Cargo.lock` and `package-lock.json`, rename
+2. Bump the three version fields, refresh `Cargo.lock` and `package-lock.json`, rename
    `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, open a fresh empty `[Unreleased]` above
    it, update the compare links at the bottom of the file, re-run the gates, and commit it
-   as `chore(release): vX.Y.Z`. Push `dev`. This is the last commit on the branch.
-6. Update the pull request body to the finished changelog section if the entries changed
-   during the review.
+   as `chore(release): vX.Y.Z`. Push `dev`.
+3. Open the `dev` → `main` pull request titled `chore(release): vX.Y.Z` — the title becomes
+   the squash subject verbatim, so it has to be a Conventional Commit line — with that
+   version's finished changelog section as its body.
+4. Review the release pull request with the `/code-review` skill and resolve what it finds.
+   The global rules require a real review here; a diff scan is not one. Fixes are ordinary
+   commits pushed to `dev` on top of the release commit; the pull request updates itself. If
+   the review concludes the release should be a different level, change the version in every
+   place at once — the three version fields, both lockfiles, the changelog heading, the
+   compare links and the pull request title — in the same commit as the fix that caused it.
+5. Wait for Steve to confirm the pull request is ready to merge. Nothing below this line
+   happens before that confirmation.
+6. Verify the pull request can actually merge before merging it:
+   `gh pr view <N> --json headRefOid,mergeable,mergeStateStatus,statusCheckRollup`. Merge
+   only when `mergeStateStatus` is `CLEAN` and `headRefOid` matches local `dev`; anything
+   else means checks are still running, a check failed, or `dev` has unpushed work. Wait and
+   re-check rather than merging around it.
 7. Squash-merge it: `gh pr merge --squash --body ""`.
 8. `git checkout main && git pull origin main`, then
    `git tag -a vX.Y.Z -m "QuotaStation X.Y.Z"` and `git push origin vX.Y.Z`. Tags do not
