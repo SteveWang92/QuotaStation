@@ -314,6 +314,7 @@ fn view_of<'a>(
         .or_else(|| input.and_then(|input| input.cwd.as_deref()))
         .map(Path::new);
     let context = input.and_then(|input| input.context_window.as_ref());
+    let repository = current_dir.and_then(crate::git::repository_root);
     StatusLineView {
         model: input
             .and_then(|input| input.model.as_ref())
@@ -327,7 +328,13 @@ fn view_of<'a>(
             .and_then(|input| input.worktree.as_ref())
             .and_then(|worktree| worktree.branch.clone())
             .or_else(|| workspace.and_then(|workspace| workspace.git_worktree.clone()))
-            .or_else(|| current_dir.and_then(branch_at)),
+            .or_else(|| repository.as_deref().and_then(crate::git::branch_at)),
+        // Only the detailed line has a project group to hang these on, so the minimal one
+        // never pays for the `git` process behind them.
+        worktree: settings
+            .status_line_extra_details
+            .then(|| repository.as_deref().and_then(|root| crate::git::work_tree_status(root, now)))
+            .flatten(),
         context_used: context.and_then(|context| {
             context
                 .used_percentage
@@ -370,6 +377,9 @@ struct StatusLineView<'a> {
     model: Option<&'a str>,
     directory: Option<String>,
     branch: Option<String>,
+    /// What the checkout carries beyond the branch name: uncommitted paths, and the
+    /// distance from the upstream.
+    worktree: Option<crate::git::WorkTreeStatus>,
     context_used: Option<f64>,
     /// Tokens in the window and the window's size, so the share has a magnitude beside it.
     context_tokens: Option<(u64, u64)>,
@@ -492,6 +502,24 @@ fn countdown(resets_at: i64, now: i64) -> Option<String> {
     })
 }
 
+/// What the checkout carries, in the shorthand `git` users already read: `*` for paths that
+/// differ from the last commit, an arrow for each commit the branch stands away from its
+/// upstream. A clean branch that is level with its remote prints nothing at all, which is
+/// what makes the marks worth a glance when they do appear.
+fn work_tree_marks(status: crate::git::WorkTreeStatus) -> String {
+    let mut marks = Vec::new();
+    if status.changed > 0 {
+        marks.push(format!("*{}", status.changed));
+    }
+    if status.ahead > 0 {
+        marks.push(format!("\u{2191}{}", status.ahead));
+    }
+    if status.behind > 0 {
+        marks.push(format!("\u{2193}{}", status.behind));
+    }
+    marks.join(" ")
+}
+
 /// Within a group, the readings are of one kind and a dot is enough to separate them.
 const WITHIN: &str = " \u{b7} ";
 /// Between groups, a bar: the eye stops there, which is what tells the model apart from the
@@ -540,7 +568,12 @@ fn status_line(view: &StatusLineView) -> String {
             project.push(directory.clone());
         }
         if let Some(branch) = &view.branch {
-            project.push(branch.clone());
+            project.push(
+                match view.worktree.map(work_tree_marks).filter(|marks| !marks.is_empty()) {
+                    Some(marks) => format!("{branch} {marks}"),
+                    None => branch.clone(),
+                },
+            );
         }
         if let Some((number, state)) = view.pull_request {
             project.push(match state.filter(|state| !state.is_empty()) {
@@ -695,34 +728,6 @@ fn quota_segments(
         windows: provider.windows,
     }));
     segments
-}
-
-/// The checked-out branch, read straight from `.git/HEAD`.
-///
-/// Claude Code renders the status line on every turn, so this must not spawn a process: a
-/// `git` invocation per render is a cost the client would pay for a monitor's convenience.
-/// One short file read is not. A detached head names no branch and reports none.
-fn branch_at(start: &Path) -> Option<String> {
-    let mut directory = Some(start);
-    while let Some(current) = directory {
-        let git = current.join(".git");
-        let head = if git.is_dir() {
-            git.join("HEAD")
-        } else if git.is_file() {
-            // A worktree or a submodule leaves a `gitdir:` pointer here instead.
-            let pointer = std::fs::read_to_string(&git).ok()?;
-            PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim()).join("HEAD")
-        } else {
-            directory = current.parent();
-            continue;
-        };
-        return std::fs::read_to_string(head)
-            .ok()?
-            .trim()
-            .strip_prefix("ref: refs/heads/")
-            .map(str::to_string);
-    }
-    None
 }
 
 fn store_reading(reading: &Reading) -> Result<()> {
@@ -947,6 +952,7 @@ mod tests {
             model,
             directory: None,
             branch: None,
+            worktree: None,
             context_used: None,
             context_tokens: None,
             cache_hit: None,
@@ -1024,6 +1030,23 @@ mod tests {
             "Opus | QuotaStation · dev\n\
              ctx 19% (189.3k/1.0M) | $0.12\n\
              CLD 5h 24% (4h02m) · 7d 41% (5d) | CDX 5h 62% (2h10m)"
+        );
+    }
+
+    #[test]
+    fn the_branch_carries_what_the_checkout_has_not_committed_or_pushed() {
+        let mut session = view(Some("Opus"), Vec::new());
+        session.branch = Some("dev".to_string());
+        session.worktree =
+            Some(crate::git::WorkTreeStatus { changed: 3, ahead: 1, behind: 0, tracked: true });
+        assert_eq!(plain(&status_line(&session)), "Opus | dev *3 \u{2191}1");
+
+        session.worktree =
+            Some(crate::git::WorkTreeStatus { changed: 0, ahead: 0, behind: 0, tracked: true });
+        assert_eq!(
+            plain(&status_line(&session)),
+            "Opus | dev",
+            "a clean branch level with its remote says nothing more"
         );
     }
 

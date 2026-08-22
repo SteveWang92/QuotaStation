@@ -1,6 +1,7 @@
 mod alerts;
 mod autostart;
 mod domain;
+mod git;
 mod log;
 mod providers;
 mod refresh;
