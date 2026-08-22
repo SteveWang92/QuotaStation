@@ -12,6 +12,7 @@ mod settings;
 mod storage;
 mod summary;
 mod taskbar;
+mod theme;
 
 use crate::settings::AppSettings;
 
@@ -35,7 +36,7 @@ pub fn run_claude_hook() -> bool {
     statusline::run_bridge_if_requested() || notifications::run_hook_if_requested()
 }
 use tauri::{
-    Manager, PhysicalPosition, State,
+    Emitter, Manager, PhysicalPosition, State,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -283,7 +284,11 @@ fn set_app_settings(
     let previous = state.settings();
     let taskbar_changed = previous.taskbar_widget_enabled != settings.taskbar_widget_enabled;
     let display_changed = previous.taskbar_widget_display != settings.taskbar_widget_display;
+    let theme_changed = previous.theme != settings.theme;
     let updated = state.update_settings(|current| *current = settings)?;
+    if theme_changed {
+        apply_theme(&app, updated.theme);
+    }
     if taskbar_changed {
         set_taskbar_widget_visible(&app, updated.taskbar_widget_enabled);
     } else if display_changed && updated.taskbar_widget_enabled {
@@ -379,6 +384,60 @@ fn watch_for_finished_turns(app: tauri::AppHandle) {
             }
         }
     });
+}
+
+/// The palettes every window should be drawing in right now.
+#[tauri::command]
+fn get_theme(state: State<'_, Arc<AppState>>) -> theme::ThemeSnapshot {
+    theme::snapshot(state.settings().theme)
+}
+
+/// Puts the resolved theme where the two things that need it can see it: the native window
+/// frame, which Windows draws and CSS cannot reach, and the renderer, which draws the rest.
+///
+/// The taskbar widget is left out of the frame call deliberately — it has no frame, and its
+/// palette follows the taskbar rather than the preference.
+fn apply_theme(app: &tauri::AppHandle, preference: theme::ThemePreference) -> theme::ThemeSnapshot {
+    let snapshot = theme::snapshot(preference);
+    let frame = match preference {
+        theme::ThemePreference::System => None,
+        theme::ThemePreference::Dark => Some(tauri::Theme::Dark),
+        theme::ThemePreference::Light => Some(tauri::Theme::Light),
+    };
+    for window in app.webview_windows().values() {
+        if window.label() != "taskbar-widget" {
+            let _ = window.set_theme(frame);
+        }
+    }
+    let _ = app.emit("theme-changed", snapshot);
+    snapshot
+}
+
+/// Notices a Windows theme change while QuotaStation is running.
+///
+/// Windows announces this to windows that have not been told what theme to be, and every
+/// window here has been, so the announcement never arrives. Reading two registry values is
+/// cheap enough to do on the same tick everything else in this application already runs on,
+/// and only a change is published.
+fn watch_for_system_theme_changes(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticks = tokio::time::interval(Duration::from_secs(2));
+        let mut last = theme::snapshot(current_preference(&app));
+        loop {
+            ticks.tick().await;
+            let preference = current_preference(&app);
+            let snapshot = theme::snapshot(preference);
+            if snapshot == last {
+                continue;
+            }
+            last = snapshot;
+            apply_theme(&app, preference);
+        }
+    });
+}
+
+fn current_preference(app: &tauri::AppHandle) -> theme::ThemePreference {
+    app.state::<Arc<AppState>>().settings().theme
 }
 
 /// Which session finished, in the width a notification body has.
@@ -984,6 +1043,8 @@ pub fn run() {
             }
             autostart::refresh_logon_entry(app.handle());
             watch_for_finished_turns(app.handle().clone());
+            apply_theme(app.handle(), state.settings().theme);
+            watch_for_system_theme_changes(app.handle().clone());
             if state.settings().taskbar_widget_enabled {
                 set_taskbar_widget_visible(app.handle(), true);
             }
@@ -1073,6 +1134,7 @@ pub fn run() {
             set_taskbar_widget_size,
             get_taskbar_displays,
             set_quick_panel_height,
+            get_theme,
             get_app_settings,
             set_app_settings,
             get_autostart,

@@ -12,6 +12,7 @@ on `main`, with the matching section below as its notes.
 - Ranges of up to three days are charted hour by hour instead of one column per day.
 - The status line marks uncommitted files and how far the branch stands from its remote.
 - A finished-turn notification names the Claude Code session as well as the project.
+- A light theme, with a setting to follow Windows or pin dark or light.
 
 ### Changed
 

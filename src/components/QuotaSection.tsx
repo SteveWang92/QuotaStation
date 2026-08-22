@@ -1,4 +1,5 @@
 import { formatCountdown, formatEarlyBy, formatResetTimestamp } from "../format";
+import { quotaColor } from "../theme";
 import type { LimitResetEvent, LimitWindow } from "../types";
 
 interface QuotaSectionProps {
@@ -33,7 +34,7 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
     // them, and inheriting it would paint an untouched window in the colour of a spent one.
     <div
       className={`quota-row${limit.freshness === "stale" ? " stale" : ""}`}
-      style={{ "--quota-status-color": limit.statusColor } as React.CSSProperties}
+      style={{ "--quota-status-color": quotaColor(limit) } as React.CSSProperties}
     >
       {/* The label already names the duration, and which source produced the reading is a
           diagnostic rather than something to read at a glance, so it lives in the settings

@@ -13,14 +13,25 @@ export type HistoryProvider = ProviderKey | "all";
 export interface CompactStatus {
   level: "healthy" | "warning" | "critical" | "stale" | "unavailable";
   label: string;
-  color: string;
+}
+
+/** Which palette the user asked for. `system` follows Windows and changes with it. */
+export type ThemePreference = "system" | "dark" | "light";
+
+/**
+ * What each kind of window is drawn in right now. The taskbar widget follows the Windows
+ * taskbar rather than the preference, so the two are answered separately.
+ */
+export interface ThemeSnapshot {
+  app: "dark" | "light";
+  taskbar: "dark" | "light";
 }
 
 export interface LimitWindow {
   kind: "primary" | "secondary";
   label: string;
-  /** This window's own colour, from the same thresholds the provider status uses. */
-  statusColor: string;
+  /** How loud this window's own reading is, on the thresholds every surface shares. */
+  statusLevel: "healthy" | "warning" | "critical";
   usedPercent: number | null;
   windowDurationMins: number | null;
   resetsAt: number | null;
@@ -205,6 +216,7 @@ export interface TaskbarDisplay {
 }
 
 export interface AppSettings {
+  theme: ThemePreference;
   taskbarWidgetEnabled: boolean;
   /** The chosen display's device name, or null for whichever taskbar is the primary one. */
   taskbarWidgetDisplay: string | null;

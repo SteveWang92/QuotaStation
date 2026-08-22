@@ -288,7 +288,7 @@ pub fn raise(app: &tauri::AppHandle, title: &str, body: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{CompactStatus, LimitResetEvent, WindowSource};
+    use crate::domain::{CompactStatus, LimitResetEvent, QuotaLevel, WindowSource};
 
     fn window(kind: LimitKind, used: f64, resets_at: i64) -> LimitWindow {
         LimitWindow {
@@ -300,7 +300,7 @@ mod tests {
             source: WindowSource::AppServer,
             observed_at: 1_800_000_000,
             freshness: Freshness::Fresh,
-            status_color: String::new(),
+            status_level: QuotaLevel::Healthy,
         }
     }
 
@@ -313,11 +313,8 @@ mod tests {
     /// A provider that is answering normally.
     fn answering() -> ProviderSnapshot {
         let mut snapshot = provider(Vec::new());
-        snapshot.compact_status = CompactStatus {
-            level: CompactStatusLevel::Healthy,
-            label: "Healthy".to_string(),
-            color: String::new(),
-        };
+        snapshot.compact_status =
+            CompactStatus { level: CompactStatusLevel::Healthy, label: "Healthy".to_string() };
         snapshot
     }
 
@@ -466,7 +463,6 @@ mod tests {
         broken.compact_status = CompactStatus {
             level: CompactStatusLevel::Unavailable,
             label: "Provider unavailable".to_string(),
-            color: String::new(),
         };
         broken.live_error = Some("Quota read failed".to_string());
         let first = pending(&mut announced, &workspace(broken.clone()), &settings);

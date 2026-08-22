@@ -19,6 +19,7 @@ import {
   resolveDateRange,
 } from "./dateRanges";
 import { errorMessage } from "./errors";
+import { statusColor, watchTheme } from "./theme";
 import type {
   DiagnosticsSnapshot,
   HistoryProvider,
@@ -65,6 +66,7 @@ document.documentElement.classList.toggle(
   "quick-panel-window",
   CURRENT_WINDOW_LABEL === "quick-panel",
 );
+watchTheme(IS_TASKBAR_WIDGET);
 
 /**
  * The two reads behind a provider fail independently — the quota windows can be current
@@ -291,7 +293,7 @@ function Dashboard() {
           <section key={provider.provider} className="provider-panel">
             <header className="provider-panel-header">
               <h2>{provider.displayName}</h2>
-              <span style={{ color: provider.compactStatus.color }}>
+              <span style={{ color: statusColor(provider.compactStatus) }}>
                 {provider.compactStatus.label}
               </span>
             </header>

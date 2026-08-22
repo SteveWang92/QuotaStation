@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use ccusage_adapter_claude::load_entries;
 use ccusage_core::cli::SharedArgs;
 
-use crate::domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, WindowSource};
+use crate::domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, QuotaLevel, WindowSource};
 
 use super::FIVE_HOUR_WINDOW_MINS as WINDOW_MINS;
 
@@ -54,7 +54,7 @@ fn read_live_blocking(plan_type: Option<String>) -> Result<LiveSnapshot> {
             source: WindowSource::SessionLog,
             observed_at,
             freshness: Freshness::Fresh,
-            status_color: String::new(),
+            status_level: QuotaLevel::Healthy,
         }],
         // Claude grants no reset inventory of the kind Codex publishes.
         earned_reset_count: None,

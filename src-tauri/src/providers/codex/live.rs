@@ -14,7 +14,7 @@ use tokio::{
     time::{Duration, timeout},
 };
 
-use crate::domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, WindowSource};
+use crate::domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, QuotaLevel, WindowSource};
 
 const CODEX_EXECUTABLE_OVERRIDE: &str = "QUOTASTATION_CODEX_EXECUTABLE";
 
@@ -235,7 +235,7 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
             source: WindowSource::AppServer,
             observed_at,
             freshness: Freshness::Fresh,
-            status_color: String::new(),
+            status_level: QuotaLevel::Healthy,
         });
     }
     if limits.is_empty() {

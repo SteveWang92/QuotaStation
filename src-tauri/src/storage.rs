@@ -14,8 +14,8 @@ use crate::domain::{
     AcquisitionDiagnostics, CCUSAGE_REVISION, DailyUsagePoint, Freshness, HOURLY_HISTORY_DAYS,
     HistorySnapshot, HourlyUsagePoint, LimitKind, LimitResetEvent, LimitWindow, LiveSnapshot,
     ModelUsage, ModelUsageRow, PRICING_CATALOG_REVISION, ProviderSnapshot, QuotaHistoryPoint,
-    QuotaHistorySnapshot, QuotaHistoryWindow, ResetClassification, RetentionDiagnostics,
-    TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot, WindowSource,
+    QuotaHistorySnapshot, QuotaHistoryWindow, QuotaLevel, ResetClassification,
+    RetentionDiagnostics, TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot, WindowSource,
 };
 use crate::providers::ProviderKind;
 use crate::resets::{ResetTracker, WindowObservation, detect};
@@ -720,7 +720,7 @@ impl Storage {
                     source: WindowSource::parse(&row.try_get::<String, _>("source").ok()?)?,
                     observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
                     freshness: Freshness::Stale,
-                    status_color: String::new(),
+                    status_level: QuotaLevel::Healthy,
                 })
             })
             .collect();
@@ -1524,7 +1524,7 @@ mod tests {
                 source: WindowSource::AppServer,
                 observed_at: jiff::Timestamp::now().as_second(),
                 freshness: Freshness::Fresh,
-                status_color: String::new(),
+                status_level: QuotaLevel::Healthy,
             }],
         };
         storage.save_live(CODEX, &live, "2026-08-11T00:00:00Z").await.expect("save live");
@@ -1556,7 +1556,7 @@ mod tests {
                 source: WindowSource::AppServer,
                 observed_at: resets_at - WEEK_MINUTES * 60,
                 freshness: Freshness::Fresh,
-                status_color: String::new(),
+                status_level: QuotaLevel::Healthy,
             }],
         }
     }

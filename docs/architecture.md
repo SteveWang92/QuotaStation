@@ -112,6 +112,20 @@ The core owns provider-neutral types for accounts, subscriptions, limits, reset 
 usage, models, sessions, and cost estimates. User-interface surfaces must not maintain
 their own competing provider models.
 
+The line stops at appearance. The core decides how loud a reading is — healthy, warning,
+critical, on thresholds every surface shares — and never what colour that is: the same 95%
+is one red on a near-black dashboard and another on a white one, and a snapshot the core
+had already coloured could not be drawn correctly in both. The renderer resolves a level
+into a theme token, which is also why one snapshot can serve a light window and a dark one
+at the same moment.
+
+Which theme each surface is in is the core's answer, though, not the renderer's. A WebView2
+reports `prefers-color-scheme` from the theme the application has just set on its window,
+so a renderer asked to work it out would only hear its own echo; the core reads what Windows
+is actually set to. It publishes two answers, because the taskbar widget is drawn inside the
+Windows taskbar and has to match the taskbar rather than the user's preference for
+QuotaStation's own windows.
+
 ### Local database
 
 SQLite is the planned store for normalized history, refresh metadata, pricing snapshots,

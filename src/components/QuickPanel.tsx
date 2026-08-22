@@ -3,6 +3,7 @@ import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../errors";
 import { formatCurrency, formatNumber } from "../format";
+import { statusColor } from "../theme";
 import type { ProviderSnapshot, WorkspaceSnapshot } from "../types";
 import { useSnapshot } from "../useSnapshot";
 import { ProviderSetup } from "./ProviderSetup";
@@ -13,7 +14,9 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
     <section className="quick-provider" aria-label={`${snapshot.displayName} status`}>
       <header className="quick-provider-header">
         <h2>{snapshot.displayName}</h2>
-        <span style={{ color: snapshot.compactStatus.color }}>{snapshot.compactStatus.label}</span>
+        <span style={{ color: statusColor(snapshot.compactStatus) }}>
+          {snapshot.compactStatus.label}
+        </span>
       </header>
       <QuotaSection
         compact

@@ -25,6 +25,11 @@ pub enum ProviderLabelStyle {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
+    /// Which palette every window but the taskbar widget is drawn in. Dark is the default
+    /// because it is what QuotaStation looked like before the choice existed; the widget
+    /// follows the Windows taskbar instead, which is not a preference anyone expressed.
+    #[serde(default)]
+    pub theme: crate::theme::ThemePreference,
     #[serde(default = "enabled")]
     pub taskbar_widget_enabled: bool,
     /// Which display's taskbar hosts the status, by Windows device name (`\\.\DISPLAY1`).
@@ -60,6 +65,7 @@ fn enabled() -> bool {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            theme: crate::theme::ThemePreference::default(),
             taskbar_widget_enabled: enabled(),
             taskbar_widget_display: None,
             status_line_provider_labels: ProviderLabelStyle::default(),
@@ -189,6 +195,7 @@ mod tests {
     #[test]
     fn settings_survive_a_round_trip_through_the_file_format() {
         let settings = AppSettings {
+            theme: crate::theme::ThemePreference::Light,
             taskbar_widget_enabled: false,
             taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
             status_line_provider_labels: ProviderLabelStyle::Full,
@@ -218,6 +225,7 @@ mod tests {
         let path = scratch("atomic");
         save(&path, &AppSettings::default()).expect("write the first settings");
         let expected = AppSettings {
+            theme: crate::theme::ThemePreference::System,
             taskbar_widget_enabled: false,
             taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
             status_line_provider_labels: ProviderLabelStyle::Full,

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { saveAppSettings, useAppSettings } from "../appSettings";
 import { errorMessage } from "../errors";
-import type { TaskbarDisplay } from "../types";
+import type { TaskbarDisplay, ThemePreference } from "../types";
 
 /**
  * How the application sits on the machine: whether Windows starts it, whether it draws the
@@ -38,6 +38,18 @@ export function GeneralSettings() {
     setError(null);
     try {
       setAutostart(await invoke<boolean>("set_autostart", { enabled }));
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const changeTheme = useCallback(async (theme: ThemePreference) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await saveAppSettings({ theme });
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -92,6 +104,18 @@ export function GeneralSettings() {
         </p>
         {error ? <p className="provider-consent-error">{error}</p> : null}
         <div className="consent-options">
+          <label>
+            Theme
+            <select
+              value={settings?.theme ?? "dark"}
+              disabled={busy || settings === null}
+              onChange={(event) => void changeTheme(event.target.value as ThemePreference)}
+            >
+              <option value="system">Follow Windows</option>
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
           <label>
             <input
               type="checkbox"

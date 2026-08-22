@@ -26,7 +26,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{Freshness, LimitKind, LimitWindow, WindowSource};
+use crate::domain::{Freshness, LimitKind, LimitWindow, QuotaLevel, WindowSource};
 use crate::providers::ProviderKind;
 use crate::settings::ProviderLabelStyle;
 use crate::summary::QuotaWindow;
@@ -203,7 +203,7 @@ fn windows_from(reading: &Reading, now: i64) -> Result<Vec<LimitWindow>> {
             source: WindowSource::StatusLine,
             observed_at: reading.observed_at,
             freshness: Freshness::Fresh,
-            status_color: String::new(),
+            status_level: QuotaLevel::Healthy,
         });
     }
     if reading.five_hour.is_some() || reading.seven_day.is_some() {
