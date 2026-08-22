@@ -55,10 +55,14 @@ it, and a paragraph found in two of them is a bug in the documentation.
 ## Verification
 
 - Documentation-only work needs only a focused file review.
-- Use the minimum local check required by the global rules. The gates CI enforces are
-  `npm run lint`, `npm test`, `npm run build`, `cargo fmt --manifest-path src-tauri/Cargo.toml
-  --check`, `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D
-  warnings`, and `cargo test --locked --manifest-path src-tauri/Cargo.toml`.
+- Use the minimum local check required by the global rules. The gates are `npm run lint`,
+  `npm test`, `npm run build`, `cargo fmt --manifest-path src-tauri/Cargo.toml --check`,
+  `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`,
+  and `cargo test --locked --manifest-path src-tauri/Cargo.toml`.
+- **CI runs those gates on the release path only** — the `dev` -> `main` pull request and
+  `main` itself — because a Windows runner bills at twice its wall clock and a cold Rust
+  build dominates it. Nothing checks a `dev` commit but the local run above, so running it
+  is not optional here.
 - `npm run format` writes the renderer's formatting and import order; `cargo fmt` does the
   same for the core. Run them rather than hand-correcting what the gate reports. A rule the
   code deliberately breaks is turned off in `biome.jsonc` with the reason beside it — never

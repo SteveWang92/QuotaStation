@@ -1,13 +1,15 @@
 name: CI
 
+# Base-branch filter, not a typo: pull_request fires on the PR's target branch, so this
+# runs on the dev->main release PR and again on the merge commit that lands on main. A
+# Windows runner bills at twice the wall clock and a cold Rust build dominates it, so the
+# gates do not run on every dev commit: CLAUDE.md already requires them locally before a
+# change is finished, and CI exists here to gate the release path.
 on:
-  # Base-branch filter, not a typo: pull_request fires on the PR's target branch. Work
-  # PRs target dev and run here; the dev->main release PR is covered by the push run on
-  # dev's commit, which is the same SHA.
   pull_request:
-    branches: [dev]
+    branches: [main]
   push:
-    branches: [main, dev]
+    branches: [main]
 
 # One run per commit: a newer push to a branch cancels its in-flight run. main is exempt so
 # a release commit's check always completes.
