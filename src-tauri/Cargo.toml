@@ -1,6 +1,6 @@
 [package]
 name = "quotastation"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local-first AI quota and usage monitoring for Windows"
 authors = ["Steve Wang <contact@stevewang.me>"]
 edition = "2024"
