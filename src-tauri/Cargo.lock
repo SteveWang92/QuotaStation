@@ -3178,6 +3178,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-notification",
  "tauri-plugin-single-instance",
+ "tauri-winrt-notification",
  "thiserror 2.0.20",
  "tokio",
  "which",

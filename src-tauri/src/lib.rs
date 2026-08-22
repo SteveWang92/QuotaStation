@@ -12,6 +12,7 @@ mod settings;
 mod storage;
 mod summary;
 mod taskbar;
+mod terminal;
 mod theme;
 
 use crate::settings::AppSettings;
@@ -380,7 +381,24 @@ fn watch_for_finished_turns(app: tauri::AppHandle) {
             // Windows already prints the application's name above it, so spending the title
             // on "QuotaStation" left every notification looking alike in the action centre.
             for event in notifications::take_pending(jiff::Timestamp::now().as_second()) {
-                alerts::raise(&app, "Claude Code finished responding", &finished_body(&event));
+                let body = finished_body(&event);
+                match event.terminal {
+                    // Clicking goes back to the terminal the turn ran in. The tab inside it
+                    // is the user's to pick: nothing outside Windows Terminal can choose one.
+                    Some(window) => {
+                        alerts::raise_with_action(
+                            &app,
+                            "Claude Code finished responding",
+                            &body,
+                            move || {
+                                if !terminal::focus(window) {
+                                    log::write("the terminal a finished turn ran in has closed");
+                                }
+                            },
+                        );
+                    }
+                    None => alerts::raise(&app, "Claude Code finished responding", &body),
+                }
             }
         }
     });

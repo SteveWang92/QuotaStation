@@ -68,6 +68,10 @@ pub struct FinishedEvent {
     /// What Claude Code calls this session, when the bridge has seen it. Two sessions in one
     /// project are otherwise indistinguishable, which is the case the title exists for.
     pub session: Option<String>,
+    /// The terminal window the turn was running in, so clicking the notification can go
+    /// back to it. Absent whenever the hook could not find one.
+    #[serde(default)]
+    pub terminal: Option<crate::terminal::WindowHandle>,
 }
 
 /// What the status-line bridge knows about a session, for the hook to read back.
@@ -160,6 +164,9 @@ pub fn run_hook_if_requested() -> bool {
             })
             .or_else(|| known.as_ref().and_then(|record| record.project.clone())),
         session: known.and_then(|record| record.name),
+        // Found here rather than in the application, because only this process is a child
+        // of the terminal in question.
+        terminal: crate::terminal::owning_window(),
     };
     if let Some(dir) = event_dir() {
         // One file per session, so sessions that finish together each announce themselves.
@@ -439,6 +446,7 @@ mod tests {
             observed_at: now,
             project: Some("Q".into()),
             session: Some("Dark theme".into()),
+            terminal: Some(1234),
         };
         write_event(&path, &written).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();

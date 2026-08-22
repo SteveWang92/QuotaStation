@@ -285,6 +285,50 @@ pub fn raise(app: &tauri::AppHandle, title: &str, body: &str) {
     }
 }
 
+/// The same notification, with somewhere for a click to go.
+///
+/// The notification plugin shows a toast and returns; it has no way to hear that one was
+/// clicked on Windows, so a toast that answers a click has to be raised through the WinRT
+/// API directly. The application identifier is the same one the plugin uses, so the toast
+/// still arrives under QuotaStation's own name in the action centre.
+///
+/// The activation only reaches a running process. That is exactly the case here — the
+/// application is what raised the toast — and anything that goes wrong falls back to an
+/// ordinary notification rather than to none.
+#[cfg(windows)]
+pub fn raise_with_action(
+    app: &tauri::AppHandle,
+    title: &str,
+    body: &str,
+    on_click: impl Fn() + Send + 'static,
+) {
+    use tauri_winrt_notification::Toast;
+
+    let identifier = app.config().identifier.clone();
+    let shown = Toast::new(&identifier)
+        .title(title)
+        .text1(body)
+        .on_activated(move |_action| {
+            on_click();
+            Ok(())
+        })
+        .show();
+    if let Err(error) = shown {
+        crate::log::write(format!("clickable notification failed: {error}"));
+        raise(app, title, body);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn raise_with_action(
+    app: &tauri::AppHandle,
+    title: &str,
+    body: &str,
+    _on_click: impl Fn() + Send + 'static,
+) {
+    raise(app, title, body);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
