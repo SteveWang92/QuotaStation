@@ -2,6 +2,10 @@
   font-family: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   color: #f3f0e8;
   background: #0b1014;
+  /* Every native control the engine draws for itself follows this: the document
+     scrollbars, the form controls, the date pickers. Without it a dark page is framed by
+     light-grey scrollbars that belong to no part of the design. */
+  color-scheme: dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --bg: #0b1014;
@@ -199,7 +203,7 @@ button { font: inherit; }
 .range-control svg { width: 15px; height: 15px; }
 .custom-range-panel { display: flex; align-items: flex-end; justify-content: flex-end; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); }
 .custom-range-panel label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 620; text-transform: uppercase; letter-spacing: 0.08em; }
-.custom-range-panel input { height: 36px; min-width: 150px; padding: 0 10px; border: 1px solid #55636d; border-radius: 4px; color: var(--text); background: #0b1116; color-scheme: dark; }
+.custom-range-panel input { height: 36px; min-width: 150px; padding: 0 10px; border: 1px solid #55636d; border-radius: 4px; color: var(--text); background: #0b1116; }
 .custom-range-panel button { height: 36px; padding: 0 15px; border: 0; border-radius: 4px; color: #10150c; background: var(--lime); cursor: pointer; font-weight: 680; }
 .custom-range-panel button:disabled { opacity: 0.45; cursor: not-allowed; }
 .custom-range-error { align-self: center; color: #ffaaa3; font-size: 11px; }

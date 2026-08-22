@@ -20,7 +20,8 @@
         "minHeight": 720,
         "center": true,
         "resizable": true,
-        "visible": false
+        "visible": false,
+        "theme": "Dark"
       },
       {
         "label": "quick-panel",
