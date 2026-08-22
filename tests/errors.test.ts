@@ -7,7 +7,9 @@ describe("command failures", () => {
     expect(errorMessage("state not managed for field `state`")).toBe(
       "state not managed for field `state`",
     );
-    expect(errorMessage(new Error("Local storage write failed"))).toBe("Local storage write failed");
+    expect(errorMessage(new Error("Local storage write failed"))).toBe(
+      "Local storage write failed",
+    );
   });
 
   it("still produces something readable for an unexpected rejection", () => {

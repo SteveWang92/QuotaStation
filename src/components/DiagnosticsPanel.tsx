@@ -21,7 +21,11 @@ const SOURCE_LABELS: Record<LimitWindow["source"], string> = {
  * answered and a watcher that stopped are two different problems, and the panel is where
  * the difference is visible. It shows no full paths and no session content.
  */
-export function DiagnosticsPanel({ diagnostics, providers, interfaceError }: DiagnosticsPanelProps) {
+export function DiagnosticsPanel({
+  diagnostics,
+  providers,
+  interfaceError,
+}: DiagnosticsPanelProps) {
   // A built application has no console, and the status-line bridge is a process that lives
   // for milliseconds inside Claude Code. The log is where both of them report, so the panel
   // has to be able to point at it.
@@ -42,16 +46,24 @@ export function DiagnosticsPanel({ diagnostics, providers, interfaceError }: Dia
             <strong className={acquisition.status}>{acquisition.status}</strong>
             <small>
               {acquisition.status === "succeeded" ? "Updated" : "Last attempt"}{" "}
-              {formatTimestamp(acquisition.status === "succeeded" ? acquisition.lastSuccessAt : acquisition.lastAttemptAt)}
+              {formatTimestamp(
+                acquisition.status === "succeeded"
+                  ? acquisition.lastSuccessAt
+                  : acquisition.lastAttemptAt,
+              )}
             </small>
-            {acquisition.error ? <small className="diagnostic-error">{acquisition.error}</small> : null}
+            {acquisition.error ? (
+              <small className="diagnostic-error">{acquisition.error}</small>
+            ) : null}
           </div>
         ))}
         <div className="diagnostic-item">
           <span>Data retention</span>
           <strong className={diagnostics.retention.status}>{diagnostics.retention.status}</strong>
           <small>Last completed {formatTimestamp(diagnostics.retention.lastCompletedAt)}</small>
-          {diagnostics.retention.error ? <small className="diagnostic-error">{diagnostics.retention.error}</small> : null}
+          {diagnostics.retention.error ? (
+            <small className="diagnostic-error">{diagnostics.retention.error}</small>
+          ) : null}
         </div>
         <div className="diagnostic-item">
           <span>Application interface</span>
@@ -66,8 +78,13 @@ export function DiagnosticsPanel({ diagnostics, providers, interfaceError }: Dia
           <strong className={diagnostics.watcher.status === "active" ? "succeeded" : "failed"}>
             {diagnostics.watcher.status}
           </strong>
-          <small>{diagnostics.watcher.watchedLocationCount} local locations · Last event {formatTimestamp(diagnostics.watcher.lastEventAt)}</small>
-          {diagnostics.watcher.error ? <small className="diagnostic-error">{diagnostics.watcher.error}</small> : null}
+          <small>
+            {diagnostics.watcher.watchedLocationCount} local locations · Last event{" "}
+            {formatTimestamp(diagnostics.watcher.lastEventAt)}
+          </small>
+          {diagnostics.watcher.error ? (
+            <small className="diagnostic-error">{diagnostics.watcher.error}</small>
+          ) : null}
         </div>
       </div>
       {/* The quota rows themselves show the numbers and nothing about where they came
@@ -87,13 +104,25 @@ export function DiagnosticsPanel({ diagnostics, providers, interfaceError }: Dia
         </div>
       ) : null}
       <div className="diagnostic-revisions">
-        <span>ccusage <code>{formatRevision(diagnostics.parserRevision)}</code></span>
-        <span>Pricing <code>{formatRevision(diagnostics.pricingCatalogRevision)}</code></span>
         <span>
-          QuotaStation <code>{diagnostics.appVersion} ({diagnostics.buildCommit})</code> {diagnostics.buildKind}
+          ccusage <code>{formatRevision(diagnostics.parserRevision)}</code>
+        </span>
+        <span>
+          Pricing <code>{formatRevision(diagnostics.pricingCatalogRevision)}</code>
+        </span>
+        <span>
+          QuotaStation{" "}
+          <code>
+            {diagnostics.appVersion} ({diagnostics.buildCommit})
+          </code>{" "}
+          {diagnostics.buildKind}
         </span>
         {logAvailable ? (
-          <button type="button" className="diagnostic-log" onClick={() => void invoke("reveal_log_file")}>
+          <button
+            type="button"
+            className="diagnostic-log"
+            onClick={() => void invoke("reveal_log_file")}
+          >
             Show activity log
           </button>
         ) : null}

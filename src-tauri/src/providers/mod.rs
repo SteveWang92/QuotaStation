@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+pub mod hours;
 
 use std::{
     collections::BTreeMap,
@@ -128,17 +129,17 @@ pub async fn read_live(kind: ProviderKind) -> Result<LiveSnapshot> {
 
 pub async fn read_history(kind: ProviderKind) -> Result<(HistorySnapshot, String)> {
     let before = usage_file_state(kind)?;
-    let timezone = jiff::tz::TimeZone::system()
-        .iana_name()
-        .unwrap_or("UTC")
-        .to_string();
+    let timezone = jiff::tz::TimeZone::system().iana_name().unwrap_or("UTC").to_string();
     let history = match kind {
         ProviderKind::Codex => codex::read_history(&timezone).await,
         ProviderKind::Claude => claude::read_history(&timezone).await,
     }?;
     let quality = inspect_history_quality(kind, recent_quality_files(&before))?;
     let after = usage_file_state(kind)?;
-    anyhow::ensure!(before == after, "Provider session files changed during parsing; retrying after they settle");
+    anyhow::ensure!(
+        before == after,
+        "Provider session files changed during parsing; retrying after they settle"
+    );
     ensure_history_quality(quality)?;
     anyhow::ensure!(
         before.is_empty() || !history.days.is_empty(),
@@ -181,7 +182,7 @@ fn inspect_history_quality<'a>(
 
 fn recent_quality_files(state: &BTreeMap<PathBuf, FileState>) -> impl Iterator<Item = &PathBuf> {
     let mut files = state.iter().collect::<Vec<_>>();
-    files.sort_by(|(_, left), (_, right)| right.modified.cmp(&left.modified));
+    files.sort_by_key(|(_, state)| std::cmp::Reverse(state.modified));
     files.into_iter().take(MAX_QUALITY_FILES).map(|(path, _)| path)
 }
 
@@ -203,9 +204,11 @@ fn read_quality_tail(path: &Path) -> Result<Vec<u8>> {
 
 fn candidate_line_is_compatible(kind: ProviderKind, line: &[u8]) -> Option<bool> {
     let has_marker = match kind {
-        ProviderKind::Codex => [b"\"usage\"".as_slice(), b"\"last_token_usage\"", b"\"total_token_usage\""]
-            .into_iter()
-            .any(|marker| contains_bytes(line, marker)),
+        ProviderKind::Codex => {
+            [b"\"usage\"".as_slice(), b"\"last_token_usage\"", b"\"total_token_usage\""]
+                .into_iter()
+                .any(|marker| contains_bytes(line, marker))
+        }
         ProviderKind::Claude => contains_bytes(line, b"\"usage\""),
     };
     if !has_marker {
@@ -313,9 +316,13 @@ fn collect_file_state(path: &Path, state: &mut BTreeMap<PathBuf, FileState>) -> 
         let path = entry.path();
         if path.is_dir() {
             collect_file_state(&path, state)?;
-        } else if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl")) {
+        } else if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+        {
             let metadata = entry.metadata()?;
-            state.insert(path, FileState { len: metadata.len(), modified: metadata.modified().ok() });
+            state.insert(
+                path,
+                FileState { len: metadata.len(), modified: metadata.modified().ok() },
+            );
         }
     }
     Ok(())
@@ -349,7 +356,8 @@ mod tests {
 
     #[test]
     fn quality_check_rejects_moved_or_malformed_candidate_records() {
-        let moved = br#"{"timestamp":"2026-08-15T00:00:00Z","record":{"usage":{"input_tokens":10}}}"#;
+        let moved =
+            br#"{"timestamp":"2026-08-15T00:00:00Z","record":{"usage":{"input_tokens":10}}}"#;
         let malformed = br#"{"message":{"usage":{"input_tokens":10}"#;
         assert_eq!(candidate_line_is_compatible(ProviderKind::Claude, moved), Some(false));
         assert_eq!(candidate_line_is_compatible(ProviderKind::Claude, malformed), Some(false));
@@ -357,20 +365,24 @@ mod tests {
 
     #[test]
     fn quality_threshold_tolerates_noise_but_rejects_format_drift() {
-        assert!(ensure_history_quality(HistoryParseQuality {
-            scanned_files: 1,
-            candidate_records: 1,
-            parsed: 0,
-            failed: 1,
-        })
-        .is_ok());
-        assert!(ensure_history_quality(HistoryParseQuality {
-            scanned_files: 2,
-            candidate_records: 20,
-            parsed: 18,
-            failed: 2,
-        })
-        .is_ok());
+        assert!(
+            ensure_history_quality(HistoryParseQuality {
+                scanned_files: 1,
+                candidate_records: 1,
+                parsed: 0,
+                failed: 1,
+            })
+            .is_ok()
+        );
+        assert!(
+            ensure_history_quality(HistoryParseQuality {
+                scanned_files: 2,
+                candidate_records: 20,
+                parsed: 18,
+                failed: 2,
+            })
+            .is_ok()
+        );
         let error = ensure_history_quality(HistoryParseQuality {
             scanned_files: 2,
             candidate_records: 12,

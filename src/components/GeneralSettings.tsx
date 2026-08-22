@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { saveAppSettings, useAppSettings } from "../appSettings";
 import { errorMessage } from "../errors";
-import type { TaskbarDisplay } from "../types";
+import type { TaskbarDisplay, ThemePreference } from "../types";
 
 /**
  * How the application sits on the machine: whether Windows starts it, whether it draws the
@@ -21,12 +21,16 @@ export function GeneralSettings() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void invoke<boolean>("get_autostart").then(setAutostart).catch(() => {
-      // Autostart is one row of this card; the rest still works without it.
-    });
-    void invoke<TaskbarDisplay[]>("get_taskbar_displays").then(setDisplays).catch(() => {
-      // One display and no choice to make is the same as a failed read here.
-    });
+    void invoke<boolean>("get_autostart")
+      .then(setAutostart)
+      .catch(() => {
+        // Autostart is one row of this card; the rest still works without it.
+      });
+    void invoke<TaskbarDisplay[]>("get_taskbar_displays")
+      .then(setDisplays)
+      .catch(() => {
+        // One display and no choice to make is the same as a failed read here.
+      });
   }, []);
 
   const changeAutostart = useCallback(async (enabled: boolean) => {
@@ -34,6 +38,18 @@ export function GeneralSettings() {
     setError(null);
     try {
       setAutostart(await invoke<boolean>("set_autostart", { enabled }));
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const changeTheme = useCallback(async (theme: ThemePreference) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await saveAppSettings({ theme });
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -83,11 +99,23 @@ export function GeneralSettings() {
       <div className="provider-consent-body">
         <h2>Application</h2>
         <p>
-          Where QuotaStation shows up on this machine. Nothing here reads a provider or
-          leaves the local system.
+          Where QuotaStation shows up on this machine. Nothing here reads a provider or leaves the
+          local system.
         </p>
         {error ? <p className="provider-consent-error">{error}</p> : null}
         <div className="consent-options">
+          <label>
+            Theme
+            <select
+              value={settings?.theme ?? "dark"}
+              disabled={busy || settings === null}
+              onChange={(event) => void changeTheme(event.target.value as ThemePreference)}
+            >
+              <option value="system">Follow Windows</option>
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
           <label>
             <input
               type="checkbox"

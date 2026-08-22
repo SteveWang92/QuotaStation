@@ -23,9 +23,11 @@ export function ClaudeStatusLine() {
   const [savingSettings, setSavingSettings] = useState(false);
 
   useEffect(() => {
-    void invoke<ClaudeStatusLineStatus>("get_claude_status_line").then(setStatus).catch(() => {
-      // The quota still comes from the session logs; this card is an offer, not a step.
-    });
+    void invoke<ClaudeStatusLineStatus>("get_claude_status_line")
+      .then(setStatus)
+      .catch(() => {
+        // The quota still comes from the session logs; this card is an offer, not a step.
+      });
   }, []);
 
   const setInstalled = useCallback(async (installed: boolean) => {
@@ -69,8 +71,7 @@ export function ClaudeStatusLine() {
         ) : (
           <p>
             Claude Code reports its five-hour and seven-day windows only to its status line.
-            Installing this reads them, and shows every provider's quota back inside Claude
-            Code.
+            Installing this reads them, and shows every provider's quota back inside Claude Code.
           </p>
         )}
         {/* Claude Code renders a status line in a terminal and nowhere else, so a
@@ -79,8 +80,8 @@ export function ClaudeStatusLine() {
         {status.installed && status.desktopOnlySessions ? (
           <p className="provider-consent-note">
             The Claude Code sessions running now are hosted by the desktop application, which
-            renders no status line. Run <code>claude</code> in a terminal to bring the
-            percentages up to date.
+            renders no status line. Run <code>claude</code> in a terminal to bring the percentages
+            up to date.
           </p>
         ) : null}
         {status.hasForeignCommand ? (
@@ -97,7 +98,9 @@ export function ClaudeStatusLine() {
                 type="checkbox"
                 checked={settings.statusLineOtherProviders}
                 disabled={savingSettings}
-                onChange={(event) => void change({ statusLineOtherProviders: event.target.checked })}
+                onChange={(event) =>
+                  void change({ statusLineOtherProviders: event.target.checked })
+                }
               />
               Show the other providers' usage, not only Claude's own windows
             </label>
@@ -139,7 +142,11 @@ export function ClaudeStatusLine() {
         {status.installed ? "Remove status line" : "Install status line"}
       </button>
       {confirming ? (
-        <ConfirmInstall busy={busy} onCancel={() => setConfirming(false)} onConfirm={() => void setInstalled(true)} />
+        <ConfirmInstall
+          busy={busy}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => void setInstalled(true)}
+        />
       ) : null}
     </section>
   );
@@ -156,7 +163,9 @@ export function ClaudeFinishedNotifications() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    void invoke<boolean>("get_claude_notifications").then(setInstalled).catch(() => {});
+    void invoke<boolean>("get_claude_notifications")
+      .then(setInstalled)
+      .catch(() => {});
   }, []);
 
   const change = useCallback(async (wanted: boolean) => {
@@ -180,10 +189,10 @@ export function ClaudeFinishedNotifications() {
       <div className="provider-consent-body">
         <h2>Notify me when Claude Code finishes</h2>
         <p>
-          A desktop notification when a turn ends, so a long one can be left running. This
-          adds a <code>Stop</code> hook to Claude Code's settings and leaves every other hook
-          alone. Nothing from the conversation is read or stored — the notification names the
-          project directory and nothing else.
+          A desktop notification when a turn ends, so a long one can be left running. This adds a{" "}
+          <code>Stop</code> hook to Claude Code's settings and leaves every other hook alone. No
+          prompt or response content is read or stored. Only the project directory name and Claude
+          Code session title are kept locally so the notification can identify the turn.
         </p>
         {error ? <p className="provider-consent-error">{error}</p> : null}
       </div>
@@ -224,14 +233,14 @@ function ConfirmInstall({
           belonging to something else is never replaced.
         </p>
         <p>
-          No credential is read and nothing leaves this machine. Claude Code hands the
-          command its five-hour and seven-day windows, and the command prints every
-          provider's quota back into Claude Code.
+          No credential is read and nothing leaves this machine. Claude Code hands the command its
+          five-hour and seven-day windows, and the command prints every provider's quota back into
+          Claude Code.
         </p>
         <p>
           Only terminal sessions render a status line — the desktop application draws its own
-          interface — so readings arrive while <code>claude</code> runs in a terminal, and
-          between those the windows stay as last reported. Removing it here undoes all of it.
+          interface — so readings arrive while <code>claude</code> runs in a terminal, and between
+          those the windows stay as last reported. Removing it here undoes all of it.
         </p>
         <div className="confirm-actions">
           <button type="button" onClick={onCancel} disabled={busy}>

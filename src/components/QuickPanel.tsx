@@ -3,6 +3,7 @@ import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../errors";
 import { formatCurrency, formatNumber } from "../format";
+import { statusColor } from "../theme";
 import type { ProviderSnapshot, WorkspaceSnapshot } from "../types";
 import { useSnapshot } from "../useSnapshot";
 import { ProviderSetup } from "./ProviderSetup";
@@ -13,7 +14,9 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
     <section className="quick-provider" aria-label={`${snapshot.displayName} status`}>
       <header className="quick-provider-header">
         <h2>{snapshot.displayName}</h2>
-        <span style={{ color: snapshot.compactStatus.color }}>{snapshot.compactStatus.label}</span>
+        <span style={{ color: statusColor(snapshot.compactStatus) }}>
+          {snapshot.compactStatus.label}
+        </span>
       </header>
       <QuotaSection
         compact
@@ -23,8 +26,16 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
         resets={snapshot.recentResets}
       />
       <section className="quick-usage" aria-label={`${snapshot.displayName} usage today`}>
-        <div><span>Today</span><strong>{formatNumber(snapshot.today.total)}</strong><small>tokens</small></div>
-        <div><span>API equivalent</span><strong>{formatCurrency(snapshot.apiEquivalentCostUsd)}</strong><small>estimated cost</small></div>
+        <div>
+          <span>Today</span>
+          <strong>{formatNumber(snapshot.today.total)}</strong>
+          <small>tokens</small>
+        </div>
+        <div>
+          <span>API equivalent</span>
+          <strong>{formatCurrency(snapshot.apiEquivalentCostUsd)}</strong>
+          <small>estimated cost</small>
+        </div>
       </section>
     </section>
   );
@@ -88,7 +99,12 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
           louder of those two said a second time. */}
       <header className="quick-panel-header">
         <strong>QuotaStation</strong>
-        <button type="button" aria-label="Refresh quota and usage" onClick={() => void refresh()} disabled={refreshing}>
+        <button
+          type="button"
+          aria-label="Refresh quota and usage"
+          onClick={() => void refresh()}
+          disabled={refreshing}
+        >
           <RefreshCw aria-hidden="true" className={refreshing ? "spinning" : ""} />
         </button>
       </header>
@@ -105,7 +121,9 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
       <button
         type="button"
         className="dashboard-link"
-        onClick={() => void invoke("open_dashboard").catch((cause) => setRefreshError(errorMessage(cause)))}
+        onClick={() =>
+          void invoke("open_dashboard").catch((cause) => setRefreshError(errorMessage(cause)))
+        }
       >
         Open dashboard <ArrowUpRight aria-hidden="true" />
       </button>

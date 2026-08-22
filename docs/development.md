@@ -66,8 +66,25 @@ only the days it parsed:
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-Both suites, plus the renderer build, run on a Windows runner for every pull request into
-`dev` and every push to `dev` or `main`; see `.github/workflows/ci.yml`.
+Check the renderer's formatting, import order, and lint rules. `npm run format` writes what
+the check reports; the rules this project turns off, and why, are listed in `biome.jsonc`:
+
+```powershell
+npm run lint
+```
+
+Check the core the same way. Formatting is `rustfmt.toml`; the lint gate treats every clippy
+warning as an error, and `cargo fmt --manifest-path src-tauri/Cargo.toml` writes the
+formatting:
+
+```powershell
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+```
+
+Both suites and both lint gates, plus the renderer build, run on a Windows runner for the
+`dev` to `main` release pull request and every push to `main`; see `.github/workflows/ci.yml`.
+Commits on `dev` rely on the same local gates before they are pushed.
 
 ### What each build command produces
 
@@ -158,8 +175,8 @@ answered a refresh, how many windows it carried, and why a read failed. It recor
 content and no credential, rolls over at 512 KB into `quotastation.log.1`, and the
 Diagnostics tab's **Show activity log** button reveals it.
 
-Historical range changes query the normalized daily rows in SQLite; they do not trigger a
-new parse of the Codex session logs.
+Historical range changes query the normalized rows in SQLite — daily, or hourly for a range
+short enough to be drawn that way; they do not trigger a new parse of the Codex session logs.
 
 What is retained and for how long, how daily buckets follow the system time zone, and why
 each rule is what it is are all in

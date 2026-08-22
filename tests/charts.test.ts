@@ -1,14 +1,63 @@
 import { describe, expect, it } from "vitest";
 import {
-  alignToDays,
+  alignToBuckets,
   axisScale,
   bandGeometry,
   calendarDays,
+  calendarHours,
   columnPath,
+  hourlyUsageMatchesRange,
   labelStride,
   linePath,
   stackSegments,
 } from "../src/charts";
+
+describe("hourly range completeness", () => {
+  const usage = (total: number) => ({
+    input: total,
+    cacheRead: 0,
+    output: 0,
+    reasoning: 0,
+    total,
+  });
+
+  it("waits for every provider's hourly rows before replacing complete daily data", () => {
+    const range = {
+      startDate: "2026-08-20",
+      endDate: "2026-08-20",
+      usage: usage(30),
+      apiEquivalentCostUsd: null,
+      models: [],
+      days: [],
+    };
+    const partial = {
+      startDate: range.startDate,
+      endDate: range.endDate,
+      hours: [
+        { hourStart: "2026-08-20T09:00", usage: usage(10), apiEquivalentCostUsd: null, models: [] },
+      ],
+    };
+
+    expect(hourlyUsageMatchesRange(partial, range)).toBe(false);
+    expect(
+      hourlyUsageMatchesRange(
+        {
+          ...partial,
+          hours: [
+            ...partial.hours,
+            {
+              hourStart: "2026-08-20T10:00",
+              usage: usage(20),
+              apiEquivalentCostUsd: null,
+              models: [],
+            },
+          ],
+        },
+        range,
+      ),
+    ).toBe(true);
+  });
+});
 
 describe("the day axis", () => {
   it("covers both ends of the range", () => {
@@ -30,8 +79,37 @@ describe("the day axis", () => {
 
   it("leaves a day with no record empty rather than zero", () => {
     const days = calendarDays("2026-08-14", "2026-08-16");
-    const aligned = alignToDays([{ date: "2026-08-15", tokens: 12 }], days);
+    const aligned = alignToBuckets(
+      [{ date: "2026-08-15", tokens: 12 }],
+      days,
+      (point) => point.date,
+    );
     expect(aligned).toEqual([undefined, { date: "2026-08-15", tokens: 12 }, undefined]);
+  });
+});
+
+describe("the hour axis", () => {
+  it("runs from the first hour of the range to the last hour of its final day", () => {
+    const hours = calendarHours("2026-08-14", "2026-08-15", new Date("2026-08-20T10:00:00"));
+    expect(hours).toHaveLength(48);
+    expect(hours[0]).toBe("2026-08-14T00:00");
+    expect(hours.at(-1)).toBe("2026-08-15T23:00");
+  });
+
+  it("stops at the hour in progress when the range ends today", () => {
+    const hours = calendarHours("2026-08-20", "2026-08-20", new Date("2026-08-20T09:30:00"));
+    expect(hours).toHaveLength(10);
+    expect(hours.at(-1)).toBe("2026-08-20T09:00");
+  });
+
+  it("leaves an hour with no record empty rather than zero", () => {
+    const hours = calendarHours("2026-08-20", "2026-08-20", new Date("2026-08-20T02:00:00"));
+    const aligned = alignToBuckets(
+      [{ hourStart: "2026-08-20T01:00", tokens: 12 }],
+      hours,
+      (point) => point.hourStart,
+    );
+    expect(aligned).toEqual([undefined, { hourStart: "2026-08-20T01:00", tokens: 12 }, undefined]);
   });
 });
 
@@ -99,11 +177,7 @@ describe("stacking", () => {
 
 describe("lines", () => {
   it("breaks rather than joining across a day with no reading", () => {
-    const path = linePath([
-      { x: 0, y: 10 },
-      null,
-      { x: 20, y: 30 },
-    ]);
+    const path = linePath([{ x: 0, y: 10 }, null, { x: 20, y: 30 }]);
     expect(path).toBe("M0.00 10.00 M20.00 30.00");
   });
 

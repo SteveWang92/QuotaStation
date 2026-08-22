@@ -157,7 +157,7 @@ pub fn load_fresh(now: i64) -> Option<QuotaSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Freshness, LimitWindow, ProviderSnapshot, WindowSource};
+    use crate::domain::{Freshness, LimitWindow, ProviderSnapshot, QuotaLevel, WindowSource};
     use crate::providers::ProviderKind;
 
     fn workspace() -> WorkspaceSnapshot {
@@ -172,7 +172,7 @@ mod tests {
                 source: WindowSource::AppServer,
                 observed_at: 1_800_000_000,
                 freshness: Freshness::Fresh,
-                status_color: String::new(),
+                status_level: QuotaLevel::Healthy,
             },
             // Reported but unreadable: no percentage, so there is nothing to render.
             LimitWindow {
@@ -184,7 +184,7 @@ mod tests {
                 source: WindowSource::AppServer,
                 observed_at: 1_800_000_000,
                 freshness: Freshness::Fresh,
-                status_color: String::new(),
+                status_level: QuotaLevel::Healthy,
             },
             // A percentage is not enough: stale quota must not be restamped as current
             // merely because the application has just published another summary.
@@ -197,7 +197,7 @@ mod tests {
                 source: WindowSource::AppServer,
                 observed_at: 1_799_000_000,
                 freshness: Freshness::Stale,
-                status_color: String::new(),
+                status_level: QuotaLevel::Healthy,
             },
         ];
         codex.today.total = 1_234;
@@ -213,11 +213,7 @@ mod tests {
         assert_eq!(summary.schema, SCHEMA);
         let codex = &summary.providers[0];
         assert_eq!(codex.short_name, "CDX");
-        assert_eq!(
-            codex.windows.len(),
-            1,
-            "unreadable and stale windows are both left out"
-        );
+        assert_eq!(codex.windows.len(), 1, "unreadable and stale windows are both left out");
         assert_eq!(codex.windows[0].label, "5h");
         assert_eq!(codex.windows[0].used_percent, 62.0);
         assert_eq!(codex.today_tokens, 1_234);

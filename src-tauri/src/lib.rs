@@ -1,6 +1,7 @@
 mod alerts;
 mod autostart;
 mod domain;
+mod git;
 mod log;
 mod providers;
 mod refresh;
@@ -11,14 +12,21 @@ mod settings;
 mod storage;
 mod summary;
 mod taskbar;
+mod terminal;
+mod theme;
 
 use crate::settings::AppSettings;
 
-use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex as StdMutex, OnceLock}, time::{Duration, Instant}};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::{Arc, Mutex as StdMutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use domain::{
-    DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot, UsageRangeSnapshot,
-    WatcherDiagnostics, WorkspaceSnapshot,
+    DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot, UsageHoursSnapshot,
+    UsageRangeSnapshot, WatcherDiagnostics, WorkspaceSnapshot,
 };
 use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
@@ -29,7 +37,7 @@ pub fn run_claude_hook() -> bool {
     statusline::run_bridge_if_requested() || notifications::run_hook_if_requested()
 }
 use tauri::{
-    Manager, PhysicalPosition, State,
+    Emitter, Manager, PhysicalPosition, State,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -64,7 +72,10 @@ impl AppState {
 
     /// Applies a change and records it, so a preference the user expressed survives the
     /// next start whether it came from the tray or from the settings dialog.
-    fn update_settings(&self, change: impl FnOnce(&mut AppSettings)) -> Result<AppSettings, String> {
+    fn update_settings(
+        &self,
+        change: impl FnOnce(&mut AppSettings),
+    ) -> Result<AppSettings, String> {
         let mut settings = self.settings.lock().map_err(|_| "Settings unavailable.".to_string())?;
         let mut updated = settings.clone();
         change(&mut updated);
@@ -90,7 +101,11 @@ impl AppState {
         detected
     }
 
-    async fn with_snapshot(&self, provider: ProviderKind, edit: impl FnOnce(&mut ProviderSnapshot)) {
+    async fn with_snapshot(
+        &self,
+        provider: ProviderKind,
+        edit: impl FnOnce(&mut ProviderSnapshot),
+    ) {
         let mut snapshots = self.snapshots.write().await;
         edit(snapshots.entry(provider).or_insert_with(|| ProviderSnapshot::new(provider)));
     }
@@ -145,6 +160,21 @@ async fn get_usage_range(
         .map_err(|error| error.to_string())
 }
 
+/// The same range hour by hour, for the short ranges the dashboard draws that way.
+#[tauri::command]
+async fn get_usage_hours(
+    provider: Option<ProviderKind>,
+    start_date: String,
+    end_date: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<UsageHoursSnapshot, String> {
+    state
+        .storage
+        .load_usage_hours(provider, &start_date, &end_date)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn get_quota_history(
     provider: ProviderKind,
@@ -191,20 +221,26 @@ fn place_taskbar_widget(app: &tauri::AppHandle) {
 
 fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     let state = app.state::<Arc<AppState>>();
-    if let Err(error) = state.update_settings(|settings| settings.taskbar_widget_enabled = visible) {
+    if let Err(error) = state.update_settings(|settings| settings.taskbar_widget_enabled = visible)
+    {
         log::write(format!("failed to save application settings: {error}"));
     }
     if visible {
         // Placement comes first: it rebuilds the window when Explorer's taskbar took it
         // with it, and showing a window that no longer exists is what ends the process.
         place_taskbar_widget(app);
-        if let Some(widget) = app.get_webview_window(&taskbar::widget_label()).filter(|_| taskbar::widget_is_live(app)) {
+        if let Some(widget) = app
+            .get_webview_window(&taskbar::widget_label())
+            .filter(|_| taskbar::widget_is_live(app))
+        {
             let _ = widget.show();
         }
         // A low-level hook is called on the thread that installed it, so it has to be
         // installed on the one running the message loop.
         let _ = app.run_on_main_thread(taskbar::watch_widget_clicks);
-    } else if let Some(widget) = app.get_webview_window(&taskbar::widget_label()).filter(|_| taskbar::widget_is_live(app)) {
+    } else if let Some(widget) =
+        app.get_webview_window(&taskbar::widget_label()).filter(|_| taskbar::widget_is_live(app))
+    {
         let _ = widget.hide();
     }
 }
@@ -249,7 +285,11 @@ fn set_app_settings(
     let previous = state.settings();
     let taskbar_changed = previous.taskbar_widget_enabled != settings.taskbar_widget_enabled;
     let display_changed = previous.taskbar_widget_display != settings.taskbar_widget_display;
+    let theme_changed = previous.theme != settings.theme;
     let updated = state.update_settings(|current| *current = settings)?;
+    if theme_changed {
+        apply_theme(&app, updated.theme);
+    }
     if taskbar_changed {
         set_taskbar_widget_visible(&app, updated.taskbar_widget_enabled);
     } else if display_changed && updated.taskbar_widget_enabled {
@@ -337,20 +377,102 @@ fn watch_for_finished_turns(app: tauri::AppHandle) {
         let mut ticks = tokio::time::interval(Duration::from_secs(2));
         loop {
             ticks.tick().await;
-            let Some(event) = notifications::take_pending(jiff::Timestamp::now().as_second())
-            else {
-                continue;
-            };
             // The title says which event this is, the same way the quota notifications do.
             // Windows already prints the application's name above it, so spending the title
             // on "QuotaStation" left every notification looking alike in the action centre.
-            let body = match event.project {
-                Some(project) => project,
-                None => "A turn has ended".to_string(),
-            };
-            alerts::raise(&app, "Claude Code finished responding", &body);
+            for event in notifications::take_pending(jiff::Timestamp::now().as_second()) {
+                let body = finished_body(&event);
+                match event.terminal {
+                    // Clicking goes back to the terminal the turn ran in. The tab inside it
+                    // is the user's to pick: nothing outside Windows Terminal can choose one.
+                    Some(target) => {
+                        alerts::raise_with_action(
+                            &app,
+                            "Claude Code finished responding",
+                            &body,
+                            move || {
+                                if !terminal::focus(target) {
+                                    log::write(
+                                        "the terminal a finished turn ran in could not be raised",
+                                    );
+                                }
+                            },
+                        );
+                    }
+                    None => alerts::raise(&app, "Claude Code finished responding", &body),
+                }
+            }
         }
     });
+}
+
+/// The palettes every window should be drawing in right now.
+#[tauri::command]
+fn get_theme(state: State<'_, Arc<AppState>>) -> theme::ThemeSnapshot {
+    theme::snapshot(state.settings().theme)
+}
+
+/// Puts the resolved theme where the two things that need it can see it: the native window
+/// frame, which Windows draws and CSS cannot reach, and the renderer, which draws the rest.
+///
+/// The taskbar widget is left out of the frame call deliberately — it has no frame, and its
+/// palette follows the taskbar rather than the preference.
+fn apply_theme(app: &tauri::AppHandle, preference: theme::ThemePreference) -> theme::ThemeSnapshot {
+    let snapshot = theme::snapshot(preference);
+    let frame = match preference {
+        theme::ThemePreference::System => None,
+        theme::ThemePreference::Dark => Some(tauri::Theme::Dark),
+        theme::ThemePreference::Light => Some(tauri::Theme::Light),
+    };
+    for window in app.webview_windows().values() {
+        if !window.label().starts_with("taskbar-widget") {
+            let _ = window.set_theme(frame);
+        }
+    }
+    let _ = app.emit("theme-changed", snapshot);
+    snapshot
+}
+
+/// Notices a Windows theme change while QuotaStation is running.
+///
+/// Windows announces this to windows that have not been told what theme to be, and every
+/// window here has been, so the announcement never arrives. Reading two registry values is
+/// cheap enough to do on the same tick everything else in this application already runs on,
+/// and only a change is published.
+fn watch_for_system_theme_changes(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticks = tokio::time::interval(Duration::from_secs(2));
+        let mut last = theme::snapshot(current_preference(&app));
+        loop {
+            ticks.tick().await;
+            let preference = current_preference(&app);
+            let snapshot = theme::snapshot(preference);
+            if snapshot == last {
+                continue;
+            }
+            last = snapshot;
+            apply_theme(&app, preference);
+        }
+    });
+}
+
+fn current_preference(app: &tauri::AppHandle) -> theme::ThemePreference {
+    app.state::<Arc<AppState>>().settings().theme
+}
+
+/// Which session finished, in the width a notification body has.
+///
+/// Someone with one terminal open needs neither line and reads the title alone; someone with
+/// six needs to know which of them is waiting, and the project directory answers that until
+/// two sessions share it. The session title is what separates those two, so it is added
+/// rather than substituted — a title says what the work is, never where it is.
+fn finished_body(event: &notifications::FinishedEvent) -> String {
+    match (event.project.as_deref(), event.session.as_deref()) {
+        (Some(project), Some(session)) => format!("{project} \u{b7} {session}"),
+        (Some(project), None) => project.to_string(),
+        (None, Some(session)) => session.to_string(),
+        (None, None) => "A turn has ended".to_string(),
+    }
 }
 
 /// Which build is running, told apart the way the machine can tell them apart: the compiler
@@ -368,24 +490,18 @@ fn build_kind() -> String {
 }
 
 #[tauri::command]
-async fn get_diagnostics(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<DiagnosticsSnapshot, String> {
+async fn get_diagnostics(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<DiagnosticsSnapshot, String> {
     let mut acquisitions = Vec::new();
     for provider in state.enabled_providers() {
-        acquisitions.extend(
-            state
-                .storage
-                .load_acquisition_diagnostics(provider)
-                .await
-                .map_err(|error| {
-                    sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
-                })?,
-        );
+        acquisitions.extend(state.storage.load_acquisition_diagnostics(provider).await.map_err(
+            |error| sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable"),
+        )?);
     }
-    let retention = state
-        .storage
-        .load_retention_diagnostics()
-        .await
-        .map_err(|error| {
+    let retention =
+        state.storage.load_retention_diagnostics().await.map_err(|error| {
             sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
         })?;
     Ok(DiagnosticsSnapshot {
@@ -412,10 +528,7 @@ async fn backfill_resets(state: &Arc<AppState>) -> anyhow::Result<()> {
             continue;
         }
         let scanned_at = jiff::Timestamp::now().to_string();
-        state
-            .storage
-            .backfill_resets(provider, &observations, &scanned_at)
-            .await?;
+        state.storage.backfill_resets(provider, &observations, &scanned_at).await?;
     }
     Ok(())
 }
@@ -508,10 +621,7 @@ fn quick_panel_growth(
     let bottom_limit = work_area.position.y + work_area.size.height as i32 - margin;
     let bottom = (position.y + size.height as i32).min(bottom_limit);
     let y = (bottom - height as i32).max(top_limit);
-    (
-        PhysicalPosition::new(position.x, y),
-        tauri::PhysicalSize::new(size.width, height),
-    )
+    (PhysicalPosition::new(position.x, y), tauri::PhysicalSize::new(size.width, height))
 }
 
 /// The height the renderer measured, in CSS pixels, for a window that has no frame to
@@ -528,11 +638,7 @@ fn set_quick_panel_height(app: tauri::AppHandle, height: f64) -> Result<(), Stri
     let position = panel.outer_position().map_err(|error| error.to_string())?;
     let requested = ((height * scale_factor).round().clamp(1.0, u32::MAX as f64) as u32)
         .saturating_add(frame.height);
-    let work_area = panel
-        .current_monitor()
-        .ok()
-        .flatten()
-        .map(|monitor| *monitor.work_area());
+    let work_area = panel.current_monitor().ok().flatten().map(|monitor| *monitor.work_area());
     let (next_position, next_size) = match work_area {
         Some(work_area) => quick_panel_growth(work_area, position, size, requested),
         // Without a monitor there is nothing to clamp against, so the request stands and
@@ -650,10 +756,8 @@ fn toggle_quick_panel_beside(
         return false;
     }
 
-    let centre = (
-        anchor_position.x + anchor_size.width / 2.0,
-        anchor_position.y + anchor_size.height / 2.0,
-    );
+    let centre =
+        (anchor_position.x + anchor_size.width / 2.0, anchor_position.y + anchor_size.height / 2.0);
     let monitor = app.monitor_from_point(centre.0, centre.1).ok().flatten();
     let (x, y) = if let Some(monitor) = monitor {
         let (position, fitted_size) = quick_panel_placement(
@@ -682,7 +786,11 @@ fn toggle_quick_panel_beside(
 
 /// The tray reports its icon in whichever unit the platform uses, so the click position —
 /// which is already physical — is what identifies the monitor whose scale converts it.
-fn toggle_quick_panel(app: &tauri::AppHandle, click: PhysicalPosition<f64>, tray_rect: tauri::Rect) {
+fn toggle_quick_panel(
+    app: &tauri::AppHandle,
+    click: PhysicalPosition<f64>,
+    tray_rect: tauri::Rect,
+) {
     let scale_factor = app
         .monitor_from_point(click.x, click.y)
         .ok()
@@ -747,7 +855,8 @@ mod quick_panel_tests {
         let size = tauri::PhysicalSize::new(390, 400);
         let bottom = position.y + size.height as i32;
         for requested in [200, 400, 620] {
-            let (next_position, next_size) = quick_panel_growth(work_area(1000), position, size, requested);
+            let (next_position, next_size) =
+                quick_panel_growth(work_area(1000), position, size, requested);
             assert_eq!(next_size.height, requested);
             assert_eq!(next_size.width, size.width, "only the height follows the contents");
             assert_eq!(next_position.x, position.x);
@@ -778,7 +887,11 @@ mod quick_panel_tests {
             780 + 18,
             "two columns is the widest the panel goes"
         );
-        assert_eq!(quick_panel_size(2, 600, 1.0, frame).height, 600, "the height is passed through");
+        assert_eq!(
+            quick_panel_size(2, 600, 1.0, frame).height,
+            600,
+            "the height is passed through"
+        );
     }
 
     #[test]
@@ -797,11 +910,8 @@ mod quick_panel_tests {
 #[cfg(windows)]
 fn write_desktop_shortcut(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let shortcut_path = app
-        .path()
-        .desktop_dir()
-        .map_err(|error| error.to_string())?
-        .join("QuotaStation.lnk");
+    let shortcut_path =
+        app.path().desktop_dir().map_err(|error| error.to_string())?.join("QuotaStation.lnk");
     let mut shortcut = mslnk::ShellLink::new(&executable).map_err(|error| error.to_string())?;
     if let Some(working_directory) = executable.parent() {
         shortcut.set_working_dir(Some(working_directory.to_string_lossy().into_owned()));
@@ -862,13 +972,22 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "refresh" => {
                 let app = app.clone();
                 let state = app.state::<Arc<AppState>>().inner().clone();
-                tauri::async_runtime::spawn(async move { refresh::refresh_all(&app, &state).await; });
+                tauri::async_runtime::spawn(async move {
+                    refresh::refresh_all(&app, &state).await;
+                });
             }
             "quit" => app.exit(0),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { position, rect, button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+            if let TrayIconEvent::Click {
+                position,
+                rect,
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
                 toggle_quick_panel(tray.app_handle(), position, rect);
             }
         })
@@ -944,6 +1063,8 @@ pub fn run() {
             }
             autostart::refresh_logon_entry(app.handle());
             watch_for_finished_turns(app.handle().clone());
+            apply_theme(app.handle(), state.settings().theme);
+            watch_for_system_theme_changes(app.handle().clone());
             if state.settings().taskbar_widget_enabled {
                 set_taskbar_widget_visible(app.handle(), true);
             }
@@ -951,7 +1072,10 @@ pub fn run() {
                 tauri::async_runtime::block_on(async {
                     let mut diagnostics = state.watcher_diagnostics.write().await;
                     diagnostics.status = "unavailable".to_string();
-                    diagnostics.error = Some("Session watching is unavailable; periodic reconciliation remains active.".to_string());
+                    diagnostics.error = Some(
+                        "Session watching is unavailable; periodic reconciliation remains active."
+                            .to_string(),
+                    );
                 });
             }
             let app_handle = app.handle().clone();
@@ -996,7 +1120,8 @@ pub fn run() {
                     interval.tick().await;
                     loop {
                         interval.tick().await;
-                        refresh::refresh_live_for_provider(&app_handle, &live_state, provider).await;
+                        refresh::refresh_live_for_provider(&app_handle, &live_state, provider)
+                            .await;
                     }
                 });
             }
@@ -1015,6 +1140,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             get_usage_range,
+            get_usage_hours,
             get_quota_history,
             refresh_now,
             get_diagnostics,
@@ -1028,6 +1154,7 @@ pub fn run() {
             set_taskbar_widget_size,
             get_taskbar_displays,
             set_quick_panel_height,
+            get_theme,
             get_app_settings,
             set_app_settings,
             get_autostart,
@@ -1035,7 +1162,9 @@ pub fn run() {
             create_desktop_shortcut
         ])
         .on_window_event(|window, event| {
-            if window.label() == "quick-panel" && matches!(event, tauri::WindowEvent::Focused(false)) {
+            if window.label() == "quick-panel"
+                && matches!(event, tauri::WindowEvent::Focused(false))
+            {
                 let state = window.state::<Arc<AppState>>();
                 // A panel opened by a click on somebody else's window is told it lost focus
                 // before it ever had it — the click belongs to that window, and Windows hands

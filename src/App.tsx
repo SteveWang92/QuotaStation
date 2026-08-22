@@ -3,30 +3,34 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { errorMessage } from "./errors";
-import { useSnapshot } from "./useSnapshot";
+import { hourlyUsageMatchesRange } from "./charts";
 import { ProviderSetup } from "./components/ProviderSetup";
-import { SettingsDialog } from "./components/SettingsDialog";
-import { QuotaSection } from "./components/QuotaSection";
 import { QuickPanel } from "./components/QuickPanel";
-import { TaskbarWidget } from "./components/TaskbarWidget";
+import { QuotaSection } from "./components/QuotaSection";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { StatusBar } from "./components/StatusBar";
+import { TaskbarWidget } from "./components/TaskbarWidget";
 import { UsageSummary } from "./components/UsageSummary";
 import {
   createPresetRange,
+  type DateRangeSelection,
   hasRolledOver,
+  isHourlyRange,
   previousPeriod,
   resolveDateRange,
-  type DateRangeSelection,
 } from "./dateRanges";
+import { errorMessage } from "./errors";
+import { statusColor, watchTheme } from "./theme";
 import type {
   DiagnosticsSnapshot,
   HistoryProvider,
   ProviderSnapshot,
   QuotaHistorySnapshot,
+  UsageHoursSnapshot,
   UsageRangeSnapshot,
   WorkspaceSnapshot,
 } from "./types";
+import { useSnapshot } from "./useSnapshot";
 import { EMPTY_WORKSPACE, resolveProviderKey } from "./workspace";
 
 const INITIAL_RANGE = createPresetRange("today");
@@ -59,7 +63,11 @@ const CURRENT_WINDOW_LABEL = getCurrentWindow().label;
 const IS_TASKBAR_WIDGET = CURRENT_WINDOW_LABEL.startsWith("taskbar-widget");
 document.documentElement.classList.toggle("compact-window", CURRENT_WINDOW_LABEL !== "main");
 document.documentElement.classList.toggle("taskbar-window", IS_TASKBAR_WIDGET);
-document.documentElement.classList.toggle("quick-panel-window", CURRENT_WINDOW_LABEL === "quick-panel");
+document.documentElement.classList.toggle(
+  "quick-panel-window",
+  CURRENT_WINDOW_LABEL === "quick-panel",
+);
+watchTheme(IS_TASKBAR_WIDGET);
 
 /**
  * The two reads behind a provider fail independently — the quota windows can be current
@@ -78,6 +86,9 @@ function Dashboard() {
   // The comparison and the quota history are read for the same slice as the totals, so a
   // figure and the change beside it always describe the same two periods.
   const [previousRange, setPreviousRange] = useState<UsageRangeSnapshot | null>(null);
+  // Hourly detail is read only for the ranges short enough to be drawn that way; `null`
+  // is what puts the charts back on the daily axis.
+  const [usageHours, setUsageHours] = useState<UsageHoursSnapshot | null>(null);
   const [quotaHistory, setQuotaHistory] = useState<QuotaHistorySnapshot | null>(null);
   const [activeRange, setActiveRange] = useState<DateRangeSelection>(INITIAL_RANGE);
   const [rangeLoading, setRangeLoading] = useState(false);
@@ -88,56 +99,75 @@ function Dashboard() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const activeRangeRef = useRef(INITIAL_RANGE);
   // The usage history shows one provider at a time, or all of them counted together,
-  // while the quota sections above always show each provider on its own.
-  const [selectedProvider, setSelectedProvider] = useState<HistoryProvider>("codex");
-  const providerRef = useRef<HistoryProvider>("codex");
+  // while the quota sections above always show each provider on its own. It opens on the
+  // combined view: the window is read first for how much has been spent today, and naming
+  // one provider there answers a narrower question than the one being asked. A workspace
+  // with a single provider falls back to it, because "all" of one is that one.
+  const [selectedProvider, setSelectedProvider] = useState<HistoryProvider>("all");
+  const providerRef = useRef<HistoryProvider>("all");
   const rangeRequestId = useRef(0);
   const rangeRequested = useRef(false);
 
-  const loadUsageRange = useCallback(async (range: DateRangeSelection, rangeProvider: HistoryProvider) => {
-    const resolvedRange = resolveDateRange(range);
-    activeRangeRef.current = resolvedRange;
-    const requestId = ++rangeRequestId.current;
-    setRangeLoading(true);
-    setRangeError(null);
-    const earlier = previousPeriod(resolvedRange);
-    // The combined view names no provider, which the core reads as every provider at once.
-    const provider = rangeProvider === "all" ? null : rangeProvider;
-    try {
-      const [next, previous, quota] = await Promise.all([
-        invoke<UsageRangeSnapshot>("get_usage_range", {
-          provider,
-          startDate: resolvedRange.startDate,
-          endDate: resolvedRange.endDate,
-        }),
-        invoke<UsageRangeSnapshot>("get_usage_range", {
-          provider,
-          startDate: earlier.startDate,
-          endDate: earlier.endDate,
-        }),
-        // Quota is not summable: one provider's weekly window says nothing about
-        // another's, so the combined view leaves that chart out rather than adding up
-        // percentages of different allowances.
-        provider === null
-          ? Promise.resolve(null)
-          : invoke<QuotaHistorySnapshot>("get_quota_history", {
-              provider,
-              startDate: resolvedRange.startDate,
-              endDate: resolvedRange.endDate,
-            }),
-      ]);
-      if (requestId === rangeRequestId.current) {
-        setUsageRange(next);
-        setPreviousRange(previous);
-        setQuotaHistory(quota);
-        setActiveRange(resolvedRange);
+  const loadUsageRange = useCallback(
+    async (range: DateRangeSelection, rangeProvider: HistoryProvider) => {
+      const resolvedRange = resolveDateRange(range);
+      activeRangeRef.current = resolvedRange;
+      const requestId = ++rangeRequestId.current;
+      setRangeLoading(true);
+      setRangeError(null);
+      const earlier = previousPeriod(resolvedRange);
+      // The combined view names no provider, which the core reads as every provider at once.
+      const provider = rangeProvider === "all" ? null : rangeProvider;
+      try {
+        const [next, previous, quota, hourly] = await Promise.all([
+          invoke<UsageRangeSnapshot>("get_usage_range", {
+            provider,
+            startDate: resolvedRange.startDate,
+            endDate: resolvedRange.endDate,
+          }),
+          invoke<UsageRangeSnapshot>("get_usage_range", {
+            provider,
+            startDate: earlier.startDate,
+            endDate: earlier.endDate,
+          }),
+          // Quota is not summable: one provider's weekly window says nothing about
+          // another's, so the combined view leaves that chart out rather than adding up
+          // percentages of different allowances.
+          provider === null
+            ? Promise.resolve(null)
+            : invoke<QuotaHistorySnapshot>("get_quota_history", {
+                provider,
+                startDate: resolvedRange.startDate,
+                endDate: resolvedRange.endDate,
+              }),
+          // A longer range has more hours than the chart has pixels, and the core keeps
+          // hourly rows only for the recent window anyway.
+          isHourlyRange(resolvedRange.startDate, resolvedRange.endDate)
+            ? invoke<UsageHoursSnapshot>("get_usage_hours", {
+                provider,
+                startDate: resolvedRange.startDate,
+                endDate: resolvedRange.endDate,
+              })
+            : Promise.resolve(null),
+        ]);
+        if (requestId === rangeRequestId.current) {
+          setUsageRange(next);
+          setPreviousRange(previous);
+          // Hourly rows only start existing after each provider's first refresh on this
+          // build. Until every provider covers the whole range, keep the complete daily
+          // shape instead of drawing a plausible but partial hourly chart.
+          setUsageHours(hourly !== null && hourlyUsageMatchesRange(hourly, next) ? hourly : null);
+          setQuotaHistory(quota);
+          setActiveRange(resolvedRange);
+        }
+      } catch (error) {
+        if (requestId === rangeRequestId.current) setRangeError(errorMessage(error));
+      } finally {
+        if (requestId === rangeRequestId.current) setRangeLoading(false);
       }
-    } catch (error) {
-      if (requestId === rangeRequestId.current) setRangeError(errorMessage(error));
-    } finally {
-      if (requestId === rangeRequestId.current) setRangeLoading(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   const loadDiagnostics = useCallback(async () => {
     try {
@@ -150,24 +180,27 @@ function Dashboard() {
 
   // The shared subscription retries until the core is ready, so the first usage
   // range read waits for it instead of failing against an unmanaged state.
-  const onSnapshot = useCallback((nextWorkspace: WorkspaceSnapshot) => {
-    void loadDiagnostics();
-    const rangeProvider = resolveProviderKey(nextWorkspace.providers, providerRef.current);
-    if (!rangeProvider) return;
-    const providerChanged = rangeProvider !== providerRef.current;
-    if (providerChanged) {
-      providerRef.current = rangeProvider;
-      setSelectedProvider(rangeProvider);
-    }
-    // Each snapshot is also the only regular tick this window receives, so it is where a
-    // calendar preset notices that midnight has passed. Without it an idle machine keeps
-    // yesterday's totals under a heading that reads "Today" until something else asks for
-    // a range.
-    if (!rangeRequested.current || providerChanged || hasRolledOver(activeRangeRef.current)) {
-      rangeRequested.current = true;
-      void loadUsageRange(activeRangeRef.current, rangeProvider);
-    }
-  }, [loadDiagnostics, loadUsageRange]);
+  const onSnapshot = useCallback(
+    (nextWorkspace: WorkspaceSnapshot) => {
+      void loadDiagnostics();
+      const rangeProvider = resolveProviderKey(nextWorkspace.providers, providerRef.current);
+      if (!rangeProvider) return;
+      const providerChanged = rangeProvider !== providerRef.current;
+      if (providerChanged) {
+        providerRef.current = rangeProvider;
+        setSelectedProvider(rangeProvider);
+      }
+      // Each snapshot is also the only regular tick this window receives, so it is where a
+      // calendar preset notices that midnight has passed. Without it an idle machine keeps
+      // yesterday's totals under a heading that reads "Today" until something else asks for
+      // a range.
+      if (!rangeRequested.current || providerChanged || hasRolledOver(activeRangeRef.current)) {
+        rangeRequested.current = true;
+        void loadUsageRange(activeRangeRef.current, rangeProvider);
+      }
+    },
+    [loadDiagnostics, loadUsageRange],
+  );
 
   const { workspace, error: snapshotError, loaded } = useSnapshot(EMPTY_WORKSPACE, onSnapshot);
   const historyProvider =
@@ -183,11 +216,14 @@ function Dashboard() {
     [loadUsageRange],
   );
 
-  const selectRange = useCallback((range: DateRangeSelection) => {
-    activeRangeRef.current = range;
-    setActiveRange(range);
-    void loadUsageRange(range, providerRef.current);
-  }, [loadUsageRange]);
+  const selectRange = useCallback(
+    (range: DateRangeSelection) => {
+      activeRangeRef.current = range;
+      setActiveRange(range);
+      void loadUsageRange(range, providerRef.current);
+    },
+    [loadUsageRange],
+  );
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -195,7 +231,10 @@ function Dashboard() {
       // refresh_now publishes the new snapshot through the shared subscription.
       await invoke("refresh_now");
       setCommandError(null);
-      await Promise.all([loadUsageRange(activeRangeRef.current, providerRef.current), loadDiagnostics()]);
+      await Promise.all([
+        loadUsageRange(activeRangeRef.current, providerRef.current),
+        loadDiagnostics(),
+      ]);
     } catch (error) {
       setCommandError(errorMessage(error));
     } finally {
@@ -253,12 +292,16 @@ function Dashboard() {
           <section key={provider.provider} className="provider-panel">
             <header className="provider-panel-header">
               <h2>{provider.displayName}</h2>
-              <span style={{ color: provider.compactStatus.color }}>{provider.compactStatus.label}</span>
+              <span style={{ color: statusColor(provider.compactStatus) }}>
+                {provider.compactStatus.label}
+              </span>
             </header>
             {/* A reading held back as stale is only actionable with the reason beside it.
                 The core redacts these before they leave it, so they are safe to draw. */}
             {readErrors(provider).map((message) => (
-              <p className="provider-panel-error" key={message}>{message}</p>
+              <p className="provider-panel-error" key={message}>
+                {message}
+              </p>
             ))}
             <QuotaSection
               provider={provider.displayName}
@@ -276,6 +319,7 @@ function Dashboard() {
           activeProvider={selectedProvider}
           onSelectProvider={selectProvider}
           range={usageRange}
+          hours={usageHours}
           previousRange={previousRange}
           quotaHistory={quotaHistory}
           selection={activeRange}
@@ -298,7 +342,8 @@ function Dashboard() {
 }
 
 export default function App() {
-  if (CURRENT_WINDOW_LABEL === "quick-panel") return <QuickPanel initialWorkspace={EMPTY_WORKSPACE} />;
+  if (CURRENT_WINDOW_LABEL === "quick-panel")
+    return <QuickPanel initialWorkspace={EMPTY_WORKSPACE} />;
   if (IS_TASKBAR_WIDGET) return <TaskbarWidget initialWorkspace={EMPTY_WORKSPACE} />;
   return <Dashboard />;
 }

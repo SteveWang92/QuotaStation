@@ -185,10 +185,7 @@ fn collect_failure(
     if seeding || was_failing || !settings.notify_read_failures {
         return;
     }
-    alerts.push(Alert {
-        title: format!("{} cannot be read", provider.display_name),
-        body: reason,
-    });
+    alerts.push(Alert { title: format!("{} cannot be read", provider.display_name), body: reason });
 }
 
 /// Why a provider is in trouble, or `None` while it is answering.
@@ -218,7 +215,9 @@ fn collect_resets(
 ) {
     let Some(reset) = provider.recent_resets.first() else { return };
     let previous = announced.resets.insert(provider.provider, reset.anchored_at);
-    if seeding || !settings.notify_quota_resets || previous.is_some_and(|at| at >= reset.anchored_at)
+    if seeding
+        || !settings.notify_quota_resets
+        || previous.is_some_and(|at| at >= reset.anchored_at)
     {
         return;
     }
@@ -286,10 +285,54 @@ pub fn raise(app: &tauri::AppHandle, title: &str, body: &str) {
     }
 }
 
+/// The same notification, with somewhere for a click to go.
+///
+/// The notification plugin shows a toast and returns; it has no way to hear that one was
+/// clicked on Windows, so a toast that answers a click has to be raised through the WinRT
+/// API directly. The application identifier is the same one the plugin uses, so the toast
+/// still arrives under QuotaStation's own name in the action centre.
+///
+/// The activation only reaches a running process. That is exactly the case here — the
+/// application is what raised the toast — and anything that goes wrong falls back to an
+/// ordinary notification rather than to none.
+#[cfg(windows)]
+pub fn raise_with_action(
+    app: &tauri::AppHandle,
+    title: &str,
+    body: &str,
+    on_click: impl Fn() + Send + 'static,
+) {
+    use tauri_winrt_notification::Toast;
+
+    let identifier = app.config().identifier.clone();
+    let shown = Toast::new(&identifier)
+        .title(title)
+        .text1(body)
+        .on_activated(move |_action| {
+            on_click();
+            Ok(())
+        })
+        .show();
+    if let Err(error) = shown {
+        crate::log::write(format!("clickable notification failed: {error}"));
+        raise(app, title, body);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn raise_with_action(
+    app: &tauri::AppHandle,
+    title: &str,
+    body: &str,
+    _on_click: impl Fn() + Send + 'static,
+) {
+    raise(app, title, body);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{CompactStatus, LimitResetEvent, WindowSource};
+    use crate::domain::{CompactStatus, LimitResetEvent, QuotaLevel, WindowSource};
 
     fn window(kind: LimitKind, used: f64, resets_at: i64) -> LimitWindow {
         LimitWindow {
@@ -301,7 +344,7 @@ mod tests {
             source: WindowSource::AppServer,
             observed_at: 1_800_000_000,
             freshness: Freshness::Fresh,
-            status_color: String::new(),
+            status_level: QuotaLevel::Healthy,
         }
     }
 
@@ -314,11 +357,8 @@ mod tests {
     /// A provider that is answering normally.
     fn answering() -> ProviderSnapshot {
         let mut snapshot = provider(Vec::new());
-        snapshot.compact_status = CompactStatus {
-            level: CompactStatusLevel::Healthy,
-            label: "Healthy".to_string(),
-            color: String::new(),
-        };
+        snapshot.compact_status =
+            CompactStatus { level: CompactStatusLevel::Healthy, label: "Healthy".to_string() };
         snapshot
     }
 
@@ -354,7 +394,11 @@ mod tests {
         );
         assert_eq!(warning.len(), 1, "crossing into the warning share is announced");
         assert!(warning[0].title.contains("running low"));
-        assert!(warning[0].body.contains("72%"), "the body carries the reading: {}", warning[0].body);
+        assert!(
+            warning[0].body.contains("72%"),
+            "the body carries the reading: {}",
+            warning[0].body
+        );
 
         let again = pending(
             &mut announced,
@@ -463,7 +507,6 @@ mod tests {
         broken.compact_status = CompactStatus {
             level: CompactStatusLevel::Unavailable,
             label: "Provider unavailable".to_string(),
-            color: String::new(),
         };
         broken.live_error = Some("Quota read failed".to_string());
         let first = pending(&mut announced, &workspace(broken.clone()), &settings);

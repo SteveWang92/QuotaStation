@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
-use ccusage_adapter_claude::load_daily_summaries;
-use ccusage_core::cli::SharedArgs;
+use ccusage_adapter_claude::load_daily_and_hourly_summaries;
+use ccusage_core::{UsageSummary, cli::SharedArgs};
 
-use crate::domain::{DailyModelUsage, HistoryDay, HistorySnapshot, ModelUsage, TokenUsage};
+use crate::{
+    domain::{HistoryDay, HistoryHour, HistorySnapshot, ModelUsage, ModelUsageRow, TokenUsage},
+    providers::hours,
+};
 
 pub async fn read_history(timezone: &str) -> Result<HistorySnapshot> {
     let timezone = timezone.to_string();
@@ -13,7 +16,7 @@ pub async fn read_history(timezone: &str) -> Result<HistorySnapshot> {
 
 fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
     // `breakdown` is what populates the per-model rows the dashboard shows.
-    let summaries = load_daily_summaries(
+    let (summaries, hourly) = load_daily_and_hourly_summaries(
         &SharedArgs {
             json: true,
             breakdown: true,
@@ -30,24 +33,7 @@ fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
         let Some(date) = summary.date.clone() else { continue };
         let total_tokens = summary.total_tokens();
 
-        let mut model_rows = summary
-            .model_breakdowns
-            .iter()
-            .map(|breakdown| DailyModelUsage {
-                model: breakdown.model_name.clone(),
-                input: input_tokens(breakdown.input_tokens, breakdown.cache_creation_tokens),
-                cache_read: breakdown.cache_read_tokens,
-                output: breakdown.output_tokens,
-                reasoning: 0,
-                total: breakdown.input_tokens
-                    + breakdown.output_tokens
-                    + breakdown.cache_creation_tokens
-                    + breakdown.cache_read_tokens
-                    + breakdown.extra_total_tokens,
-                cost_usd: breakdown.cost,
-            })
-            .collect::<Vec<_>>();
-        model_rows.sort_by(|a, b| b.total.cmp(&a.total));
+        let model_rows = model_rows_of(&summary);
 
         let models = model_rows
             .iter()
@@ -77,7 +63,56 @@ fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
         });
     }
     days.sort_by(|a, b| a.date.cmp(&b.date));
-    Ok(HistorySnapshot { days })
+    Ok(HistorySnapshot { days, hours: hourly_buckets(hourly, timezone) })
+}
+
+/// The same session files, summarised by local hour instead of by local day.
+///
+/// The adapter answers both from one parse and one deduplication, so an hour never
+/// disagrees with the day it belongs to.
+fn hourly_buckets(summaries: Vec<(String, UsageSummary)>, timezone: &str) -> Vec<HistoryHour> {
+    let zone = jiff::tz::TimeZone::get(timezone).unwrap_or_else(|_| jiff::tz::TimeZone::system());
+    let cutoff = hours::cutoff_date(&zone);
+    summaries
+        .into_iter()
+        .filter(|(hour_start, _)| hours::within_window(hour_start, &cutoff))
+        .map(|(hour_start, summary)| HistoryHour {
+            hour_start,
+            model_rows: model_rows_of(&summary),
+        })
+        .collect()
+}
+
+/// One summary's per-model rows, largest first, in the shared shape both resolutions are
+/// stored in.
+fn model_rows_of(summary: &UsageSummary) -> Vec<ModelUsageRow> {
+    let mut model_rows = summary
+        .model_breakdowns
+        .iter()
+        .map(|breakdown| ModelUsageRow {
+            model: breakdown.model_name.clone(),
+            input: input_tokens(breakdown.input_tokens, breakdown.cache_creation_tokens),
+            cache_read: breakdown.cache_read_tokens,
+            output: breakdown.output_tokens,
+            reasoning: 0,
+            total: breakdown.input_tokens
+                + breakdown.output_tokens
+                + breakdown.cache_creation_tokens
+                + breakdown.cache_read_tokens
+                + breakdown.extra_total_tokens,
+            cost_usd: breakdown.cost,
+        })
+        .collect::<Vec<_>>();
+    model_rows.sort_by_key(|row| std::cmp::Reverse(row.total));
+    model_rows
+}
+
+/// Claude reports cache creation as its own category and reports no reasoning tokens,
+/// while the shared model carries reasoning but not cache creation. Counting cache
+/// creation as input keeps the four categories adding up to the same total the parser
+/// reported, which matters more on screen than a category Codex alone can fill.
+fn input_tokens(input: u64, cache_creation: u64) -> u64 {
+    input + cache_creation
 }
 
 #[cfg(test)]
@@ -110,16 +145,9 @@ mod tests {
             last.models.len()
         );
         for day in &history.days {
-            let parts = day.usage.input + day.usage.cache_read + day.usage.output + day.usage.reasoning;
+            let parts =
+                day.usage.input + day.usage.cache_read + day.usage.output + day.usage.reasoning;
             assert_eq!(parts, day.usage.total, "categories must add up on {}", day.date);
         }
     }
-}
-
-/// Claude reports cache creation as its own category and reports no reasoning tokens,
-/// while the shared model carries reasoning but not cache creation. Counting cache
-/// creation as input keeps the four categories adding up to the same total the parser
-/// reported, which matters more on screen than a category Codex alone can fill.
-fn input_tokens(input: u64, cache_creation: u64) -> u64 {
-    input + cache_creation
 }

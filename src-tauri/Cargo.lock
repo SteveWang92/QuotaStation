@@ -3161,7 +3161,7 @@ dependencies = [
 
 [[package]]
 name = "quotastation"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ccusage-adapter-claude",
@@ -3178,6 +3178,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-notification",
  "tauri-plugin-single-instance",
+ "tauri-winrt-notification",
  "thiserror 2.0.20",
  "tokio",
  "which",

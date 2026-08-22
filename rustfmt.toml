@@ -1,0 +1,7 @@
+# The core was written to a 100-column line before there was a format gate, and it puts
+# short structs, chains and if-else expressions on one line where they fit. "Max" is what
+# says that: every width heuristic follows max_width instead of rustfmt's much narrower
+# defaults, so adopting the gate reformats the code that was already inconsistent rather
+# than the style the file was written in.
+max_width = 100
+use_small_heuristics = "Max"

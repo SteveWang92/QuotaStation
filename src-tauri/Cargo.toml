@@ -1,6 +1,6 @@
 [package]
 name = "quotastation"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local-first AI quota and usage monitoring for Windows"
 authors = ["Steve Wang <contact@stevewang.me>"]
 edition = "2024"
@@ -36,9 +36,13 @@ which = "8"
 
 [target.'cfg(windows)'.dependencies]
 mslnk = "0.1.8"
+# The notification plugin shows a toast and nothing more; a toast that answers a click has
+# to be raised through the WinRT API directly.
+tauri-winrt-notification = "0.7"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",

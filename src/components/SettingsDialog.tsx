@@ -1,10 +1,10 @@
 import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
+import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
 import { ClaudeFinishedNotifications, ClaudeStatusLine } from "./ClaudeStatusLine";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { GeneralSettings } from "./GeneralSettings";
 import { QuotaNotifications } from "./QuotaNotifications";
-import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -63,7 +63,12 @@ export function SettingsDialog({
       >
         <header className="settings-header">
           <h2>Settings and diagnostics</h2>
-          <button type="button" className="settings-close" onClick={onClose} aria-label="Close settings">
+          <button
+            type="button"
+            className="settings-close"
+            onClick={onClose}
+            aria-label="Close settings"
+          >
             <X aria-hidden="true" />
           </button>
         </header>
@@ -82,8 +87,8 @@ export function SettingsDialog({
               </>
             ) : (
               <p className="settings-empty">
-                QuotaStation reads whichever provider clients this machine has. Nothing here
-                needs setting up for the ones it found.
+                QuotaStation reads whichever provider clients this machine has. Nothing here needs
+                setting up for the ones it found.
               </p>
             )}
           </section>

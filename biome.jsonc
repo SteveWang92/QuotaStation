@@ -1,0 +1,68 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.9/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    "includes": [
+      "src/**/*.ts",
+      "src/**/*.tsx",
+      "src/**/*.css",
+      "tests/**/*.ts",
+      "scripts/**/*.mjs",
+      "*.ts",
+      "*.jsonc"
+    ]
+  },
+  "formatter": {
+    "indentStyle": "space",
+    "indentWidth": 2,
+    // The same column the core is formatted to; see rustfmt.toml.
+    "lineWidth": 100
+  },
+  "css": {
+    // The stylesheet is written one rule per line on purpose — it is read as a list of
+    // selectors, and expanding every block would turn 460 lines into 1700 without
+    // telling the reader anything the single line did not. It is still linted.
+    "formatter": { "enabled": false }
+  },
+  "javascript": { "formatter": { "quoteStyle": "double" } },
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "linter": {
+    "rules": {
+      "preset": "recommended",
+      "a11y": {
+        // The daily table is a CSS grid: its columns line up across rows only because
+        // every row is a grid child, which real table elements cannot be without
+        // overriding their own display. It carries the full set of table ARIA roles
+        // instead, and these two rules ask for the markup rather than the semantics.
+        "useSemanticElements": "off",
+        "useFocusableInteractive": "off",
+        // A dialog backdrop closes on a press and a chart band highlights on hover.
+        // Neither is a control: the dialog closes on Escape and the chart is read with
+        // the arrow keys, both from the element that does own the keyboard.
+        "noStaticElementInteractions": "off",
+        // The chart surface is a keyboard target on purpose — arrow keys walk the days —
+        // and it is announced as an application because that is what it behaves like.
+        "noNoninteractiveTabindex": "off"
+      },
+      "complexity": {
+        // Every one of these overrides a declaration that a longer selector or an inline
+        // style would otherwise win, including the reduced-motion block that must beat
+        // every animation in the file.
+        "noImportantStyles": "off"
+      },
+      "correctness": {
+        // Reports a consistent three-row template as inconsistent whenever the strings
+        // share a line: the same declaration split across lines passes. Biome 2.5.9.
+        "noInvalidGridAreas": "off"
+      },
+      "style": {
+        // Compares selectors that can never match the same element — `.reset-history li
+        // em` against `.taskbar-reading em` — so every report here is a false one.
+        "noDescendingSpecificity": "off",
+        // Indexing into an array the surrounding code has already sized, and the root
+        // element the document is built from. A runtime check would only restate that.
+        "noNonNullAssertion": "off"
+      }
+    }
+  }
+}

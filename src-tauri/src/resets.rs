@@ -163,7 +163,9 @@ mod tests {
     fn invalid_observation_values_are_rejected() {
         let previous = observation(1_000_000, 52.0, 1_000_000 + 4 * 86_400);
         assert!(detect(previous, observation(999_999, 0.0, 1_009_000 + WEEK_SECONDS)).is_none());
-        assert!(detect(previous, observation(1_010_000, f64::NAN, 1_009_000 + WEEK_SECONDS)).is_none());
+        assert!(
+            detect(previous, observation(1_010_000, f64::NAN, 1_009_000 + WEEK_SECONDS)).is_none()
+        );
         let invalid_duration = WindowObservation {
             window_duration_mins: 0,
             ..observation(1_010_000, 0.0, 1_009_000 + WEEK_SECONDS)

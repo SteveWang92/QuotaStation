@@ -26,7 +26,6 @@ export function emptySnapshot(
     compactStatus: {
       level: "unavailable",
       label: "Provider unavailable",
-      color: "#ff7469",
     },
     lastAttemptAt: null,
     lastLiveSuccessAt: null,
@@ -61,6 +60,5 @@ export const EMPTY_WORKSPACE: WorkspaceSnapshot = {
   aggregate: {
     level: "unavailable",
     label: "Starting",
-    color: "#9aa4ad",
   },
 };

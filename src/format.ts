@@ -107,7 +107,8 @@ export function formatCompactNumber(value: number): string {
   if (!Number.isFinite(value)) return "—";
   const magnitude = Math.abs(value);
   if (magnitude >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
-  if (magnitude >= 1_000_000) return `${(value / 1_000_000).toFixed(magnitude >= 10_000_000 ? 0 : 1)}M`;
+  if (magnitude >= 1_000_000)
+    return `${(value / 1_000_000).toFixed(magnitude >= 10_000_000 ? 0 : 1)}M`;
   if (magnitude >= 1_000) return `${(value / 1_000).toFixed(magnitude >= 10_000 ? 0 : 1)}K`;
   return formatNumber(Math.round(value));
 }
@@ -134,6 +135,20 @@ export function formatDelta(current: number, previous: number): string | null {
 
 /** A calendar day at chart-axis length, for example 3 Aug. */
 export function formatAxisDate(value: string): string {
-  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short" })
-    .format(new Date(`${value}T00:00:00`));
+  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short" }).format(
+    new Date(`${value}T00:00:00`),
+  );
+}
+
+/**
+ * The clock part of an hour bucket, for example 14:00. The axis carries the date
+ * separately, on the first label of each day, so the hours between it stay short.
+ */
+export function formatAxisHour(value: string): string {
+  return `${value.slice(11, 13)}:00`;
+}
+
+/** The calendar day an hour bucket belongs to. */
+export function hourDate(value: string): string {
+  return value.slice(0, 10);
 }

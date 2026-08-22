@@ -1,13 +1,15 @@
 name: CI
 
+# Base-branch filter, not a typo: pull_request fires on the PR's target branch, so this
+# runs on the dev->main release PR and again on the merge commit that lands on main. A
+# Windows runner bills at twice the wall clock and a cold Rust build dominates it, so the
+# gates do not run on every dev commit: CLAUDE.md already requires them locally before a
+# change is finished, and CI exists here to gate the release path.
 on:
-  # Base-branch filter, not a typo: pull_request fires on the PR's target branch. Work
-  # PRs target dev and run here; the dev->main release PR is covered by the push run on
-  # dev's commit, which is the same SHA.
   pull_request:
-    branches: [dev]
+    branches: [main]
   push:
-    branches: [main, dev]
+    branches: [main]
 
 # One run per commit: a newer push to a branch cancels its in-flight run. main is exempt so
 # a release commit's check always completes.
@@ -31,7 +33,7 @@ jobs:
   # management, and the Tauri build script needs the built renderer in dist/, so both
   # halves are verified together on a Windows runner.
   verify:
-    name: Test and build
+    name: Lint, test and build
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -47,6 +49,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Lint renderer
+        id: lint_renderer
+        run: npm run lint
 
       - name: Test renderer
         id: test_renderer
@@ -72,6 +78,16 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Check core formatting
+        id: fmt_core
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      # Clippy shares the target directory with the test step below, so the crate is
+      # compiled once for both.
+      - name: Lint core
+        id: lint_core
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
       - name: Test core
         id: test_core
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
@@ -80,17 +96,23 @@ jobs:
         if: always()
         shell: bash
         env:
+          LINT_RENDERER_OUTCOME: ${{ steps.lint_renderer.outcome }}
           TEST_RENDERER_OUTCOME: ${{ steps.test_renderer.outcome }}
           BUILD_RENDERER_OUTCOME: ${{ steps.build_renderer.outcome }}
+          FMT_CORE_OUTCOME: ${{ steps.fmt_core.outcome }}
+          LINT_CORE_OUTCOME: ${{ steps.lint_core.outcome }}
           TEST_CORE_OUTCOME: ${{ steps.test_core.outcome }}
         run: |
           icon() { case "$1" in success) echo "✅";; failure) echo "❌";; skipped) echo "⏭️";; *) echo "❓";; esac; }
           {
-            echo "## CI: test and build"
+            echo "## CI: lint, test and build"
             echo ""
             echo "| Step | Result |"
             echo "| --- | --- |"
+            echo "| Lint renderer | $(icon "$LINT_RENDERER_OUTCOME") $LINT_RENDERER_OUTCOME |"
             echo "| Test renderer | $(icon "$TEST_RENDERER_OUTCOME") $TEST_RENDERER_OUTCOME |"
             echo "| Build renderer | $(icon "$BUILD_RENDERER_OUTCOME") $BUILD_RENDERER_OUTCOME |"
+            echo "| Check core formatting | $(icon "$FMT_CORE_OUTCOME") $FMT_CORE_OUTCOME |"
+            echo "| Lint core | $(icon "$LINT_CORE_OUTCOME") $LINT_CORE_OUTCOME |"
             echo "| Test core | $(icon "$TEST_CORE_OUTCOME") $TEST_CORE_OUTCOME |"
           } >> "$GITHUB_STEP_SUMMARY"

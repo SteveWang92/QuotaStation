@@ -7,37 +7,46 @@ import {
   linePath,
   stackSegments,
 } from "../charts";
-import { formatAxisDate } from "../format";
+import { formatRangeHour } from "../dateRanges";
+import { formatAxisDate, formatAxisHour, hourDate } from "../format";
 
 /**
  * The one chart the dashboard draws.
  *
- * Every chart on this dashboard plots the same x-axis — the days of the selected range —
+ * Every chart on this dashboard plots the same x-axis — the buckets of the selected range —
  * and differs only in what it stacks or traces on it, so there is one component and four
  * configurations of it rather than four charts with four copies of an axis, a legend, a
  * hover layer and a tooltip.
+ *
+ * A bucket is a calendar day, or an hour when the range is short enough to be read that
+ * way. Only the labels and the tooltip heading know which; everything below them is the
+ * same axis either way.
  */
+
+export type ChartResolution = "day" | "hour";
 
 export interface ChartSeries {
   key: string;
   label: string;
   /** The mark's colour. Text never wears it; the swatch beside the text carries identity. */
   color: string;
-  /** One value per day; `null` where that day has no reading, which is drawn as a gap. */
+  /** One value per bucket; `null` where it has no reading, which is drawn as a gap. */
   values: Array<number | null>;
 }
 
 /** A dated annotation drawn on the axis rather than in the data, such as a quota restart. */
 export interface ChartMarker {
-  date: string;
+  /** The bucket key the annotation sits on. */
+  bucket: string;
   label: string;
   tone: "muted" | "warning";
 }
 
-interface DayChartProps {
+interface TrendChartProps {
   title: string;
   subtitle?: string;
-  days: string[];
+  buckets: string[];
+  resolution: ChartResolution;
   series: ChartSeries[];
   mode: "stacked" | "line";
   /** The exact value, for the tooltip. */
@@ -47,8 +56,8 @@ interface DayChartProps {
   /** A fixed axis top, for scales that mean something at 100 whatever the data reaches. */
   maxValue?: number;
   markers?: ChartMarker[];
-  selectedDate?: string | null;
-  onSelectDate?: (date: string | null) => void;
+  selectedBucket?: string | null;
+  onSelectBucket?: (bucket: string | null) => void;
   emptyCopy: string;
   /** Holds the previous render at reduced opacity while the next range arrives. */
   loading?: boolean;
@@ -78,26 +87,66 @@ function useMeasuredWidth(): [(node: HTMLDivElement | null) => void, number] {
   return [attach, width];
 }
 
-export function DayChart({
+/** The hourly axis carries a date and a clock time, so its labels need more room. */
+const HOUR_LABEL_SPACING = 96;
+
+/**
+ * Which buckets carry an axis label, and what it says.
+ *
+ * An hourly axis repeats the same date across a whole day, so only the first label of each
+ * day names it and the rest are the clock alone. The last bucket is always labelled: it is
+ * the end of the range, which is what a reader looks for first.
+ */
+function axisLabels(
+  buckets: string[],
+  resolution: ChartResolution,
+  plotWidth: number,
+): Array<{ bucket: string; index: number; text: string }> {
+  const stride = labelStride(
+    buckets.length,
+    plotWidth,
+    resolution === "hour" ? HOUR_LABEL_SPACING : undefined,
+  );
+  let labelledDate: string | null = null;
+  return buckets.flatMap((bucket, index) => {
+    if (index % stride !== 0 && index !== buckets.length - 1) return [];
+    if (resolution === "day") return [{ bucket, index, text: formatAxisDate(bucket) }];
+    const date = hourDate(bucket);
+    const text =
+      date === labelledDate
+        ? formatAxisHour(bucket)
+        : `${formatAxisDate(date)} ${formatAxisHour(bucket)}`;
+    labelledDate = date;
+    return [{ bucket, index, text }];
+  });
+}
+
+/** What the tooltip calls the bucket under the pointer. */
+function bucketHeading(bucket: string, resolution: ChartResolution): string {
+  return resolution === "day" ? formatAxisDate(bucket) : formatRangeHour(bucket);
+}
+
+export function TrendChart({
   title,
   subtitle,
-  days,
+  buckets,
+  resolution,
   series,
   mode,
   formatValue,
   formatTick,
   maxValue,
   markers = [],
-  selectedDate = null,
-  onSelectDate,
+  selectedBucket = null,
+  onSelectBucket,
   emptyCopy,
   loading = false,
-}: DayChartProps) {
+}: TrendChartProps) {
   const [attachPlot, width] = useMeasuredWidth();
   const [hovered, setHovered] = useState<number | null>(null);
 
   const plotWidth = Math.max(0, width - LEFT_GUTTER - RIGHT_PADDING);
-  const totals = days.map((_, index) =>
+  const totals = buckets.map((_, index) =>
     mode === "stacked"
       ? series.reduce((sum, entry) => sum + Math.max(0, entry.values[index] ?? 0), 0)
       : series.reduce((peak, entry) => Math.max(peak, entry.values[index] ?? 0), 0),
@@ -106,19 +155,19 @@ export function DayChart({
   const scale = axisScale(maxValue ?? highest);
   const axisMax = maxValue ?? scale.max;
   const ticks = maxValue === undefined ? scale.ticks : axisScale(maxValue).ticks;
-  const bands = bandGeometry(plotWidth, days.length);
-  const stride = labelStride(days.length, plotWidth);
+  const bands = bandGeometry(plotWidth, buckets.length);
+  const labelled = axisLabels(buckets, resolution, plotWidth);
   const toY = (value: number) =>
     TOP_PADDING + PLOT_HEIGHT - (Math.min(value, axisMax) / axisMax) * PLOT_HEIGHT;
 
   const hasData = highest > 0;
-  const activeIndex = hovered ?? (selectedDate ? days.indexOf(selectedDate) : -1);
+  const activeIndex = hovered ?? (selectedBucket ? buckets.indexOf(selectedBucket) : -1);
   const tooltipIndex = activeIndex >= 0 ? activeIndex : null;
 
   function moveHover(step: number) {
-    if (days.length === 0) return;
-    const from = hovered ?? (selectedDate ? days.indexOf(selectedDate) : -1);
-    const next = Math.min(days.length - 1, Math.max(0, (from < 0 ? 0 : from) + step));
+    if (buckets.length === 0) return;
+    const from = hovered ?? (selectedBucket ? buckets.indexOf(selectedBucket) : -1);
+    const next = Math.min(buckets.length - 1, Math.max(0, (from < 0 ? 0 : from) + step));
     setHovered(next);
   }
 
@@ -127,18 +176,16 @@ export function DayChart({
     else if (event.key === "ArrowLeft") moveHover(-1);
     else if (event.key === "Escape") setHovered(null);
     else if ((event.key === "Enter" || event.key === " ") && hovered !== null) {
-      onSelectDate?.(days[hovered] === selectedDate ? null : days[hovered]);
+      onSelectBucket?.(buckets[hovered] === selectedBucket ? null : buckets[hovered]);
     } else return;
     event.preventDefault();
   }
 
-  const markersByDate = new Map(markers.map((marker) => [marker.date, marker]));
+  const markersByBucket = new Map(markers.map((marker) => [marker.bucket, marker]));
   const tooltipRows =
     tooltipIndex === null
       ? []
-      : series.filter(
-          (entry) => mode === "line" || (entry.values[tooltipIndex] ?? 0) > 0,
-        );
+      : series.filter((entry) => mode === "line" || (entry.values[tooltipIndex] ?? 0) > 0);
 
   return (
     <article className={`chart-card${loading ? " chart-loading" : ""}`}>
@@ -154,7 +201,10 @@ export function DayChart({
         <ul className="chart-legend">
           {series.map((entry) => (
             <li key={entry.key}>
-              <i className={mode === "line" ? "legend-line" : "legend-swatch"} style={{ background: entry.color }} />
+              <i
+                className={mode === "line" ? "legend-line" : "legend-swatch"}
+                style={{ background: entry.color }}
+              />
               {entry.label}
             </li>
           ))}
@@ -172,7 +222,7 @@ export function DayChart({
           className="chart-surface"
           tabIndex={0}
           role="application"
-          aria-label={`${title}. Use the arrow keys to read each day.`}
+          aria-label={`${title}. Use the arrow keys to read each ${resolution}.`}
           onKeyDown={onKeyDown}
           onPointerLeave={() => setHovered(null)}
           onBlur={() => setHovered(null)}
@@ -189,11 +239,14 @@ export function DayChart({
                   y2={toY(tick)}
                 />
               ))}
-              {days.map((day, index) => {
-                const marker = markersByDate.get(day);
+              {buckets.map((bucket, index) => {
+                const marker = markersByBucket.get(bucket);
                 if (!marker) return null;
                 return (
-                  <g key={`marker-${day}`} className={`chart-marker chart-marker-${marker.tone}`}>
+                  <g
+                    key={`marker-${bucket}`}
+                    className={`chart-marker chart-marker-${marker.tone}`}
+                  >
                     <line
                       x1={bands.center(index)}
                       x2={bands.center(index)}
@@ -205,7 +258,7 @@ export function DayChart({
                 );
               })}
               {mode === "stacked"
-                ? days.map((day, index) => {
+                ? buckets.map((bucket, index) => {
                     const segments = stackSegments(
                       series.map((entry) => Math.max(0, entry.values[index] ?? 0)),
                       (value) => toY(value),
@@ -218,8 +271,10 @@ export function DayChart({
                     );
                     return (
                       <g
-                        key={day}
-                        className={index === activeIndex ? "chart-band chart-band-active" : "chart-band"}
+                        key={bucket}
+                        className={
+                          index === activeIndex ? "chart-band chart-band-active" : "chart-band"
+                        }
                       >
                         {segments.map((segment) =>
                           segment === null ? null : (
@@ -258,7 +313,13 @@ export function DayChart({
                         ) : null}
                         <path className="chart-line" d={linePath(points)} stroke={entry.color} />
                         {last ? (
-                          <circle className="chart-endpoint" cx={last.x} cy={last.y} r={4} fill={entry.color} />
+                          <circle
+                            className="chart-endpoint"
+                            cx={last.x}
+                            cy={last.y}
+                            r={4}
+                            fill={entry.color}
+                          />
                         ) : null}
                         {activeIndex >= 0 && points[activeIndex] ? (
                           <circle
@@ -272,30 +333,28 @@ export function DayChart({
                       </g>
                     );
                   })}
-              {days.map((day, index) =>
-                index % stride === 0 || index === days.length - 1 ? (
-                  <text
-                    key={`label-${day}`}
-                    className="chart-axis-label"
-                    x={bands.center(index)}
-                    y={TOP_PADDING + PLOT_HEIGHT + 15}
-                    textAnchor="middle"
-                  >
-                    {formatAxisDate(day)}
-                  </text>
-                ) : null,
-              )}
+              {labelled.map(({ bucket, index, text }) => (
+                <text
+                  key={`label-${bucket}`}
+                  className="chart-axis-label"
+                  x={bands.center(index)}
+                  y={TOP_PADDING + PLOT_HEIGHT + 15}
+                  textAnchor="middle"
+                >
+                  {text}
+                </text>
+              ))}
               {/* The hit target is the whole band, never the painted mark. */}
-              {days.map((day, index) => (
+              {buckets.map((bucket, index) => (
                 <rect
-                  key={`hit-${day}`}
+                  key={`hit-${bucket}`}
                   className="chart-hit"
                   x={bands.band * index}
                   y={TOP_PADDING}
                   width={bands.band}
                   height={PLOT_HEIGHT}
                   onPointerEnter={() => setHovered(index)}
-                  onClick={() => onSelectDate?.(day === selectedDate ? null : day)}
+                  onClick={() => onSelectBucket?.(bucket === selectedBucket ? null : bucket)}
                 />
               ))}
             </g>
@@ -321,7 +380,7 @@ export function DayChart({
                 ),
               }}
             >
-              <strong>{formatAxisDate(days[tooltipIndex])}</strong>
+              <strong>{bucketHeading(buckets[tooltipIndex], resolution)}</strong>
               {/* A stacked series that contributed nothing that day drew nothing either,
                   so listing it is a row of zeroes between the values being compared. A
                   line keeps its zero, which is a reading rather than an absence. */}
@@ -336,15 +395,19 @@ export function DayChart({
                   </b>
                 </p>
               ))}
-              {tooltipRows.length === 0 ? <p className="chart-tooltip-note">Nothing recorded</p> : null}
+              {tooltipRows.length === 0 ? (
+                <p className="chart-tooltip-note">Nothing recorded</p>
+              ) : null}
               {mode === "stacked" && tooltipRows.length > 1 ? (
                 <p className="chart-tooltip-total">
                   <span>Total</span>
                   <b>{formatValue(totals[tooltipIndex])}</b>
                 </p>
               ) : null}
-              {markersByDate.has(days[tooltipIndex]) ? (
-                <p className="chart-tooltip-note">{markersByDate.get(days[tooltipIndex])!.label}</p>
+              {markersByBucket.has(buckets[tooltipIndex]) ? (
+                <p className="chart-tooltip-note">
+                  {markersByBucket.get(buckets[tooltipIndex])!.label}
+                </p>
               ) : null}
             </div>
           ) : null}

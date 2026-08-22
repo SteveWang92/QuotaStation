@@ -112,6 +112,20 @@ The core owns provider-neutral types for accounts, subscriptions, limits, reset 
 usage, models, sessions, and cost estimates. User-interface surfaces must not maintain
 their own competing provider models.
 
+The line stops at appearance. The core decides how loud a reading is — healthy, warning,
+critical, on thresholds every surface shares — and never what colour that is: the same 95%
+is one red on a near-black dashboard and another on a white one, and a snapshot the core
+had already coloured could not be drawn correctly in both. The renderer resolves a level
+into a theme token, which is also why one snapshot can serve a light window and a dark one
+at the same moment.
+
+Which theme each surface is in is the core's answer, though, not the renderer's. A WebView2
+reports `prefers-color-scheme` from the theme the application has just set on its window,
+so a renderer asked to work it out would only hear its own echo; the core reads what Windows
+is actually set to. It publishes two answers, because the taskbar widget is drawn inside the
+Windows taskbar and has to match the taskbar rather than the user's preference for
+QuotaStation's own windows.
+
 ### Local database
 
 SQLite is the planned store for normalized history, refresh metadata, pricing snapshots,
@@ -124,14 +138,24 @@ rows transactionally so dates from the old and new zones cannot be mixed. Existi
 adopt their current zone without a destructive first-run rebuild.
 
 The schema covers provider instances, current limits and samples, normalized daily usage
-aggregates, refresh runs, quota rollups, and quota reset events. Event-level storage and a database-resident
+aggregates, the hourly usage of the recent window, refresh runs, quota rollups, and quota
+reset events. Event-level storage and a database-resident
 pricing catalogue are not part of it: the Codex parser reports daily aggregates and
 carries its own embedded pricing map. Five-minute quota samples are retained for 14 days,
-then converted directly into daily summaries retained indefinitely. Rollups preserve
+then converted directly into daily summaries retained indefinitely. Usage is stored a second
+time at hourly resolution, because a range of a day or three says nothing as one column per
+day; those rows are retained for 14 days and then dropped rather than rolled up, since the
+daily rows already hold everything they summarise. Rollups preserve
 boundary and summary values and remain segmented across quota resets. Successful refresh records are retained for 30 days and
 failed records for 180 days, with the newest record per acquisition path always kept. Daily
 usage aggregates and quota reset events are retained indefinitely. Raw
 session payloads and complete local paths are never retained.
+
+A range of up to three days is read hour by hour and anything longer day by day. Both
+resolutions come from one parse of the session logs: an hour is aggregated by the same
+adapter code the day containing it is, so the two can never disagree about the same usage.
+Quota history stays daily whatever the usage beside it is read at — a quota reading is a
+poll rather than a request, and a day is described by the fullest that window got on it.
 
 The usage history read takes an optional provider: naming one answers for that provider,
 naming none counts every provider instance together. The combined answer is one query with

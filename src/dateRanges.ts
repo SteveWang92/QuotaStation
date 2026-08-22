@@ -1,9 +1,18 @@
-import { LOCALE } from "./format";
+import { formatAxisHour, hourDate, LOCALE } from "./format";
 
 export type RangePreset = "today" | "3d" | "7d" | "30d" | "custom";
 
 /** A daily SVG stays bounded while still allowing a full year to be inspected at once. */
 export const MAX_CUSTOM_RANGE_DAYS = 366;
+
+/**
+ * Up to this many days, the charts are drawn hour by hour.
+ *
+ * Three columns describe three days without saying anything about them: the work that
+ * filled an afternoon and the work spread evenly across a day draw the same bar. Past
+ * three days the hours outnumber the pixels, and the daily shape is the readable one.
+ */
+export const MAX_HOURLY_RANGE_DAYS = 3;
 
 export interface DateRangeSelection {
   preset: RangePreset;
@@ -48,10 +57,21 @@ export function createCustomRange(startDate: string, endDate: string): DateRange
 
 /** Whether an inclusive custom range is too large to render one mark per calendar day. */
 export function customRangeTooLong(startDate: string, endDate: string): boolean {
+  return rangeLengthInDays(startDate, endDate) > MAX_CUSTOM_RANGE_DAYS;
+}
+
+/** How many calendar days an inclusive range covers. */
+export function rangeLengthInDays(startDate: string, endDate: string): number {
   const start = Date.parse(`${startDate}T00:00:00Z`);
   const end = Date.parse(`${endDate}T00:00:00Z`);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return false;
-  return Math.floor((end - start) / 86_400_000) + 1 > MAX_CUSTOM_RANGE_DAYS;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+  return Math.floor((end - start) / 86_400_000) + 1;
+}
+
+/** Whether a range is short enough to be read hour by hour. */
+export function isHourlyRange(startDate: string, endDate: string): boolean {
+  const length = rangeLengthInDays(startDate, endDate);
+  return length > 0 && length <= MAX_HOURLY_RANGE_DAYS;
 }
 
 /** Recomputes calendar presets at query time so a tray process can cross midnight safely. */
@@ -70,8 +90,16 @@ export function hasRolledOver(selection: DateRangeSelection): boolean {
 }
 
 export function formatRangeDate(value: string): string {
-  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short", year: "numeric" })
-    .format(new Date(`${value}T00:00:00`));
+  return new Intl.DateTimeFormat(LOCALE, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(`${value}T00:00:00`));
+}
+
+/** An hour bucket named in full, for example 3 Aug 2026, 14:00. */
+export function formatRangeHour(value: string): string {
+  return `${formatRangeDate(hourDate(value))}, ${formatAxisHour(value)}`;
 }
 
 /**
@@ -79,7 +107,10 @@ export function formatRangeDate(value: string): string {
  * on the dashboard is compared against. A range is inclusive of both ends, so the previous
  * period ends the day before this one starts.
  */
-export function previousPeriod(selection: DateRangeSelection): { startDate: string; endDate: string } {
+export function previousPeriod(selection: DateRangeSelection): {
+  startDate: string;
+  endDate: string;
+} {
   const start = new Date(`${selection.startDate}T00:00:00`);
   const end = new Date(`${selection.endDate}T00:00:00`);
   const length = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;

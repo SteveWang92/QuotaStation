@@ -7,6 +7,31 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-23
+
+### Added
+
+- Ranges of up to three days are charted hour by hour instead of one column per day.
+- The status line marks uncommitted files and how far the branch stands from its remote.
+- A finished-turn notification names the Claude Code session as well as the project.
+- A light theme, with a setting to follow Windows or pin dark or light.
+- Clicking a finished-turn notification brings its terminal window back to the front.
+
+### Changed
+
+- The usage history opens on All rather than on the first provider.
+
+### Fixed
+
+- The window title bar and the scrollbars are drawn dark instead of light.
+- Opening and closing the reset history quickly no longer selects the heading text.
+- Sessions that finish at the same moment each raise their own notification.
+- A quota window reset is no longer missed when the provider reports that window without a percentage.
+- Hourly charts fall back to complete daily data until every provider has current hourly history.
+- Claude history refreshes no longer parse the same session files twice for daily and hourly summaries.
+- The status line counts every untracked file, resolves relative worktree pointers, and times out a slow Git status read.
+- Notification clicks validate the original terminal process before bringing its window forward.
+
 ## [0.3.0] - 2026-08-21
 
 ### Added
@@ -119,7 +144,8 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/SteveWang92/QuotaStation/releases/tag/v0.1.0

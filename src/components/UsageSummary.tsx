@@ -1,16 +1,16 @@
 import { CalendarDays, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import { alignToDays, calendarDays } from "../charts";
+import { alignToBuckets, calendarDays, calendarHours } from "../charts";
 import {
   createCustomRange,
   createPresetRange,
   customRangeTooLong,
+  type DateRangeSelection,
   formatRangeDate,
   MAX_CUSTOM_RANGE_DAYS,
-  toLocalDateString,
-  todayString,
-  type DateRangeSelection,
   type RangePreset,
+  todayString,
+  toLocalDateString,
 } from "../dateRanges";
 import {
   formatCompactCurrency,
@@ -28,9 +28,20 @@ import type {
   ProviderSnapshot,
   QuotaHistorySnapshot,
   TokenUsage,
+  UsageHoursSnapshot,
   UsageRangeSnapshot,
 } from "../types";
-import { DayChart, type ChartMarker, type ChartSeries } from "./DayChart";
+import { type ChartMarker, type ChartSeries, TrendChart } from "./TrendChart";
+
+/**
+ * What a chart reads off one bucket. A day and an hour carry the same three figures, and
+ * the charts never need to know which of the two they were handed.
+ */
+interface UsagePoint {
+  usage: TokenUsage;
+  apiEquivalentCostUsd: number | null;
+  models: ModelUsage[];
+}
 
 const PRESETS: Array<{ value: Exclude<RangePreset, "custom">; label: string }> = [
   { value: "today", label: "Today" },
@@ -58,6 +69,8 @@ interface UsageSummaryProps {
   activeProvider: HistoryProvider;
   onSelectProvider: (provider: HistoryProvider) => void;
   range: UsageRangeSnapshot;
+  /** The same range hour by hour, when it is short enough to be read that way. */
+  hours: UsageHoursSnapshot | null;
   /** The period of the same length immediately before this one, for the comparison. */
   previousRange: UsageRangeSnapshot | null;
   quotaHistory: QuotaHistorySnapshot | null;
@@ -82,6 +95,7 @@ export function UsageSummary({
   activeProvider,
   onSelectProvider,
   range,
+  hours,
   previousRange,
   quotaHistory,
   selection,
@@ -100,18 +114,38 @@ export function UsageSummary({
   // whichever provider happens to be first.
   const combined = activeProvider === "all";
 
+  // A short range is read hour by hour: three columns describe three days without saying
+  // anything about when the work in them happened. The core decides what it can answer
+  // hourly, so an hourly reading arriving is what puts the charts in that resolution.
+  const hourly = hours !== null;
   const days = useMemo(
     () => calendarDays(range.startDate, range.endDate),
     [range.startDate, range.endDate],
   );
-  const aligned = useMemo(() => alignToDays(range.days, days), [range.days, days]);
+  const buckets = useMemo(
+    () => (hourly ? calendarHours(range.startDate, range.endDate) : days),
+    [hourly, range.startDate, range.endDate, days],
+  );
+  const aligned: Array<UsagePoint | undefined> = useMemo(
+    () =>
+      hours === null
+        ? alignToBuckets(range.days, buckets, (point) => point.date)
+        : alignToBuckets(hours.hours, buckets, (point) => point.hourStart),
+    [hours, range.days, buckets],
+  );
+  const resolution = hourly ? "hour" : "day";
+  // Opening a bucket only means something where the breakdown below is keyed the same way,
+  // which is by day. An hourly chart therefore reads rather than selects.
+  const daySelection = hourly ? {} : { selectedBucket: openDay, onSelectBucket: setOpenDay };
+
   const openPoint: DailyUsagePoint | null =
     openDay === null ? null : (range.days.find((day) => day.date === openDay) ?? null);
   const usage = openPoint?.usage ?? range.usage;
   const models = openPoint?.models ?? range.models;
   const cost = openPoint ? openPoint.apiEquivalentCostUsd : range.apiEquivalentCostUsd;
 
-  const activeDayAverage = range.days.length === 0 ? 0 : Math.round(range.usage.total / range.days.length);
+  const activeDayAverage =
+    range.days.length === 0 ? 0 : Math.round(range.usage.total / range.days.length);
   const previousActiveAverage =
     previousRange === null || previousRange.days.length === 0
       ? 0
@@ -124,7 +158,7 @@ export function UsageSummary({
     key: category.key,
     label: category.label,
     color: category.color,
-    values: aligned.map((day) => (day ? day.usage[category.key] : 0)),
+    values: aligned.map((point) => (point ? point.usage[category.key] : 0)),
   }));
 
   const costSeries: ChartSeries[] = [
@@ -132,7 +166,7 @@ export function UsageSummary({
       key: "cost",
       label: "API-equivalent cost",
       color: SERIES_SLOTS[0],
-      values: aligned.map((day) => day?.apiEquivalentCostUsd ?? 0),
+      values: aligned.map((point) => point?.apiEquivalentCostUsd ?? 0),
     },
   ];
 
@@ -141,15 +175,17 @@ export function UsageSummary({
     key: model,
     label: model,
     color: SERIES_SLOTS[index],
-    values: aligned.map((day) => day?.models.find((entry) => entry.model === model)?.tokens ?? 0),
+    values: aligned.map(
+      (point) => point?.models.find((entry) => entry.model === model)?.tokens ?? 0,
+    ),
   }));
   if (range.models.length > chartModels.length) {
     modelSeries.push({
       key: "other-models",
       label: `Other (${range.models.length - chartModels.length})`,
       color: SERIES_REST,
-      values: aligned.map((day) =>
-        (day?.models ?? [])
+      values: aligned.map((point) =>
+        (point?.models ?? [])
           .filter((entry) => !chartModels.includes(entry.model))
           .reduce((sum, entry) => sum + entry.tokens, 0),
       ),
@@ -165,7 +201,7 @@ export function UsageSummary({
     ),
   }));
   const quotaMarkers: ChartMarker[] = (quotaHistory?.resets ?? []).map((reset) => ({
-    date: toLocalDateString(new Date(reset.anchoredAt * 1_000)),
+    bucket: toLocalDateString(new Date(reset.anchoredAt * 1_000)),
     label: `${reset.windowLabel} restarted (${reset.classification})`,
     tone: reset.classification === "unplanned" ? "warning" : "muted",
   }));
@@ -234,7 +270,7 @@ export function UsageSummary({
             ))}
           </div>
         ) : null}
-        <div className="range-control" aria-label="Usage date range">
+        <div className="range-control" role="group" aria-label="Usage date range">
           {PRESETS.map((preset) => (
             <button
               type="button"
@@ -263,16 +299,31 @@ export function UsageSummary({
         <div className="custom-range-panel">
           <label>
             From
-            <input type="date" value={customStart} max={customEnd || todayString()} onChange={(event) => setCustomStart(event.target.value)} />
+            <input
+              type="date"
+              value={customStart}
+              max={customEnd || todayString()}
+              onChange={(event) => setCustomStart(event.target.value)}
+            />
           </label>
           <label>
             To
-            <input type="date" value={customEnd} min={customStart} max={todayString()} onChange={(event) => setCustomEnd(event.target.value)} />
+            <input
+              type="date"
+              value={customEnd}
+              min={customStart}
+              max={todayString()}
+              onChange={(event) => setCustomEnd(event.target.value)}
+            />
           </label>
           {customTooLong ? (
-            <span className="custom-range-error">Choose no more than {MAX_CUSTOM_RANGE_DAYS} days.</span>
+            <span className="custom-range-error">
+              Choose no more than {MAX_CUSTOM_RANGE_DAYS} days.
+            </span>
           ) : null}
-          <button type="button" onClick={applyCustom} disabled={customInvalid || loading}>Apply range</button>
+          <button type="button" onClick={applyCustom} disabled={customInvalid || loading}>
+            Apply range
+          </button>
         </div>
       ) : null}
 
@@ -305,30 +356,36 @@ export function UsageSummary({
         </div>
 
         {/* One day is not a trend: a single column would be a bar chart of one, and the
-            figures above and the breakdown below already say everything it could. */}
-        {days.length < 2 ? (
+            figures above and the breakdown below already say everything it could. An
+            hourly range is never in that position — a day is twenty-four buckets. */}
+        {buckets.length < 2 ? (
           <p className="chart-hint">
-            Charts compare one day against another. Choose a longer range to see them.
+            Charts compare one period against another. Choose a longer range to see them.
           </p>
         ) : null}
-        <div className="chart-grid" hidden={days.length < 2}>
-          <DayChart
-            title="Daily tokens"
-            subtitle="Stacked by category · select a day to open it below"
-            days={days}
+        <div className="chart-grid" hidden={buckets.length < 2}>
+          <TrendChart
+            title={hourly ? "Hourly tokens" : "Daily tokens"}
+            subtitle={
+              hourly
+                ? "Stacked by category · one column per hour"
+                : "Stacked by category · select a day to open it below"
+            }
+            buckets={buckets}
+            resolution={resolution}
             series={tokenSeries}
             mode="stacked"
             formatValue={formatNumber}
             formatTick={formatCompactNumber}
-            selectedDate={openDay}
-            onSelectDate={setOpenDay}
+            {...daySelection}
             emptyCopy="No usage recorded in this date range."
             loading={loading}
           />
-          <DayChart
+          <TrendChart
             title="Cost trend"
-            subtitle="Estimated API-equivalent cost per day"
-            days={days}
+            subtitle={`Estimated API-equivalent cost per ${resolution}`}
+            buckets={buckets}
+            resolution={resolution}
             series={costSeries}
             mode="line"
             formatValue={(value) => formatCurrency(value)}
@@ -336,24 +393,28 @@ export function UsageSummary({
             emptyCopy="No cost recorded in this date range."
             loading={loading}
           />
-          <DayChart
+          <TrendChart
             title="Model trend"
-            subtitle={`${range.models.length} models · by tokens per day`}
-            days={days}
+            subtitle={`${range.models.length} models · by tokens per ${resolution}`}
+            buckets={buckets}
+            resolution={resolution}
             series={modelSeries}
             mode="stacked"
             formatValue={formatNumber}
             formatTick={formatCompactNumber}
-            selectedDate={openDay}
-            onSelectDate={setOpenDay}
+            {...daySelection}
             emptyCopy="No model usage recorded in this date range."
             loading={loading}
           />
+          {/* Quota is measured once a poll rather than once a request, and a day is
+              summarised by its peak, so this chart stays on the daily axis whatever
+              resolution the usage beside it is read at. */}
           {quotaSeries.length > 0 ? (
-            <DayChart
+            <TrendChart
               title="Quota history"
               subtitle="Highest share of each window used that day"
-              days={days}
+              buckets={days}
+              resolution="day"
               series={quotaSeries}
               mode="line"
               maxValue={100}
@@ -369,8 +430,9 @@ export function UsageSummary({
         {openPoint ? (
           <div className="day-drilldown">
             <span>
-              Showing <strong>{formatRangeDate(openPoint.date)}</strong> — {formatNumber(openPoint.usage.total)} tokens
-              across {openPoint.models.length} model{openPoint.models.length === 1 ? "" : "s"}
+              Showing <strong>{formatRangeDate(openPoint.date)}</strong> —{" "}
+              {formatNumber(openPoint.usage.total)} tokens across {openPoint.models.length} model
+              {openPoint.models.length === 1 ? "" : "s"}
             </span>
             <button type="button" onClick={() => setOpenDay(null)}>
               <X aria-hidden="true" /> Back to the range
@@ -381,7 +443,10 @@ export function UsageSummary({
         <div className="history-grid">
           <article className="history-card breakdown-card">
             <div className="card-heading">
-              <div><h3>Daily breakdown</h3><span>Newest first · {range.days.length} active days</span></div>
+              <div>
+                <h3>Daily breakdown</h3>
+                <span>Newest first · {range.days.length} active days</span>
+              </div>
               <span>Tokens and estimated API cost</span>
             </div>
             {range.days.length === 0 ? (
@@ -430,13 +495,17 @@ export function UsageSummary({
             <div className="model-list">
               {models.length === 0 ? (
                 <p className="empty-copy">No model usage recorded.</p>
-              ) : models.slice(0, 6).map((model) => (
-                <div className="model-row" key={model.model}>
-                  <span title={model.model}>{model.model}</span>
-                  <span>{model.percent.toFixed(1)}%</span>
-                  <div className="mini-track"><i style={{ width: `${model.percent}%` }} /></div>
-                </div>
-              ))}
+              ) : (
+                models.slice(0, 6).map((model) => (
+                  <div className="model-row" key={model.model}>
+                    <span title={model.model}>{model.model}</span>
+                    <span>{model.percent.toFixed(1)}%</span>
+                    <div className="mini-track">
+                      <i style={{ width: `${model.percent}%` }} />
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </article>
 
@@ -465,7 +534,10 @@ export function UsageSummary({
                   <span>{category.label}</span>
                   <strong>{formatNumber(usage[category.key])}</strong>
                   <span>
-                    {usage.total === 0 ? "0.0" : ((usage[category.key] / usage.total) * 100).toFixed(1)}%
+                    {usage.total === 0
+                      ? "0.0"
+                      : ((usage[category.key] / usage.total) * 100).toFixed(1)}
+                    %
                   </span>
                 </div>
               ))}
@@ -478,7 +550,15 @@ export function UsageSummary({
 }
 
 /** A headline figure with how it moved against the period before it. */
-function StatTile({ label, value, delta }: { label: string; value: string; delta: string | null | undefined }) {
+function StatTile({
+  label,
+  value,
+  delta,
+}: {
+  label: string;
+  value: string;
+  delta: string | null | undefined;
+}) {
   return (
     <div>
       <span>{label}</span>

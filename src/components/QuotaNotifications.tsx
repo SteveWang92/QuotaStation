@@ -31,8 +31,8 @@ export function QuotaNotifications() {
       <div className="provider-consent-body">
         <h2>Notify me about quota</h2>
         <p>
-          Desktop notifications for what changes while QuotaStation is running with no window
-          open. Each is raised once and stays quiet until the condition clears.
+          Desktop notifications for what changes while QuotaStation is running with no window open.
+          Each is raised once and stays quiet until the condition clears.
         </p>
         {error ? <p className="provider-consent-error">{error}</p> : null}
         <div className="consent-options">

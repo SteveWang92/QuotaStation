@@ -26,7 +26,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{Freshness, LimitKind, LimitWindow, WindowSource};
+use crate::domain::{Freshness, LimitKind, LimitWindow, QuotaLevel, WindowSource};
 use crate::providers::ProviderKind;
 use crate::settings::ProviderLabelStyle;
 use crate::summary::QuotaWindow;
@@ -55,6 +55,10 @@ struct StatusLineInput {
     rate_limits: Option<RateLimits>,
     model: Option<Model>,
     cwd: Option<String>,
+    /// Which session is rendering, and what Claude Code calls it. The Stop hook is told the
+    /// former and not the latter, so this is the only place the pair can be seen together.
+    session_id: Option<String>,
+    session_name: Option<String>,
     workspace: Option<Workspace>,
     worktree: Option<Worktree>,
     context_window: Option<ContextWindow>,
@@ -199,7 +203,7 @@ fn windows_from(reading: &Reading, now: i64) -> Result<Vec<LimitWindow>> {
             source: WindowSource::StatusLine,
             observed_at: reading.observed_at,
             freshness: Freshness::Fresh,
-            status_color: String::new(),
+            status_level: QuotaLevel::Healthy,
         });
     }
     if reading.five_hour.is_some() || reading.seven_day.is_some() {
@@ -273,11 +277,8 @@ pub fn run_bridge_if_requested() -> bool {
     ));
     if let Some(limits) = limits {
         let now = jiff::Timestamp::now().as_second();
-        let reading = Reading {
-            observed_at: now,
-            five_hour: limits.five_hour,
-            seven_day: limits.seven_day,
-        };
+        let reading =
+            Reading { observed_at: now, five_hour: limits.five_hour, seven_day: limits.seven_day };
         match windows_from(&reading, now) {
             Ok(_) if store_reading(&reading).is_ok() => {
                 crate::log::write("status line reading stored");
@@ -299,13 +300,37 @@ pub fn run_bridge_if_requested() -> bool {
         // its own restart time passes, and the whole reading once it is old enough.
         crate::log::write("status line reported no rate limits; the stored reading stands");
     }
+    record_session(input.as_ref());
     println!("{}", status_line(&view_of(input.as_ref(), limits)));
     true
 }
 
+/// Tells the notification side what this session is called, which is the one thing the Stop
+/// hook cannot find out for itself.
+fn record_session(input: Option<&StatusLineInput>) {
+    let Some(input) = input else { return };
+    let Some(id) = input.session_id.as_deref().filter(|id| !id.is_empty()) else { return };
+    let project = input
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.current_dir.as_deref())
+        .or(input.cwd.as_deref())
+        .and_then(|path| Path::new(path).file_name())
+        .map(|name| name.to_string_lossy().into_owned());
+    super::notifications::record_session(
+        id,
+        input.session_name.as_deref().filter(|name| !name.is_empty()),
+        project.as_deref(),
+        jiff::Timestamp::now().as_second(),
+    );
+}
+
 /// Reads the payload once into the shape the renderer draws from. Every field is optional
 /// in the payload and stays optional here: a missing one costs its column and nothing else.
-fn view_of<'a>(input: Option<&'a StatusLineInput>, limits: Option<&RateLimits>) -> StatusLineView<'a> {
+fn view_of<'a>(
+    input: Option<&'a StatusLineInput>,
+    limits: Option<&RateLimits>,
+) -> StatusLineView<'a> {
     let now = jiff::Timestamp::now().as_second();
     let settings = crate::settings::load_default();
     let workspace = input.and_then(|input| input.workspace.as_ref());
@@ -314,6 +339,7 @@ fn view_of<'a>(input: Option<&'a StatusLineInput>, limits: Option<&RateLimits>) 
         .or_else(|| input.and_then(|input| input.cwd.as_deref()))
         .map(Path::new);
     let context = input.and_then(|input| input.context_window.as_ref());
+    let repository = current_dir.and_then(crate::git::repository_root);
     StatusLineView {
         model: input
             .and_then(|input| input.model.as_ref())
@@ -327,7 +353,13 @@ fn view_of<'a>(input: Option<&'a StatusLineInput>, limits: Option<&RateLimits>) 
             .and_then(|input| input.worktree.as_ref())
             .and_then(|worktree| worktree.branch.clone())
             .or_else(|| workspace.and_then(|workspace| workspace.git_worktree.clone()))
-            .or_else(|| current_dir.and_then(branch_at)),
+            .or_else(|| repository.as_deref().and_then(crate::git::branch_at)),
+        // Only the detailed line has a project group to hang these on, so the minimal one
+        // never pays for the `git` process behind them.
+        worktree: settings
+            .status_line_extra_details
+            .then(|| repository.as_deref().and_then(|root| crate::git::work_tree_status(root, now)))
+            .flatten(),
         context_used: context.and_then(|context| {
             context
                 .used_percentage
@@ -370,6 +402,9 @@ struct StatusLineView<'a> {
     model: Option<&'a str>,
     directory: Option<String>,
     branch: Option<String>,
+    /// What the checkout carries beyond the branch name: uncommitted paths, and the
+    /// distance from the upstream.
+    worktree: Option<crate::git::WorkTreeStatus>,
     context_used: Option<f64>,
     /// Tokens in the window and the window's size, so the share has a magnitude beside it.
     context_tokens: Option<(u64, u64)>,
@@ -470,11 +505,7 @@ fn tokens_short(tokens: u64) -> String {
     match tokens {
         tokens if tokens >= 1_000_000 => {
             let millions = tokens as f64 / 1_000_000.0;
-            if millions >= 10.0 {
-                format!("{millions:.0}M")
-            } else {
-                format!("{millions:.1}M")
-            }
+            if millions >= 10.0 { format!("{millions:.0}M") } else { format!("{millions:.1}M") }
         }
         tokens if tokens >= 1_000 => format!("{:.1}k", tokens as f64 / 1_000.0),
         tokens => tokens.to_string(),
@@ -494,6 +525,24 @@ fn countdown(resets_at: i64, now: i64) -> Option<String> {
         (0, hours) => format!("{hours}h{minutes:02}m"),
         (days, _) => format!("{days}d"),
     })
+}
+
+/// What the checkout carries, in the shorthand `git` users already read: `*` for paths that
+/// differ from the last commit, an arrow for each commit the branch stands away from its
+/// upstream. A clean branch that is level with its remote prints nothing at all, which is
+/// what makes the marks worth a glance when they do appear.
+fn work_tree_marks(status: crate::git::WorkTreeStatus) -> String {
+    let mut marks = Vec::new();
+    if status.changed > 0 {
+        marks.push(format!("*{}", status.changed));
+    }
+    if status.ahead > 0 {
+        marks.push(format!("\u{2191}{}", status.ahead));
+    }
+    if status.behind > 0 {
+        marks.push(format!("\u{2193}{}", status.behind));
+    }
+    marks.join(" ")
 }
 
 /// Within a group, the readings are of one kind and a dot is enough to separate them.
@@ -544,7 +593,12 @@ fn status_line(view: &StatusLineView) -> String {
             project.push(directory.clone());
         }
         if let Some(branch) = &view.branch {
-            project.push(branch.clone());
+            project.push(
+                match view.worktree.map(work_tree_marks).filter(|marks| !marks.is_empty()) {
+                    Some(marks) => format!("{branch} {marks}"),
+                    None => branch.clone(),
+                },
+            );
         }
         if let Some((number, state)) = view.pull_request {
             project.push(match state.filter(|state| !state.is_empty()) {
@@ -649,7 +703,7 @@ fn windows_from_payload(limits: Option<&RateLimits>) -> Vec<QuotaWindow> {
             window_minutes: Some(minutes),
         })
     })
-        .collect()
+    .collect()
 }
 
 /// Every provider's quota, this client's first.
@@ -667,9 +721,8 @@ fn quota_segments(
         ProviderLabelStyle::Short => provider.short_name.clone(),
         ProviderLabelStyle::Full => provider.display_name.clone(),
     };
-    let mut recorded = crate::summary::load_fresh(now)
-        .map(|summary| summary.providers)
-        .unwrap_or_default();
+    let mut recorded =
+        crate::summary::load_fresh(now).map(|summary| summary.providers).unwrap_or_default();
     let claude = recorded.iter().position(|provider| provider.provider == "claude");
     let mut segments = Vec::new();
     match (payload_windows.is_empty(), claude) {
@@ -702,34 +755,6 @@ fn quota_segments(
     segments
 }
 
-/// The checked-out branch, read straight from `.git/HEAD`.
-///
-/// Claude Code renders the status line on every turn, so this must not spawn a process: a
-/// `git` invocation per render is a cost the client would pay for a monitor's convenience.
-/// One short file read is not. A detached head names no branch and reports none.
-fn branch_at(start: &Path) -> Option<String> {
-    let mut directory = Some(start);
-    while let Some(current) = directory {
-        let git = current.join(".git");
-        let head = if git.is_dir() {
-            git.join("HEAD")
-        } else if git.is_file() {
-            // A worktree or a submodule leaves a `gitdir:` pointer here instead.
-            let pointer = std::fs::read_to_string(&git).ok()?;
-            PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim()).join("HEAD")
-        } else {
-            directory = current.parent();
-            continue;
-        };
-        return std::fs::read_to_string(head)
-            .ok()?
-            .trim()
-            .strip_prefix("ref: refs/heads/")
-            .map(str::to_string);
-    }
-    None
-}
-
 fn store_reading(reading: &Reading) -> Result<()> {
     let path = cache_path().context("resolve the application data directory")?;
     if let Some(parent) = path.parent() {
@@ -739,9 +764,8 @@ fn store_reading(reading: &Reading) -> Result<()> {
     // published by rename: a reader never sees a half-written reading.
     let staging = path.with_extension(format!("{}.tmp", std::process::id()));
     std::fs::write(&staging, serde_json::to_string(reading)?)?;
-    std::fs::rename(&staging, &path).map_err(|error| {
+    std::fs::rename(&staging, &path).inspect_err(|_| {
         let _ = std::fs::remove_file(&staging);
-        error
     })?;
     Ok(())
 }
@@ -783,7 +807,9 @@ fn load_settings(path: &Path) -> Result<serde_json::Value> {
     Ok(load_settings_with_source(path)?.0)
 }
 
-pub(super) fn load_settings_with_source(path: &Path) -> Result<(serde_json::Value, Option<Vec<u8>>)> {
+pub(super) fn load_settings_with_source(
+    path: &Path,
+) -> Result<(serde_json::Value, Option<Vec<u8>>)> {
     let source = match std::fs::read(path) {
         Ok(source) => source,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -843,9 +869,8 @@ fn install_into(path: &Path, command: &str) -> Result<()> {
              then install this one."
         );
     }
-    let object = settings
-        .as_object_mut()
-        .context("the Claude Code settings are not a JSON object")?;
+    let object =
+        settings.as_object_mut().context("the Claude Code settings are not a JSON object")?;
     object.insert(
         "statusLine".to_string(),
         serde_json::json!({ "type": "command", "command": command, "padding": 0 }),
@@ -870,7 +895,8 @@ pub(super) fn write_settings(
     original: Option<&[u8]>,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("create the Claude Code configuration directory")?;
+        std::fs::create_dir_all(parent)
+            .context("create the Claude Code configuration directory")?;
     }
     let current = match std::fs::read(path) {
         Ok(content) => Some(content),
@@ -886,9 +912,8 @@ pub(super) fn write_settings(
     // truncated and rewritten in place.
     let staging = path.with_extension(format!("json.{}.tmp", std::process::id()));
     std::fs::write(&staging, format!("{content}\n")).context("write the Claude Code settings")?;
-    std::fs::rename(&staging, path).map_err(|error| {
+    std::fs::rename(&staging, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&staging);
-        error
     })?;
     Ok(())
 }
@@ -952,6 +977,7 @@ mod tests {
             model,
             directory: None,
             branch: None,
+            worktree: None,
             context_used: None,
             context_tokens: None,
             cache_hit: None,
@@ -1032,6 +1058,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_branch_carries_what_the_checkout_has_not_committed_or_pushed() {
+        let mut session = view(Some("Opus"), Vec::new());
+        session.branch = Some("dev".to_string());
+        session.worktree =
+            Some(crate::git::WorkTreeStatus { changed: 3, ahead: 1, behind: 0, tracked: true });
+        assert_eq!(plain(&status_line(&session)), "Opus | dev *3 \u{2191}1");
+
+        session.worktree =
+            Some(crate::git::WorkTreeStatus { changed: 0, ahead: 0, behind: 0, tracked: true });
+        assert_eq!(
+            plain(&status_line(&session)),
+            "Opus | dev",
+            "a clean branch level with its remote says nothing more"
+        );
+    }
+
     /// Each setting cuts one thing, so turning both off is the only way to reach the row
     /// that carries nothing but this client's own model and quota.
     #[test]
@@ -1073,15 +1116,18 @@ mod tests {
 
     #[test]
     fn usage_is_coloured_on_the_thresholds_the_interface_uses() {
-        let line = status_line(&view(None, vec![QuotaSegment {
-            label: "CDX".to_string(),
-            own: false,
-            windows: vec![
-                window("5h", 12.0, None),
-                window("7d", 72.0, None),
-                window("30d", 91.0, None),
-            ],
-        }]));
+        let line = status_line(&view(
+            None,
+            vec![QuotaSegment {
+                label: "CDX".to_string(),
+                own: false,
+                windows: vec![
+                    window("5h", 12.0, None),
+                    window("7d", 72.0, None),
+                    window("30d", 91.0, None),
+                ],
+            }],
+        ));
         assert_eq!(
             line,
             format!("CDX 5h {GREEN}12%{RESET} · 7d {YELLOW}72%{RESET} · 30d {RED}91%{RESET}")
@@ -1090,11 +1136,14 @@ mod tests {
 
     #[test]
     fn a_provider_whose_windows_have_all_restarted_is_left_out_rather_than_shown_empty() {
-        let line = status_line(&view(Some("Opus"), vec![QuotaSegment {
-            label: "CDX".to_string(),
-            own: false,
-            windows: vec![window("5h", 62.0, Some(-60))],
-        }]));
+        let line = status_line(&view(
+            Some("Opus"),
+            vec![QuotaSegment {
+                label: "CDX".to_string(),
+                own: false,
+                windows: vec![window("5h", 62.0, Some(-60))],
+            }],
+        ));
         assert_eq!(line, "Opus", "no second row at all");
     }
 
@@ -1103,11 +1152,14 @@ mod tests {
     /// in the list. Unnamed beside this client's own model it would be read as this client's.
     #[test]
     fn the_one_row_carries_only_this_client_however_the_list_begins() {
-        let mut session = view(Some("Opus"), vec![QuotaSegment {
-            label: "CDX".to_string(),
-            own: false,
-            windows: vec![window("5h", 62.0, Some(2 * 3_600))],
-        }]);
+        let mut session = view(
+            Some("Opus"),
+            vec![QuotaSegment {
+                label: "CDX".to_string(),
+                own: false,
+                windows: vec![window("5h", 62.0, Some(2 * 3_600))],
+            }],
+        );
         session.extra_details = false;
         session.other_providers = false;
         assert_eq!(plain(&status_line(&session)), "Opus", "no foreign quota at all");
@@ -1198,7 +1250,9 @@ cache 78.4%"
 
     #[test]
     fn the_installed_command_is_recognised_however_the_path_is_quoted() {
-        assert!(is_bridge_command("\"C:\\Program Files\\QuotaStation\\quotastation.exe\" --claude-statusline"));
+        assert!(is_bridge_command(
+            "\"C:\\Program Files\\QuotaStation\\quotastation.exe\" --claude-statusline"
+        ));
         assert!(!is_bridge_command("npx ccusage statusline"));
     }
 
@@ -1221,8 +1275,7 @@ cache 78.4%"
         assert_eq!(settings["inputNeededNotifEnabled"], true);
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(
-            written.find("\"env\"").unwrap()
-                < written.find("\"inputNeededNotifEnabled\"").unwrap()
+            written.find("\"env\"").unwrap() < written.find("\"inputNeededNotifEnabled\"").unwrap()
         );
 
         remove_from(&path).expect("remove the status line");

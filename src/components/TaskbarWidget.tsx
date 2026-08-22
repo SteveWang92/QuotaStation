@@ -1,17 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect } from "react";
 import { formatCompactCountdown, formatWindowBadge } from "../format";
+import { quotaColor, statusColor } from "../theme";
 import type { ProviderSnapshot, WorkspaceSnapshot } from "../types";
 import { useSnapshot } from "../useSnapshot";
 
 function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
-  const statusColor = snapshot.compactStatus.color;
+  const providerColor = statusColor(snapshot.compactStatus);
   return (
     <div className="taskbar-provider">
       {/* One name for the whole column rather than one per row: a provider showing both of
           its windows was repeating its own name, which is the widest thing in a slot the
           taskbar may only give 30px of. */}
-      <span className="taskbar-name" style={{ color: statusColor }}>
+      <span className="taskbar-name" style={{ color: providerColor }}>
         {snapshot.shortName}
       </span>
       <div className="taskbar-windows">
@@ -20,9 +21,9 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
             // Every window draws the same three fixed-width cells — badge, bar, reading — so
             // the bars of two windows, and of two providers, all start and end on the same
             // pixel. A proportional bar made each row a different length instead.
-            const percent =
-              limit.usedPercent === null ? null : `${Math.round(limit.usedPercent)}%`;
-            const countdown = limit.resetsAt === null ? null : formatCompactCountdown(limit.resetsAt);
+            const percent = limit.usedPercent === null ? null : `${Math.round(limit.usedPercent)}%`;
+            const countdown =
+              limit.resetsAt === null ? null : formatCompactCountdown(limit.resetsAt);
             return (
               <div className="taskbar-quota" key={limit.kind}>
                 <span className="taskbar-window-badge">
@@ -34,11 +35,11 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
                 {limit.usedPercent === null ? (
                   <i className="unknown" aria-hidden="true" />
                 ) : (
-                  <i aria-label={`${snapshot.displayName} ${limit.label}: ${limit.usedPercent}% used`}>
+                  <i aria-hidden="true">
                     <b
                       style={{
                         width: `${Math.min(100, Math.max(0, limit.usedPercent))}%`,
-                        background: limit.statusColor,
+                        background: quotaColor(limit),
                       }}
                     />
                   </i>
@@ -49,21 +50,24 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
                 <span className="taskbar-reading">
                   {percent === null && countdown === null ? (
                     <em
+                      role="img"
                       aria-label={`${snapshot.displayName} ${limit.label}: no reading yet`}
-                      style={{ color: statusColor }}
+                      style={{ color: providerColor }}
                     >
                       —
                     </em>
                   ) : (
                     <>
-                      {percent !== null && <em style={{ color: limit.statusColor }}>{percent}</em>}
+                      {percent !== null && <em style={{ color: quotaColor(limit) }}>{percent}</em>}
                       {percent !== null && countdown !== null && (
                         <span className="taskbar-dot" aria-hidden="true">
                           ·
                         </span>
                       )}
                       {countdown !== null && limit.resetsAt !== null && (
-                        <time dateTime={new Date(limit.resetsAt * 1_000).toISOString()}>{countdown}</time>
+                        <time dateTime={new Date(limit.resetsAt * 1_000).toISOString()}>
+                          {countdown}
+                        </time>
                       )}
                     </>
                   )}
@@ -72,7 +76,7 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
             );
           })
         ) : (
-          <span className="taskbar-unavailable" style={{ color: statusColor }}>
+          <span className="taskbar-unavailable" style={{ color: providerColor }}>
             unavailable
           </span>
         )}
@@ -95,7 +99,7 @@ export function TaskbarWidget({ initialWorkspace }: { initialWorkspace: Workspac
   return (
     <main
       className="taskbar-widget-shell"
-      style={{ "--taskbar-status-color": workspace.aggregate.color } as React.CSSProperties}
+      style={{ "--taskbar-status-color": statusColor(workspace.aggregate) } as React.CSSProperties}
     >
       {providers.length > 0 ? (
         providers.map((snapshot) => <ProviderColumn key={snapshot.provider} snapshot={snapshot} />)

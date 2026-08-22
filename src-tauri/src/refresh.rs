@@ -19,10 +19,7 @@ pub async fn refresh_all(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSna
     let _publish_guard = state.refresh_publish_lock.lock().await;
     // A client can be installed, or signed in for the first time, while this is running.
     let providers = state.detect_providers();
-    tokio::join!(
-        refresh_live_for(state, &providers),
-        refresh_history_for(state, &providers)
-    );
+    tokio::join!(refresh_live_for(state, &providers), refresh_history_for(state, &providers));
     let workspace = publish_snapshot(app, state).await;
     let _ = app.emit("history-updated", ());
     workspace
@@ -73,13 +70,7 @@ async fn refresh_history_for(state: &Arc<AppState>, providers: &[ProviderKind]) 
                 snapshot.last_attempt_at = Some(started_at.clone());
             })
             .await;
-        apply_history(
-            state,
-            provider,
-            &started_at,
-            providers::read_history(provider).await,
-        )
-        .await;
+        apply_history(state, provider, &started_at, providers::read_history(provider).await).await;
     }
 }
 
@@ -132,11 +123,8 @@ async fn apply_live(
                 .map(storage_error);
             // Reading the restarts back after the save keeps one owner of the detection,
             // so a restart recognised by this very save is already part of the snapshot.
-            let recent_resets = state
-                .storage
-                .load_recent_resets(provider)
-                .await
-                .unwrap_or_default();
+            let recent_resets =
+                state.storage.load_recent_resets(provider).await.unwrap_or_default();
             state
                 .with_snapshot(provider, |snapshot| {
                     snapshot.plan_type = live.plan_type;
@@ -152,14 +140,10 @@ async fn apply_live(
         }
         Err(error) => {
             let message = sanitize_error(&error.to_string(), PROVIDER_FALLBACK);
-            state
-                .with_snapshot(provider, |snapshot| snapshot.live_error = Some(message))
-                .await;
+            state.with_snapshot(provider, |snapshot| snapshot.live_error = Some(message)).await;
         }
     }
-    let error = state
-        .read_snapshot(provider, |snapshot| snapshot.live_error.clone())
-        .await;
+    let error = state.read_snapshot(provider, |snapshot| snapshot.live_error.clone()).await;
     let _ = state
         .storage
         .record_refresh(
@@ -210,14 +194,10 @@ async fn apply_history(
         }
         Err(error) => {
             let message = sanitize_error(&error.to_string(), PROVIDER_FALLBACK);
-            state
-                .with_snapshot(provider, |snapshot| snapshot.history_error = Some(message))
-                .await;
+            state.with_snapshot(provider, |snapshot| snapshot.history_error = Some(message)).await;
         }
     }
-    let error = state
-        .read_snapshot(provider, |snapshot| snapshot.history_error.clone())
-        .await;
+    let error = state.read_snapshot(provider, |snapshot| snapshot.history_error.clone()).await;
     let _ = state
         .storage
         .record_refresh(

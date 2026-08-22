@@ -14,7 +14,9 @@ QuotaStation includes source code from the following project.
   aggregation, service-tier interpretation, and cost calculation
 - Local modifications: each adapter exposes narrow read-only functions for its resolved usage
   directories and whether they contain session records, so QuotaStation's watcher and provider
-  detection follow the exact same discovery rules as the parser
+  detection follow the exact same discovery rules as the parser; the Claude adapter also
+  reports its existing daily parse grouped by local hour, so the hourly and daily views of the
+  same sessions are produced by one load, one deduplication and one accumulator
 
 The vendored subset omits upstream tests and `insta` snapshot fixtures because they are not
 part of QuotaStation's dependency build. They remain available from the pinned upstream

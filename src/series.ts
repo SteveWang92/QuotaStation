@@ -3,10 +3,11 @@
  *
  * The slots are assigned in a fixed order and never cycled: a series keeps its colour when
  * the range changes and other series come and go, so a reader who learned that output is
- * orange is not misled by the next range. The hexes themselves live in `styles.css`, where
- * they were chosen for the dark chart surface and checked for colour-vision separation as a
- * set; anything past the fourth slot folds into `SERIES_REST` rather than inventing a fifth
- * hue that nobody could tell from the ones already on screen.
+ * orange is not misled by the next range. The hexes themselves live in `styles.css`, once
+ * per theme: each set was chosen against its own chart surface and checked for colour-vision
+ * separation as a set, because the four that read on a near-black surface are all far too
+ * pale on a white one. Anything past the fourth slot folds into `SERIES_REST` rather than
+ * inventing a fifth hue that nobody could tell from the ones already on screen.
  */
 export const SERIES_SLOTS = [
   "var(--series-1)",

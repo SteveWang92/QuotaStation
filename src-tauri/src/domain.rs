@@ -23,24 +23,34 @@ pub enum CompactStatusLevel {
     Unavailable,
 }
 
-/// The three colours a reading is drawn in, and the shares of a window that earn them.
-/// Every surface reads them from here, so a percentage never means one thing on the
-/// dashboard and another in the tray.
-pub const HEALTHY_COLOR: &str = "#b5e835";
-pub const WARNING_COLOR: &str = "#f0b84b";
-pub const CRITICAL_COLOR: &str = "#ff7469";
+/// The shares of a window that earn each level. Every surface reads them from here, so a
+/// percentage never means one thing on the dashboard and another in the tray.
 pub const WARNING_PERCENT: f64 = 70.0;
 pub const CRITICAL_PERCENT: f64 = 90.0;
 
-/// The colour one window's own reading earns. A window with no published percentage is
-/// tracked rather than in trouble, so it is drawn as healthy.
-pub fn quota_color(used_percent: Option<f64>) -> String {
+/// How loud one window's own reading is.
+///
+/// The core says which of the three a reading has earned and stops there. What each level
+/// looks like belongs to whichever surface is drawing it: the same 95% is a red the eye
+/// finds on a near-black dashboard and a different red on a white one, and the core has no
+/// business knowing which theme the window it is being read in happens to be wearing.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum QuotaLevel {
+    /// Also where a window with no published percentage lands: it is tracked rather than
+    /// in trouble.
+    #[default]
+    Healthy,
+    Warning,
+    Critical,
+}
+
+pub fn quota_level(used_percent: Option<f64>) -> QuotaLevel {
     match used_percent {
-        Some(value) if value >= CRITICAL_PERCENT => CRITICAL_COLOR,
-        Some(value) if value >= WARNING_PERCENT => WARNING_COLOR,
-        _ => HEALTHY_COLOR,
+        Some(value) if value >= CRITICAL_PERCENT => QuotaLevel::Critical,
+        Some(value) if value >= WARNING_PERCENT => QuotaLevel::Warning,
+        _ => QuotaLevel::Healthy,
     }
-    .to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,16 +58,11 @@ pub fn quota_color(used_percent: Option<f64>) -> String {
 pub struct CompactStatus {
     pub level: CompactStatusLevel,
     pub label: String,
-    pub color: String,
 }
 
 impl CompactStatus {
     fn unavailable() -> Self {
-        Self {
-            level: CompactStatusLevel::Unavailable,
-            label: "Provider unavailable".to_string(),
-            color: CRITICAL_COLOR.to_string(),
-        }
+        Self { level: CompactStatusLevel::Unavailable, label: "Provider unavailable".to_string() }
     }
 }
 
@@ -152,15 +157,15 @@ pub struct LimitWindow {
     pub source: WindowSource,
     pub observed_at: i64,
     pub freshness: Freshness,
-    /// This window's own colour. A provider is as loud as its loudest window, but a window
+    /// This window's own level. A provider is as loud as its loudest window, but a window
     /// is only ever as loud as itself: a weekly allowance barely touched must not turn red
     /// because the five-hour one beside it ran out.
     ///
-    /// Left empty where windows are read, and filled by `resolve_derived_state` before any
-    /// surface sees one — an acquisition path reports a reading, it does not decide how the
-    /// reading is drawn.
+    /// Left at its default where windows are read, and filled by `resolve_derived_state`
+    /// before any surface sees one — an acquisition path reports a reading, it does not
+    /// decide how loud the reading is.
     #[serde(default)]
-    pub status_color: String,
+    pub status_level: QuotaLevel,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -280,16 +285,10 @@ impl ProviderSnapshot {
                     self.provider.live_refresh_interval().as_secs() as i64 * 3
                 }
                 WindowSource::SessionLog => limit.window_duration_mins.unwrap_or(300) * 60,
-                WindowSource::StatusLine => {
-                    limit.window_duration_mins.unwrap_or(300) * 60 / 5
-                }
+                WindowSource::StatusLine => limit.window_duration_mins.unwrap_or(300) * 60 / 5,
             };
-            limit.freshness = if age <= max_age {
-                Freshness::Fresh
-            } else {
-                Freshness::Stale
-            };
-            limit.status_color = quota_color(limit.used_percent);
+            limit.freshness = if age <= max_age { Freshness::Fresh } else { Freshness::Stale };
+            limit.status_level = quota_level(limit.used_percent);
         }
         self.freshness = if self.last_live_success_at.is_none() || self.limits.is_empty() {
             Freshness::Unavailable
@@ -308,37 +307,29 @@ impl ProviderSnapshot {
             .limits
             .iter()
             .map(|limit| {
-                jiff::Timestamp::now()
-                    .as_second()
-                    .saturating_sub(limit.observed_at) as u64
+                jiff::Timestamp::now().as_second().saturating_sub(limit.observed_at) as u64
             })
             .max()
             .or_else(|| self.last_live_success_at.as_deref().and_then(age_seconds));
-        self.compact_status = if self.freshness == Freshness::Unavailable || self.limits.is_empty() {
+        self.compact_status = if self.freshness == Freshness::Unavailable || self.limits.is_empty()
+        {
             CompactStatus::unavailable()
         } else if self.freshness == Freshness::Stale {
-            CompactStatus {
-                level: CompactStatusLevel::Stale,
-                label: "Data stale".to_string(),
-                color: WARNING_COLOR.to_string(),
-            }
+            CompactStatus { level: CompactStatusLevel::Stale, label: "Data stale".to_string() }
         } else {
             let peak = self.limits.iter().filter_map(|limit| limit.used_percent).reduce(f64::max);
             match peak {
                 Some(value) if value >= CRITICAL_PERCENT => CompactStatus {
                     level: CompactStatusLevel::Critical,
                     label: "Quota critical".to_string(),
-                    color: CRITICAL_COLOR.to_string(),
                 },
                 Some(value) if value >= WARNING_PERCENT => CompactStatus {
                     level: CompactStatusLevel::Warning,
                     label: "Quota running low".to_string(),
-                    color: WARNING_COLOR.to_string(),
                 },
                 Some(_) => CompactStatus {
                     level: CompactStatusLevel::Healthy,
                     label: "Quota healthy".to_string(),
-                    color: HEALTHY_COLOR.to_string(),
                 },
                 // A window can be known without its allowance being published, which is
                 // the ordinary case for a provider read from its own logs. That is a
@@ -346,7 +337,6 @@ impl ProviderSnapshot {
                 None => CompactStatus {
                     level: CompactStatusLevel::Healthy,
                     label: "Window tracked".to_string(),
-                    color: HEALTHY_COLOR.to_string(),
                 },
             }
         };
@@ -396,7 +386,7 @@ mod tests {
                 source: WindowSource::AppServer,
                 observed_at: jiff::Timestamp::now().as_second(),
                 freshness: Freshness::Fresh,
-                status_color: String::new(),
+                status_level: QuotaLevel::Healthy,
             }],
             ..ProviderSnapshot::new(provider)
         };
@@ -432,7 +422,7 @@ mod tests {
                 source: WindowSource::AppServer,
                 observed_at: now.as_second() - 901,
                 freshness: Freshness::Fresh,
-                status_color: String::new(),
+                status_level: QuotaLevel::Healthy,
             }],
             last_live_success_at: Some(now.to_string()),
             last_history_success_at: Some(now.to_string()),
@@ -456,7 +446,7 @@ mod tests {
                 source: WindowSource::StatusLine,
                 observed_at: now.as_second() - 3_601,
                 freshness: Freshness::Fresh,
-                status_color: String::new(),
+                status_level: QuotaLevel::Healthy,
             }],
             last_live_success_at: Some(now.to_string()),
             ..ProviderSnapshot::new(ProviderKind::Claude)
@@ -478,15 +468,16 @@ mod tests {
             source: WindowSource::StatusLine,
             observed_at: jiff::Timestamp::now().as_second(),
             freshness: Freshness::Fresh,
-            status_color: String::new(),
+            status_level: QuotaLevel::Healthy,
         });
         snapshot.last_live_success_at = Some(jiff::Timestamp::now().to_string());
         snapshot.resolve_derived_state();
         assert_eq!(snapshot.compact_status.level, CompactStatusLevel::Critical);
-        assert_eq!(snapshot.limits[0].status_color, CRITICAL_COLOR);
+        assert_eq!(snapshot.limits[0].status_level, QuotaLevel::Critical);
         assert_eq!(
-            snapshot.limits[1].status_color, HEALTHY_COLOR,
-            "a barely used window keeps its own colour beside a spent one"
+            snapshot.limits[1].status_level,
+            QuotaLevel::Healthy,
+            "a barely used window keeps its own level beside a spent one"
         );
     }
 
@@ -497,7 +488,6 @@ mod tests {
         snapshot.update_compact_status();
         assert_eq!(snapshot.compact_status.level, CompactStatusLevel::Stale);
     }
-
 
     #[test]
     fn the_aggregate_reports_the_loudest_provider() {
@@ -516,10 +506,7 @@ mod tests {
             CompactStatusLevel::Unavailable
         );
 
-        assert_eq!(
-            aggregate_status(&[healthy]).level,
-            CompactStatusLevel::Healthy
-        );
+        assert_eq!(aggregate_status(&[healthy]).level, CompactStatusLevel::Healthy);
     }
 
     #[test]
@@ -534,7 +521,23 @@ mod tests {
 #[derive(Debug, Clone)]
 pub struct HistorySnapshot {
     pub days: Vec<HistoryDay>,
+    /// The same usage bucketed by local hour, for the recent window an hourly chart can
+    /// cover. A parse reaches back as far as the provider's own sessions go, but nothing
+    /// is stored hourly past [`HOURLY_HISTORY_DAYS`], so the parser stops there too.
+    pub hours: Vec<HistoryHour>,
 }
+
+/// One local hour of usage, as the per-model rows it is stored and summed from.
+#[derive(Debug, Clone)]
+pub struct HistoryHour {
+    /// The local hour this bucket opened, as `YYYY-MM-DDTHH:00`.
+    pub hour_start: String,
+    pub model_rows: Vec<ModelUsageRow>,
+}
+
+/// How far back hourly usage is parsed and kept. Beyond this the daily rows are the whole
+/// record, which is what every range longer than a few days is drawn from anyway.
+pub const HOURLY_HISTORY_DAYS: i64 = 14;
 
 #[derive(Debug, Clone)]
 pub struct HistoryDay {
@@ -542,11 +545,11 @@ pub struct HistoryDay {
     pub usage: TokenUsage,
     pub models: Vec<ModelUsage>,
     pub cost_usd: f64,
-    pub model_rows: Vec<DailyModelUsage>,
+    pub model_rows: Vec<ModelUsageRow>,
 }
 
 #[derive(Debug, Clone)]
-pub struct DailyModelUsage {
+pub struct ModelUsageRow {
     pub model: String,
     pub input: u64,
     pub cache_read: u64,
@@ -598,6 +601,30 @@ pub struct QuotaHistorySnapshot {
     /// Restarts anchored inside the range, oldest first, so they can be drawn along the
     /// same axis as the windows above them.
     pub resets: Vec<LimitResetEvent>,
+}
+
+/// One hour of usage, the hourly counterpart of [`DailyUsagePoint`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HourlyUsagePoint {
+    /// The local hour this bucket opened, as `YYYY-MM-DDTHH:00`.
+    pub hour_start: String,
+    pub usage: TokenUsage,
+    pub api_equivalent_cost_usd: Option<f64>,
+    pub models: Vec<ModelUsage>,
+}
+
+/// What a range looks like at hourly resolution.
+///
+/// Short ranges are read hour by hour rather than day by day: three columns say nothing
+/// about when a day's work happened. Only the hours with usage are returned; the renderer
+/// draws the empty ones from the range itself.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageHoursSnapshot {
+    pub start_date: String,
+    pub end_date: String,
+    pub hours: Vec<HourlyUsagePoint>,
 }
 
 #[derive(Debug, Clone, Serialize)]

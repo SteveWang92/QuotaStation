@@ -54,9 +54,7 @@ pub fn refresh_logon_entry<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) {}
 #[cfg(windows)]
 fn registered_command(name: &str) -> Option<String> {
     use windows::{
-        Win32::System::Registry::{
-            HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW,
-        },
+        Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW},
         core::PCWSTR,
     };
 

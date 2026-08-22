@@ -55,38 +55,48 @@ it, and a paragraph found in two of them is a bug in the documentation.
 ## Verification
 
 - Documentation-only work needs only a focused file review.
-- Use the minimum local check required by the global rules. The three gates CI enforces are
-  `npm test`, `npm run build`, and `cargo test --locked --manifest-path src-tauri/Cargo.toml`.
-  There is no lint or format gate.
+- Use the minimum local check required by the global rules. The gates are `npm run lint`,
+  `npm test`, `npm run build`, `cargo fmt --manifest-path src-tauri/Cargo.toml --check`,
+  `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`,
+  and `cargo test --locked --manifest-path src-tauri/Cargo.toml`.
+- **CI runs those gates on the release path only** — the `dev` -> `main` pull request and
+  `main` itself — because a Windows runner bills at twice its wall clock and a cold Rust
+  build dominates it. Nothing checks a `dev` commit but the local run above, so running it
+  is not optional here.
+- `npm run format` writes the renderer's formatting and import order; `cargo fmt` does the
+  same for the core. Run them rather than hand-correcting what the gate reports. A rule the
+  code deliberately breaks is turned off in `biome.jsonc` with the reason beside it — never
+  with an inline suppression comment.
 - **The verification artifact is the unbundled release build, never the debug one.** Steve
   runs `src-tauri/target/release/quotastation.exe` — a debug build is a different binary with
   different performance, and handing him one is handing him something he does not run. The
   `--debug` and `npm run tauri dev` forms in `docs/development.md` exist for diagnosing a
   specific problem, not for finishing a change.
 - After the gates pass, close the running instance, rebuild it with `npm run build` then
-  `cargo build --release --manifest-path src-tauri/Cargo.toml`, and start it again with
-  `explorer.exe src-tauri\target\release\quotastation.exe` so it comes up owned by the shell
-  exactly as a double-click would rather than tied to the agent's terminal. Keep that
-  executable path stable: Claude Code's registered status-line command points at it.
+  `cargo build --release --manifest-path src-tauri/Cargo.toml`, and start it again **in the
+  background** — always with `--background`, which comes up in the tray and opens no window:
+
+  ```powershell
+  (New-Object -ComObject Shell.Application).ShellExecute(
+    "<repo>\src-tauri\target\release\quotastation.exe", "--background")
+  ```
+
+  The argument is the point. A launch with no arguments opens the dashboard and takes over
+  Steve's screen for a restart he did not ask for; the logon entry carries `--background` for
+  that reason, and a verification start is no different. The COM call is what carries an
+  argument while leaving the process detached from the agent's terminal, which
+  `explorer.exe <path>` cannot do and `Start-Process` does not do. Keep the executable path
+  stable: Claude Code's registered status-line command points at it.
 - Only one instance runs at a time — a second one hands over to the first and exits, which
   looks like a crash. Close the running copy, including one started from the tray, first.
 
 ## Changelog
 
-- `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
-  Semantic Versioning. Notable user-facing changes land in its `## [Unreleased]` section in
-  the same change that makes them, not in a sweep before the release.
-- Record the net user-facing result, not a commit log. Omit pure build, CI, formatting,
-  test, typo, and version-bump churn unless a person using the application perceives it.
-- **One entry is one line — a single sentence naming the result, and nothing else.** No
-  second sentence, no wrapped continuation line, no reason, no mechanism, no before-and-after,
-  no list of what stayed the same. If an entry does not fit on one line it is carrying
-  explanation that belongs in the code comment or the commit, not here. The reader wants to
-  know what changed for them, and every extra clause is one more line they read to find it.
-- Use the Keep a Changelog categories in this order — Added, Changed, Deprecated, Removed,
-  Fixed, Security — and omit the empty ones.
-- Compare links live at the bottom of the file and are maintained by hand: this repository
-  has no release script.
+- `CHANGELOG.md` is the release history and follows the changelog rules in Steve's global
+  `CLAUDE.md`, which is where they are explained: user-facing results only, one entry to one
+  line, Keep a Changelog categories in order.
+- The one difference here: this repository has no release script, so the compare links at the
+  bottom of the file are maintained by hand.
 
 ## Releasing
 
@@ -116,7 +126,7 @@ Releasing is manual here, and Steve starts it. Never bump a version, tag, create
 
 The full sequence, once Steve asks for it:
 
-1. On a clean `dev`: `git fetch origin` then `git merge --ff-only origin/dev`. Run the three
+1. On a clean `dev`: `git fetch origin` then `git merge --ff-only origin/dev`. Run the
    verification gates.
 2. Open the `dev` → `main` pull request titled `chore(release): vX.Y.Z` — the title becomes
    the squash subject verbatim, so it has to be a Conventional Commit line — with the
@@ -129,8 +139,8 @@ The full sequence, once Steve asks for it:
    happens before that confirmation.
 5. Now bump the three version fields, refresh `Cargo.lock` and `package-lock.json`, rename
    `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, open a fresh empty `[Unreleased]` above
-   it, update the compare links at the bottom of the file, re-run the three gates, and
-   commit it as `chore(release): vX.Y.Z`. Push `dev`. This is the last commit on the branch.
+   it, update the compare links at the bottom of the file, re-run the gates, and commit it
+   as `chore(release): vX.Y.Z`. Push `dev`. This is the last commit on the branch.
 6. Update the pull request body to the finished changelog section if the entries changed
    during the review.
 7. Squash-merge it: `gh pr merge --squash --body ""`.
