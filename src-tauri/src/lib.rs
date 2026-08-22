@@ -371,20 +371,29 @@ fn watch_for_finished_turns(app: tauri::AppHandle) {
         let mut ticks = tokio::time::interval(Duration::from_secs(2));
         loop {
             ticks.tick().await;
-            let Some(event) = notifications::take_pending(jiff::Timestamp::now().as_second())
-            else {
-                continue;
-            };
             // The title says which event this is, the same way the quota notifications do.
             // Windows already prints the application's name above it, so spending the title
             // on "QuotaStation" left every notification looking alike in the action centre.
-            let body = match event.project {
-                Some(project) => project,
-                None => "A turn has ended".to_string(),
-            };
-            alerts::raise(&app, "Claude Code finished responding", &body);
+            for event in notifications::take_pending(jiff::Timestamp::now().as_second()) {
+                alerts::raise(&app, "Claude Code finished responding", &finished_body(&event));
+            }
         }
     });
+}
+
+/// Which session finished, in the width a notification body has.
+///
+/// Someone with one terminal open needs neither line and reads the title alone; someone with
+/// six needs to know which of them is waiting, and the project directory answers that until
+/// two sessions share it. The session title is what separates those two, so it is added
+/// rather than substituted — a title says what the work is, never where it is.
+fn finished_body(event: &notifications::FinishedEvent) -> String {
+    match (event.project.as_deref(), event.session.as_deref()) {
+        (Some(project), Some(session)) => format!("{project} \u{b7} {session}"),
+        (Some(project), None) => project.to_string(),
+        (None, Some(session)) => session.to_string(),
+        (None, None) => "A turn has ended".to_string(),
+    }
 }
 
 /// Which build is running, told apart the way the machine can tell them apart: the compiler

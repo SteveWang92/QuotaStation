@@ -55,6 +55,10 @@ struct StatusLineInput {
     rate_limits: Option<RateLimits>,
     model: Option<Model>,
     cwd: Option<String>,
+    /// Which session is rendering, and what Claude Code calls it. The Stop hook is told the
+    /// former and not the latter, so this is the only place the pair can be seen together.
+    session_id: Option<String>,
+    session_name: Option<String>,
     workspace: Option<Workspace>,
     worktree: Option<Worktree>,
     context_window: Option<ContextWindow>,
@@ -296,8 +300,29 @@ pub fn run_bridge_if_requested() -> bool {
         // its own restart time passes, and the whole reading once it is old enough.
         crate::log::write("status line reported no rate limits; the stored reading stands");
     }
+    record_session(input.as_ref());
     println!("{}", status_line(&view_of(input.as_ref(), limits)));
     true
+}
+
+/// Tells the notification side what this session is called, which is the one thing the Stop
+/// hook cannot find out for itself.
+fn record_session(input: Option<&StatusLineInput>) {
+    let Some(input) = input else { return };
+    let Some(id) = input.session_id.as_deref().filter(|id| !id.is_empty()) else { return };
+    let project = input
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.current_dir.as_deref())
+        .or(input.cwd.as_deref())
+        .and_then(|path| Path::new(path).file_name())
+        .map(|name| name.to_string_lossy().into_owned());
+    super::notifications::record_session(
+        id,
+        input.session_name.as_deref().filter(|name| !name.is_empty()),
+        project.as_deref(),
+        jiff::Timestamp::now().as_second(),
+    );
 }
 
 /// Reads the payload once into the shape the renderer draws from. Every field is optional

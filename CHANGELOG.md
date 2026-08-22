@@ -11,9 +11,11 @@ on `main`, with the matching section below as its notes.
 
 - Ranges of up to three days are charted hour by hour instead of one column per day.
 - The status line marks uncommitted files and how far the branch stands from its remote.
+- A finished-turn notification names the Claude Code session as well as the project.
 
 ### Fixed
 
+- Sessions that finish at the same moment each raise their own notification.
 - A quota window reset is no longer missed when the provider reports that window without a percentage.
 
 ## [0.3.0] - 2026-08-21

@@ -9,9 +9,16 @@
 //!
 //! The hook process is short-lived and has no handle on the running application, so it
 //! leaves a one-line event in the application data directory and exits; the application
-//! picks it up and raises the notification. Nothing from the conversation is written down:
-//! the event carries the project directory's last segment and the time, which is all the
-//! notification says.
+//! picks it up and raises the notification.
+//!
+//! A notification that only says a turn ended is no use to someone running Claude Code in
+//! several terminals at once, so the event names the session: the project directory's last
+//! segment, and the session title Claude Code shows for it. The hook is handed neither —
+//! its payload carries an identifier — so the status-line bridge, which is handed both on
+//! every render, keeps a small local register of what each session id is called and the
+//! hook looks its own session up there. The register and the events stay inside
+//! QuotaStation's application data directory; nothing else from the conversation is
+//! written down, and nothing leaves the machine.
 
 use std::{env, io::Read, path::PathBuf};
 
@@ -24,30 +31,103 @@ use super::statusline::{app_data_dir, load_settings_with_source, settings_path, 
 /// bridge, it is specific enough that a stray argument can never be mistaken for it.
 pub const HOOK_ARG: &str = "--claude-notify";
 
-const EVENT_FILE: &str = "claude-notification.json";
+/// One directory holding one file per finished turn. Two sessions that end together are two
+/// notifications, because the whole point of naming the session is that they are not
+/// interchangeable — a single shared file would let the later one erase the earlier.
+const EVENT_DIR: &str = "claude-notifications";
+
+/// Where the status-line bridge records what each session id is called.
+const REGISTER_FILE: &str = "claude-sessions.json";
 
 /// An event older than this belongs to a turn that finished while the application was
 /// closed. Announcing it now would be a notification about something long over.
 const MAX_EVENT_AGE_SECS: i64 = 60;
 
-/// What Claude Code hands the Stop hook. Only the directory is read: the payload also
-/// carries the assistant's final message, and that is conversation content this has no
-/// reason to write to disk.
+/// A session unheard from for this long has ended; keeping its title serves nothing.
+const MAX_REGISTER_AGE_SECS: i64 = 24 * 60 * 60;
+
+/// Sessions worth remembering at once. Well past the number of terminals anyone keeps open,
+/// and small enough that the register is rewritten without thought.
+const REGISTER_LIMIT: usize = 32;
+
+/// What Claude Code hands the Stop hook. Two fields are read: which session ended, and
+/// where it was running. The payload also carries the assistant's final message, and that
+/// is conversation content this has no reason to write to disk.
 #[derive(Deserialize)]
 struct StopHookInput {
     cwd: Option<String>,
+    session_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct FinishedEvent {
     pub observed_at: i64,
     /// The project directory's last segment, which is how the user tells one terminal from
     /// another. The full path stays where it was.
     pub project: Option<String>,
+    /// What Claude Code calls this session, when the bridge has seen it. Two sessions in one
+    /// project are otherwise indistinguishable, which is the case the title exists for.
+    pub session: Option<String>,
 }
 
-fn event_path() -> Option<PathBuf> {
-    app_data_dir().map(|dir| dir.join(EVENT_FILE))
+/// What the status-line bridge knows about a session, for the hook to read back.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct SessionRecord {
+    id: String,
+    name: Option<String>,
+    project: Option<String>,
+    updated_at: i64,
+}
+
+fn event_dir() -> Option<PathBuf> {
+    app_data_dir().map(|dir| dir.join(EVENT_DIR))
+}
+
+fn register_path() -> Option<PathBuf> {
+    app_data_dir().map(|dir| dir.join(REGISTER_FILE))
+}
+
+/// Records what a session is called, from the status-line payload that names it.
+///
+/// The bridge runs on every render, so this is written far more often than it is read. It
+/// is one small file rewritten in place rather than a growing log: the register describes
+/// the sessions running now, and one that has stopped rendering falls out of it.
+pub fn record_session(id: &str, name: Option<&str>, project: Option<&str>, now: i64) {
+    let mut register = load_register();
+    // A title that is already right does not need the file rewritten three times a second,
+    // so an unchanged record is only refreshed often enough to stay clear of its own expiry.
+    if register.iter().any(|record| {
+        record.id == id
+            && record.name.as_deref() == name
+            && record.project.as_deref() == project
+            && now - record.updated_at < 60
+    }) {
+        return;
+    }
+    register.retain(|record| record.id != id && now - record.updated_at <= MAX_REGISTER_AGE_SECS);
+    register.insert(
+        0,
+        SessionRecord {
+            id: id.to_string(),
+            name: name.map(str::to_string),
+            project: project.map(str::to_string),
+            updated_at: now,
+        },
+    );
+    register.truncate(REGISTER_LIMIT);
+    if let Some(path) = register_path()
+        && let Ok(encoded) = serde_json::to_string(&register)
+    {
+        let _ = publish(&path, &encoded);
+    }
+}
+
+fn load_register() -> Vec<SessionRecord> {
+    let Some(path) = register_path() else { return Vec::new() };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
 }
 
 /// Runs as Claude Code's Stop hook when this executable was started with [`HOOK_ARG`], and
@@ -62,43 +142,94 @@ pub fn run_hook_if_requested() -> bool {
     }
     let mut payload = String::new();
     let _ = std::io::stdin().read_to_string(&mut payload);
-    let project = serde_json::from_str::<StopHookInput>(&payload)
-        .ok()
-        .and_then(|input| input.cwd)
-        .and_then(|cwd| {
-            std::path::Path::new(&cwd).file_name().map(|name| name.to_string_lossy().into_owned())
-        });
-    let event = FinishedEvent { observed_at: jiff::Timestamp::now().as_second(), project };
-    if let Some(path) = event_path() {
-        let _ = write_event(&path, &event);
+    let input = serde_json::from_str::<StopHookInput>(&payload).ok();
+    let session_id = input.as_ref().and_then(|input| input.session_id.clone());
+    let known = session_id
+        .as_deref()
+        .and_then(|id| load_register().into_iter().find(|record| record.id == id));
+    let event = FinishedEvent {
+        observed_at: jiff::Timestamp::now().as_second(),
+        // The hook's own directory is the authority on where the turn ran; the register
+        // only fills in for a payload that omitted it.
+        project: input
+            .and_then(|input| input.cwd)
+            .and_then(|cwd| {
+                std::path::Path::new(&cwd)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .or_else(|| known.as_ref().and_then(|record| record.project.clone())),
+        session: known.and_then(|record| record.name),
+    };
+    if let Some(dir) = event_dir() {
+        // One file per session, so sessions that finish together each announce themselves.
+        // A session with no id has only this process to be told apart by.
+        let name = session_id.as_deref().map_or_else(process_stem, file_stem);
+        let _ = write_event(&dir.join(format!("{name}.json")), &event);
     }
     true
 }
 
+/// A session id reduced to what is safe in a file name. Claude Code's ids are hyphenated
+/// hex, so in practice nothing is dropped; the id is only ever used to keep two events
+/// apart, never read back.
+fn file_stem(id: &str) -> String {
+    let stem: String = id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .take(64)
+        .collect();
+    if stem.is_empty() { process_stem() } else { stem }
+}
+
+fn process_stem() -> String {
+    format!("pid-{}", std::process::id())
+}
+
 fn write_event(path: &std::path::Path, event: &FinishedEvent) -> std::io::Result<()> {
+    publish(path, &serde_json::to_string(event).unwrap_or_default())
+}
+
+/// Writes a file the way every reader here expects to find it: whole, or not at all.
+/// Several sessions write at once and the application may be reading, so the content is
+/// staged under this process's own name and moved into place.
+fn publish(path: &std::path::Path, content: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // Several sessions can finish at once, and the application may be reading: published by
-    // rename so a reader never sees half an event.
     let staging = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&staging, serde_json::to_string(event).unwrap_or_default())?;
+    std::fs::write(&staging, content)?;
     std::fs::rename(&staging, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&staging);
     })
 }
 
-/// The event a hook left behind, removed as it is read.
+/// Every event the hooks left behind, removed as they are read.
 ///
-/// Removing it is what makes the same finished turn announce itself once: two sessions
-/// finishing together produce one notification rather than a pair, which is the right
-/// trade for a signal that only means "go and look".
-pub fn take_pending(now: i64) -> Option<FinishedEvent> {
-    let path = event_path()?;
-    let content = std::fs::read_to_string(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
-    let event: FinishedEvent = serde_json::from_str(&content).ok()?;
-    (event.observed_at <= now + 5 && now - event.observed_at <= MAX_EVENT_AGE_SECS).then_some(event)
+/// Removing them is what makes a finished turn announce itself once. A stale event — left
+/// by a turn that ended while the application was closed — is dropped rather than announced,
+/// but it is still taken away, or it would be reconsidered every two seconds forever.
+pub fn take_pending(now: i64) -> Vec<FinishedEvent> {
+    let Some(dir) = event_dir() else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut events = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).ok();
+        let _ = std::fs::remove_file(&path);
+        let Some(event) = content.and_then(|content| serde_json::from_str(&content).ok()) else {
+            continue;
+        };
+        let event: FinishedEvent = event;
+        if event.observed_at <= now + 5 && now - event.observed_at <= MAX_EVENT_AGE_SECS {
+            events.push(event);
+        }
+    }
+    events.sort_by_key(|event| event.observed_at);
+    events
 }
 
 /// Whether Claude Code is configured to tell QuotaStation that a turn finished.
@@ -304,12 +435,26 @@ mod tests {
     fn an_event_left_behind_while_the_application_was_closed_is_not_announced() {
         let now = 1_800_000_000;
         let path = scratch("event");
-        write_event(&path, &FinishedEvent { observed_at: now, project: Some("Q".into()) }).unwrap();
+        let written = FinishedEvent {
+            observed_at: now,
+            project: Some("Q".into()),
+            session: Some("Dark theme".into()),
+        };
+        write_event(&path, &written).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         let event: FinishedEvent = serde_json::from_str(&content).unwrap();
-        assert_eq!(event.project.as_deref(), Some("Q"));
+        assert_eq!(event, written);
         assert!(now - event.observed_at <= MAX_EVENT_AGE_SECS);
         assert!(now + 3_600 - event.observed_at > MAX_EVENT_AGE_SECS, "an hour later it is stale");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_session_id_becomes_one_event_file_per_session() {
+        let first = file_stem("2f1c4b8a-0e5d-4a19-9b7c-3d6e8f0a1b2c");
+        assert_eq!(first, "2f1c4b8a-0e5d-4a19-9b7c-3d6e8f0a1b2c");
+        assert_ne!(first, file_stem("9a0b1c2d-3e4f-5061-7283-94a5b6c7d8e9"));
+        assert!(!file_stem("../../escape").contains('.'), "nothing walks out of the directory");
+        assert!(file_stem("").starts_with("pid-"), "an id that survives nothing still names one");
     }
 }
