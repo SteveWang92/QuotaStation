@@ -30,6 +30,73 @@ pub(super) fn load_daily_summaries_inner(
     project_filter: Option<&str>,
     group_by_project: bool,
 ) -> Result<Vec<UsageSummary>> {
+    let deduped = load_deduped_entries(shared, project_filter)?;
+
+    if group_by_project {
+        let mut groups = BTreeMap::<(String, Arc<str>), DailyAccumulator>::new();
+        for entry in &deduped {
+            groups
+                .entry((entry.date.clone(), Arc::clone(&entry.project)))
+                .or_default()
+                .add_entry(entry);
+        }
+        return Ok(groups
+            .into_iter()
+            .map(|((date, project), group)| {
+                let mut summary = group.into_summary();
+                summary.date = Some(date);
+                summary.project = Some(project.to_string());
+                summary
+            })
+            .collect());
+    }
+
+    let mut groups = BTreeMap::<String, DailyAccumulator>::new();
+    for entry in &deduped {
+        groups
+            .entry(entry.date.clone())
+            .or_default()
+            .add_entry(entry);
+    }
+    Ok(groups
+        .into_iter()
+        .map(|(key, group)| {
+            let mut summary = group.into_summary();
+            summary.date = Some(key);
+            summary
+        })
+        .collect())
+}
+
+/// The same parse, bucketed by local hour instead of by local day.
+///
+/// The dashboard shows an hourly shape for short ranges, and reading the session files a
+/// second time to get it would risk the two views disagreeing whenever a write landed
+/// between the passes. Both reports therefore come from one load and one deduplication;
+/// only the grouping key differs. The key is a local `YYYY-MM-DDTHH:00`.
+pub(super) fn load_hourly_summaries_inner(
+    shared: &SharedArgs,
+    project_filter: Option<&str>,
+) -> Result<Vec<(String, UsageSummary)>> {
+    let deduped = load_deduped_entries(shared, project_filter)?;
+    let mut groups = BTreeMap::<String, DailyAccumulator>::new();
+    for entry in &deduped {
+        groups
+            .entry(entry.hour.clone())
+            .or_default()
+            .add_entry(entry);
+    }
+    Ok(groups
+        .into_iter()
+        .map(|(hour, group)| (hour, group.into_summary()))
+        .collect())
+}
+
+/// Every usage entry on this machine, read once and deduplicated once.
+fn load_deduped_entries(
+    shared: &SharedArgs,
+    project_filter: Option<&str>,
+) -> Result<Vec<DailyLoadedEntry>> {
     let paths = claude_paths()?;
     let files = usage_files(&paths, project_filter);
     if files.is_empty() {
@@ -68,41 +135,20 @@ pub(super) fn load_daily_summaries_inner(
             push_deduped_daily_entry(entry, &mut deduped_indexes, &mut deduped);
         }
     }
+    Ok(deduped)
+}
 
-    if group_by_project {
-        let mut groups = BTreeMap::<(String, Arc<str>), DailyAccumulator>::new();
-        for entry in &deduped {
-            groups
-                .entry((entry.date.clone(), Arc::clone(&entry.project)))
-                .or_default()
-                .add_entry(entry);
-        }
-        return Ok(groups
-            .into_iter()
-            .map(|((date, project), group)| {
-                let mut summary = group.into_summary();
-                summary.date = Some(date);
-                summary.project = Some(project.to_string());
-                summary
-            })
-            .collect());
-    }
-
-    let mut groups = BTreeMap::<String, DailyAccumulator>::new();
-    for entry in &deduped {
-        groups
-            .entry(entry.date.clone())
-            .or_default()
-            .add_entry(entry);
-    }
-    Ok(groups
-        .into_iter()
-        .map(|(key, group)| {
-            let mut summary = group.into_summary();
-            summary.date = Some(key);
-            summary
+/// A timestamp as the local hour it fell in, formatted `YYYY-MM-DDTHH:00`.
+fn format_hour_tz(timestamp: TimestampMs, timezone: Option<&JiffTimeZone>) -> String {
+    let date = format_date_tz(timestamp, timezone);
+    let hour = jiff::Timestamp::from_millisecond(timestamp.as_millis())
+        .map(|instant| {
+            instant
+                .to_zoned(timezone.cloned().unwrap_or_else(JiffTimeZone::system))
+                .hour()
         })
-        .collect())
+        .unwrap_or(0);
+    format!("{date}T{hour:02}:00")
 }
 
 #[derive(Debug)]
@@ -114,6 +160,9 @@ struct DailyLoadedFile {
 #[derive(Debug)]
 struct DailyLoadedEntry {
     date: String,
+    /// The same instant truncated to the local hour, so one parse can answer both the
+    /// daily report and an hourly one without reading the files twice.
+    hour: String,
     project: Arc<str>,
     usage: TokenUsageRaw,
     cost: f64,
@@ -301,10 +350,12 @@ fn read_daily_usage_file(
             }
         });
         let date = format_date_tz(timestamp, tz);
+        let hour = format_hour_tz(timestamp, tz);
         let message_id = data.message.id.clone();
         let request_id = data.request_id.clone();
         loaded_file.entries.push(DailyLoadedEntry {
             date: date.clone(),
+            hour: hour.clone(),
             project: Arc::clone(&project),
             usage,
             cost,
@@ -324,6 +375,7 @@ fn read_daily_usage_file(
             );
             loaded_file.entries.push(DailyLoadedEntry {
                 date: date.clone(),
+                hour: hour.clone(),
                 project: Arc::clone(&project),
                 usage: advisor.usage,
                 cost: calculate_cost_for_usage(
@@ -620,6 +672,7 @@ mod tests {
     fn daily_loaded_entry(fixture: DailyEntryFixture) -> DailyLoadedEntry {
         DailyLoadedEntry {
             date: "2026-03-29".to_string(),
+            hour: "2026-03-29T09:00".to_string(),
             project: Arc::from("project-a"),
             usage: TokenUsageRaw {
                 input_tokens: 0,

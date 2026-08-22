@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+pub mod hours;
 
 use std::{
     collections::BTreeMap,

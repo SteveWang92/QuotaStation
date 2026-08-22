@@ -3,7 +3,9 @@ import {
   createCustomRange,
   createPresetRange,
   customRangeTooLong,
+  formatRangeHour,
   hasRolledOver,
+  isHourlyRange,
   resolveDateRange,
   todayString,
 } from "../src/dateRanges";
@@ -87,5 +89,26 @@ describe("custom ranges", () => {
   it("bounds the number of daily chart marks to one year", () => {
     expect(customRangeTooLong("2025-01-01", "2026-01-01")).toBe(false);
     expect(customRangeTooLong("2025-01-01", "2026-01-02")).toBe(true);
+  });
+});
+
+describe("hourly ranges", () => {
+  it("reads a range of up to three days hour by hour", () => {
+    expect(isHourlyRange("2026-08-20", "2026-08-20")).toBe(true);
+    expect(isHourlyRange("2026-08-18", "2026-08-20")).toBe(true);
+  });
+
+  it("leaves anything longer on the daily axis", () => {
+    expect(isHourlyRange("2026-08-17", "2026-08-20")).toBe(false);
+    expect(isHourlyRange("2026-07-20", "2026-08-20")).toBe(false);
+  });
+
+  it("has no hourly resolution for a backwards range", () => {
+    expect(isHourlyRange("2026-08-20", "2026-08-18")).toBe(false);
+  });
+
+  it("names an hour by its day and the clock time it opened at", () => {
+    expect(formatRangeHour("2026-08-20T14:00")).toContain("14:00");
+    expect(formatRangeHour("2026-08-20T14:00")).toContain("2026");
   });
 });

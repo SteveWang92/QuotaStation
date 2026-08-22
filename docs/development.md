@@ -174,8 +174,8 @@ answered a refresh, how many windows it carried, and why a read failed. It recor
 content and no credential, rolls over at 512 KB into `quotastation.log.1`, and the
 Diagnostics tab's **Show activity log** button reveals it.
 
-Historical range changes query the normalized daily rows in SQLite; they do not trigger a
-new parse of the Codex session logs.
+Historical range changes query the normalized rows in SQLite — daily, or hourly for a range
+short enough to be drawn that way; they do not trigger a new parse of the Codex session logs.
 
 What is retained and for how long, how daily buckets follow the system time zone, and why
 each rule is what it is are all in

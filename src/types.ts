@@ -119,6 +119,22 @@ export interface DailyUsagePoint {
   models: ModelUsage[];
 }
 
+/** One local hour of usage, the hourly counterpart of `DailyUsagePoint`. */
+export interface HourlyUsagePoint {
+  /** The local hour this bucket opened, as `YYYY-MM-DDTHH:00`. */
+  hourStart: string;
+  usage: TokenUsage;
+  apiEquivalentCostUsd: number | null;
+  models: ModelUsage[];
+}
+
+/** A range read hour by hour. Only the hours with usage are carried. */
+export interface UsageHoursSnapshot {
+  startDate: string;
+  endDate: string;
+  hours: HourlyUsagePoint[];
+}
+
 /** The highest share of a quota window observed on one local day. */
 export interface QuotaHistoryPoint {
   date: string;

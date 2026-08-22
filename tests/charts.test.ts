@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  alignToDays,
+  alignToBuckets,
   axisScale,
   bandGeometry,
   calendarDays,
+  calendarHours,
   columnPath,
   labelStride,
   linePath,
@@ -30,8 +31,37 @@ describe("the day axis", () => {
 
   it("leaves a day with no record empty rather than zero", () => {
     const days = calendarDays("2026-08-14", "2026-08-16");
-    const aligned = alignToDays([{ date: "2026-08-15", tokens: 12 }], days);
+    const aligned = alignToBuckets(
+      [{ date: "2026-08-15", tokens: 12 }],
+      days,
+      (point) => point.date,
+    );
     expect(aligned).toEqual([undefined, { date: "2026-08-15", tokens: 12 }, undefined]);
+  });
+});
+
+describe("the hour axis", () => {
+  it("runs from the first hour of the range to the last hour of its final day", () => {
+    const hours = calendarHours("2026-08-14", "2026-08-15", new Date("2026-08-20T10:00:00"));
+    expect(hours).toHaveLength(48);
+    expect(hours[0]).toBe("2026-08-14T00:00");
+    expect(hours.at(-1)).toBe("2026-08-15T23:00");
+  });
+
+  it("stops at the hour in progress when the range ends today", () => {
+    const hours = calendarHours("2026-08-20", "2026-08-20", new Date("2026-08-20T09:30:00"));
+    expect(hours).toHaveLength(10);
+    expect(hours.at(-1)).toBe("2026-08-20T09:00");
+  });
+
+  it("leaves an hour with no record empty rather than zero", () => {
+    const hours = calendarHours("2026-08-20", "2026-08-20", new Date("2026-08-20T02:00:00"));
+    const aligned = alignToBuckets(
+      [{ hourStart: "2026-08-20T01:00", tokens: 12 }],
+      hours,
+      (point) => point.hourStart,
+    );
+    expect(aligned).toEqual([undefined, { hourStart: "2026-08-20T01:00", tokens: 12 }, undefined]);
   });
 });
 

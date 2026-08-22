@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Added
+
+- Ranges of up to three days are charted hour by hour instead of one column per day.
+
 ### Fixed
 
 - A quota window reset is no longer missed when the provider reports that window without a percentage.

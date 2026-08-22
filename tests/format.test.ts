@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  formatAxisHour,
   formatCompactCountdown,
   formatCountdown,
   formatCurrency,
@@ -104,5 +105,12 @@ describe("provenance and missing values", () => {
     expect(formatCurrency(null)).toBe("Unavailable");
     expect(formatTimestamp(null)).toBe("Never");
     expect(formatResetTimestamp(null)).toBe("Reset time unknown");
+  });
+});
+
+describe("hour buckets", () => {
+  it("says the clock hour and nothing else, because the axis carries the date", () => {
+    expect(formatAxisHour("2026-08-20T00:00")).toBe("00:00");
+    expect(formatAxisHour("2026-08-20T14:00")).toBe("14:00");
   });
 });

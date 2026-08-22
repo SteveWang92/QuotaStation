@@ -14,6 +14,7 @@ import {
   createPresetRange,
   type DateRangeSelection,
   hasRolledOver,
+  isHourlyRange,
   previousPeriod,
   resolveDateRange,
 } from "./dateRanges";
@@ -23,6 +24,7 @@ import type {
   HistoryProvider,
   ProviderSnapshot,
   QuotaHistorySnapshot,
+  UsageHoursSnapshot,
   UsageRangeSnapshot,
   WorkspaceSnapshot,
 } from "./types";
@@ -81,6 +83,9 @@ function Dashboard() {
   // The comparison and the quota history are read for the same slice as the totals, so a
   // figure and the change beside it always describe the same two periods.
   const [previousRange, setPreviousRange] = useState<UsageRangeSnapshot | null>(null);
+  // Hourly detail is read only for the ranges short enough to be drawn that way; `null`
+  // is what puts the charts back on the daily axis.
+  const [usageHours, setUsageHours] = useState<UsageHoursSnapshot | null>(null);
   const [quotaHistory, setQuotaHistory] = useState<QuotaHistorySnapshot | null>(null);
   const [activeRange, setActiveRange] = useState<DateRangeSelection>(INITIAL_RANGE);
   const [rangeLoading, setRangeLoading] = useState(false);
@@ -108,7 +113,7 @@ function Dashboard() {
       // The combined view names no provider, which the core reads as every provider at once.
       const provider = rangeProvider === "all" ? null : rangeProvider;
       try {
-        const [next, previous, quota] = await Promise.all([
+        const [next, previous, quota, hourly] = await Promise.all([
           invoke<UsageRangeSnapshot>("get_usage_range", {
             provider,
             startDate: resolvedRange.startDate,
@@ -129,10 +134,25 @@ function Dashboard() {
                 startDate: resolvedRange.startDate,
                 endDate: resolvedRange.endDate,
               }),
+          // A longer range has more hours than the chart has pixels, and the core keeps
+          // hourly rows only for the recent window anyway.
+          isHourlyRange(resolvedRange.startDate, resolvedRange.endDate)
+            ? invoke<UsageHoursSnapshot>("get_usage_hours", {
+                provider,
+                startDate: resolvedRange.startDate,
+                endDate: resolvedRange.endDate,
+              })
+            : Promise.resolve(null),
         ]);
         if (requestId === rangeRequestId.current) {
           setUsageRange(next);
           setPreviousRange(previous);
+          // Hourly rows only start existing at the first refresh after this build, and a
+          // range that has usage but no hours would otherwise draw an empty hourly chart
+          // over data the daily shape can show.
+          setUsageHours(
+            hourly === null || (hourly.hours.length === 0 && next.usage.total > 0) ? null : hourly,
+          );
           setQuotaHistory(quota);
           setActiveRange(resolvedRange);
         }
@@ -295,6 +315,7 @@ function Dashboard() {
           activeProvider={selectedProvider}
           onSelectProvider={selectProvider}
           range={usageRange}
+          hours={usageHours}
           previousRange={previousRange}
           quotaHistory={quotaHistory}
           selection={activeRange}

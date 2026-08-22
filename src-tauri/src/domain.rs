@@ -523,7 +523,23 @@ mod tests {
 #[derive(Debug, Clone)]
 pub struct HistorySnapshot {
     pub days: Vec<HistoryDay>,
+    /// The same usage bucketed by local hour, for the recent window an hourly chart can
+    /// cover. A parse reaches back as far as the provider's own sessions go, but nothing
+    /// is stored hourly past [`HOURLY_HISTORY_DAYS`], so the parser stops there too.
+    pub hours: Vec<HistoryHour>,
 }
+
+/// One local hour of usage, as the per-model rows it is stored and summed from.
+#[derive(Debug, Clone)]
+pub struct HistoryHour {
+    /// The local hour this bucket opened, as `YYYY-MM-DDTHH:00`.
+    pub hour_start: String,
+    pub model_rows: Vec<ModelUsageRow>,
+}
+
+/// How far back hourly usage is parsed and kept. Beyond this the daily rows are the whole
+/// record, which is what every range longer than a few days is drawn from anyway.
+pub const HOURLY_HISTORY_DAYS: i64 = 14;
 
 #[derive(Debug, Clone)]
 pub struct HistoryDay {
@@ -531,11 +547,11 @@ pub struct HistoryDay {
     pub usage: TokenUsage,
     pub models: Vec<ModelUsage>,
     pub cost_usd: f64,
-    pub model_rows: Vec<DailyModelUsage>,
+    pub model_rows: Vec<ModelUsageRow>,
 }
 
 #[derive(Debug, Clone)]
-pub struct DailyModelUsage {
+pub struct ModelUsageRow {
     pub model: String,
     pub input: u64,
     pub cache_read: u64,
@@ -587,6 +603,30 @@ pub struct QuotaHistorySnapshot {
     /// Restarts anchored inside the range, oldest first, so they can be drawn along the
     /// same axis as the windows above them.
     pub resets: Vec<LimitResetEvent>,
+}
+
+/// One hour of usage, the hourly counterpart of [`DailyUsagePoint`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HourlyUsagePoint {
+    /// The local hour this bucket opened, as `YYYY-MM-DDTHH:00`.
+    pub hour_start: String,
+    pub usage: TokenUsage,
+    pub api_equivalent_cost_usd: Option<f64>,
+    pub models: Vec<ModelUsage>,
+}
+
+/// What a range looks like at hourly resolution.
+///
+/// Short ranges are read hour by hour rather than day by day: three columns say nothing
+/// about when a day's work happened. Only the hours with usage are returned; the renderer
+/// draws the empty ones from the range itself.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageHoursSnapshot {
+    pub start_date: String,
+    pub end_date: String,
+    pub hours: Vec<HourlyUsagePoint>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -11,11 +11,11 @@ use sqlx::{
 };
 
 use crate::domain::{
-    AcquisitionDiagnostics, CCUSAGE_REVISION, DailyModelUsage, DailyUsagePoint, Freshness,
-    HistorySnapshot, LimitKind, LimitResetEvent, LimitWindow, LiveSnapshot, ModelUsage,
-    PRICING_CATALOG_REVISION, ProviderSnapshot, QuotaHistoryPoint, QuotaHistorySnapshot,
-    QuotaHistoryWindow, ResetClassification, RetentionDiagnostics, TokenUsage, UsageRangeSnapshot,
-    WindowSource,
+    AcquisitionDiagnostics, CCUSAGE_REVISION, DailyUsagePoint, Freshness, HOURLY_HISTORY_DAYS,
+    HistorySnapshot, HourlyUsagePoint, LimitKind, LimitResetEvent, LimitWindow, LiveSnapshot,
+    ModelUsage, ModelUsageRow, PRICING_CATALOG_REVISION, ProviderSnapshot, QuotaHistoryPoint,
+    QuotaHistorySnapshot, QuotaHistoryWindow, ResetClassification, RetentionDiagnostics,
+    TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot, WindowSource,
 };
 use crate::providers::ProviderKind;
 use crate::resets::{ResetTracker, WindowObservation, detect};
@@ -413,10 +413,12 @@ impl Storage {
                 .fetch_one(&mut *tx)
                 .await?;
         if previous_timezone.as_deref().is_some_and(|previous| previous != aggregation_timezone) {
-            sqlx::query("DELETE FROM daily_usage WHERE provider_instance_id = ?")
-                .bind(provider_id)
-                .execute(&mut *tx)
-                .await?;
+            for table in ["daily_usage", "hourly_usage"] {
+                sqlx::query(&format!("DELETE FROM {table} WHERE provider_instance_id = ?"))
+                    .bind(provider_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
         }
         sqlx::query(
             "UPDATE provider_instances SET parser_revision = ?, aggregation_timezone = ?, \
@@ -443,6 +445,21 @@ impl Storage {
                 self.insert_daily_model(&mut tx, provider_id, &day.date, row, observed_at).await?;
             }
         }
+        // The hourly rows are replaced the same way, and only ever cover the recent window
+        // the parser produces them for; retention removes the ones that fall out of it.
+        for hour in &history.hours {
+            sqlx::query(
+                "DELETE FROM hourly_usage WHERE provider_instance_id = ? AND hour_start = ?",
+            )
+            .bind(provider_id)
+            .bind(&hour.hour_start)
+            .execute(&mut *tx)
+            .await?;
+            for row in &hour.model_rows {
+                self.insert_hourly_model(&mut tx, provider_id, &hour.hour_start, row, observed_at)
+                    .await?;
+            }
+        }
         tx.commit().await?;
         Ok(())
     }
@@ -452,7 +469,7 @@ impl Storage {
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         provider_id: i64,
         date: &str,
-        row: &DailyModelUsage,
+        row: &ModelUsageRow,
         observed_at: &str,
     ) -> Result<()> {
         sqlx::query(
@@ -464,6 +481,25 @@ impl Storage {
         .bind(provider_id).bind(date).bind(&row.model).bind(AGGREGATE_SERVICE_TIER).bind(row.input as i64)
         .bind(row.cache_read as i64).bind(row.output as i64).bind(row.reasoning as i64)
         .bind(row.total as i64).bind(row.cost_usd).bind(CCUSAGE_REVISION).bind(observed_at)
+        .execute(&mut **tx).await?;
+        Ok(())
+    }
+
+    async fn insert_hourly_model(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        provider_id: i64,
+        hour_start: &str,
+        row: &ModelUsageRow,
+        observed_at: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO hourly_usage              (provider_instance_id, hour_start, model, service_tier, input_tokens, cache_read_tokens,               output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(provider_id).bind(hour_start).bind(&row.model).bind(AGGREGATE_SERVICE_TIER)
+        .bind(row.input as i64).bind(row.cache_read as i64).bind(row.output as i64)
+        .bind(row.reasoning as i64).bind(row.total as i64).bind(row.cost_usd)
+        .bind(CCUSAGE_REVISION).bind(observed_at)
         .execute(&mut **tx).await?;
         Ok(())
     }
@@ -570,6 +606,15 @@ impl Storage {
         sqlx::query("DELETE FROM limit_rollups WHERE granularity = 'hourly'")
             .execute(&mut *tx)
             .await?;
+        // Hourly usage only exists to draw a range of a few days; past that window the
+        // daily rows are the whole record, so the hourly ones are dropped rather than
+        // rolled up into a summary that already exists.
+        sqlx::query(&format!(
+            "DELETE FROM hourly_usage WHERE date(hour_start) < date(?, 'localtime', '-{HOURLY_HISTORY_DAYS} days')"
+        ))
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             "DELETE FROM refresh_runs WHERE id NOT IN (SELECT MAX(id) FROM refresh_runs GROUP BY provider_instance_id, acquisition_path) \
              AND ((status = 'succeeded' AND datetime(completed_at) < datetime(?, '-30 days')) \
@@ -783,6 +828,76 @@ impl Storage {
         })
     }
 
+    /// The same range at hourly resolution, for the short ranges that are drawn hour by
+    /// hour.
+    ///
+    /// Only the hours the parser has rows for come back — an hour nothing ran in is an
+    /// absence, and the renderer draws the empty buckets from the range itself. Hours
+    /// older than the retention window simply do not exist here; the caller is expected
+    /// to have chosen a range short enough that they cannot be asked for.
+    pub async fn load_usage_hours(
+        &self,
+        provider: Option<ProviderKind>,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<UsageHoursSnapshot> {
+        let start = jiff::civil::Date::from_str(start_date).context("invalid start date")?;
+        let end = jiff::civil::Date::from_str(end_date).context("invalid end date")?;
+        anyhow::ensure!(start <= end, "start date must not be after end date");
+
+        let provider_id = match provider {
+            Some(kind) => Some(self.provider_id(kind).await?),
+            None => None,
+        };
+        let rows = sqlx::query(
+            "SELECT hour_start, model, SUM(input_tokens) AS input_tokens,              SUM(cache_read_tokens) AS cache_read_tokens, SUM(output_tokens) AS output_tokens,              SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens,              SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd              FROM hourly_usage WHERE (? IS NULL OR provider_instance_id = ?)              AND date(hour_start) BETWEEN ? AND ?              GROUP BY hour_start, model ORDER BY hour_start ASC, total_tokens DESC",
+        )
+        .bind(provider_id)
+        .bind(provider_id)
+        .bind(start.to_string())
+        .bind(end.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut hour_totals: BTreeMap<String, (TokenUsage, f64, BTreeMap<String, u64>)> =
+            BTreeMap::new();
+        for row in rows {
+            let hour_start: String = row.get("hour_start");
+            let model: String = row.get("model");
+            let usage = TokenUsage {
+                input: row.get::<i64, _>("input_tokens") as u64,
+                cache_read: row.get::<i64, _>("cache_read_tokens") as u64,
+                output: row.get::<i64, _>("output_tokens") as u64,
+                reasoning: row.get::<i64, _>("reasoning_tokens") as u64,
+                total: row.get::<i64, _>("total_tokens") as u64,
+            };
+            let hour = hour_totals
+                .entry(hour_start)
+                .or_insert_with(|| (TokenUsage::default(), 0.0, BTreeMap::new()));
+            hour.0.input += usage.input;
+            hour.0.cache_read += usage.cache_read;
+            hour.0.output += usage.output;
+            hour.0.reasoning += usage.reasoning;
+            hour.0.total += usage.total;
+            hour.1 += row.get::<f64, _>("estimated_cost_usd");
+            *hour.2.entry(model).or_default() += usage.total;
+        }
+
+        Ok(UsageHoursSnapshot {
+            start_date: start.to_string(),
+            end_date: end.to_string(),
+            hours: hour_totals
+                .into_iter()
+                .map(|(hour_start, (usage, cost, hour_models))| HourlyUsagePoint {
+                    hour_start,
+                    api_equivalent_cost_usd: (usage.total > 0).then_some(cost),
+                    models: rank_models(hour_models, usage.total),
+                    usage,
+                })
+                .collect(),
+        })
+    }
+
     /// What each quota window did across a date range, one point per local day.
     ///
     /// Two stores answer this between them and they do not overlap: readings younger than
@@ -946,7 +1061,7 @@ mod tests {
     use super::*;
 
     const CODEX: ProviderKind = ProviderKind::Codex;
-    use crate::domain::{HistoryDay, LimitWindow, LiveSnapshot};
+    use crate::domain::{HistoryDay, HistoryHour, LimitWindow, LiveSnapshot};
 
     /// Each test owns a database file in the temporary directory and removes it, along
     /// with the write-ahead files SQLite may leave beside it, when it finishes.
@@ -1016,7 +1131,7 @@ mod tests {
             },
             models: vec![ModelUsage { model: model.to_string(), tokens: total, percent: 100.0 }],
             cost_usd: 1.5,
-            model_rows: vec![DailyModelUsage {
+            model_rows: vec![ModelUsageRow {
                 model: model.to_string(),
                 input: total / 2,
                 cache_read: 0,
@@ -1028,6 +1143,100 @@ mod tests {
         }
     }
 
+    fn hour(hour_start: &str, model: &str, total: u64) -> HistoryHour {
+        HistoryHour {
+            hour_start: hour_start.to_string(),
+            model_rows: vec![ModelUsageRow {
+                model: model.to_string(),
+                input: total / 2,
+                cache_read: 0,
+                output: total / 2,
+                reasoning: 0,
+                total,
+                cost_usd: 0.25,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn an_hourly_range_is_read_back_one_point_per_recorded_hour() {
+        let (storage, _database) = open_storage().await;
+        let history = HistorySnapshot {
+            days: vec![day("2026-08-20", "gpt-5-codex", 400)],
+            hours: vec![
+                hour("2026-08-20T09:00", "gpt-5-codex", 300),
+                hour("2026-08-20T14:00", "gpt-5-codex", 100),
+            ],
+        };
+        storage
+            .save_history(CODEX, &history, "Australia/Sydney", "2026-08-20T15:00:00Z")
+            .await
+            .expect("save history");
+
+        let hours = storage
+            .load_usage_hours(Some(CODEX), "2026-08-20", "2026-08-20")
+            .await
+            .expect("read the hourly range");
+        assert_eq!(
+            hours.hours.iter().map(|point| point.hour_start.as_str()).collect::<Vec<_>>(),
+            ["2026-08-20T09:00", "2026-08-20T14:00"],
+            "an hour nothing ran in is an absence rather than a zero"
+        );
+        assert_eq!(hours.hours[0].usage.total, 300);
+        assert_eq!(hours.hours[1].models[0].model, "gpt-5-codex");
+    }
+
+    #[tokio::test]
+    async fn re_parsing_an_hour_replaces_it_rather_than_adding_to_it() {
+        let (storage, _database) = open_storage().await;
+        for total in [300, 500] {
+            let history = HistorySnapshot {
+                days: vec![day("2026-08-20", "gpt-5-codex", total)],
+                hours: vec![hour("2026-08-20T09:00", "gpt-5-codex", total)],
+            };
+            storage
+                .save_history(CODEX, &history, "Australia/Sydney", "2026-08-20T15:00:00Z")
+                .await
+                .expect("save history");
+        }
+        let hours = storage
+            .load_usage_hours(Some(CODEX), "2026-08-20", "2026-08-20")
+            .await
+            .expect("read the hourly range");
+        assert_eq!(hours.hours.len(), 1);
+        assert_eq!(hours.hours[0].usage.total, 500);
+    }
+
+    #[tokio::test]
+    async fn retention_drops_hourly_usage_once_it_leaves_the_window() {
+        let (storage, _database) = open_storage().await;
+        let history = HistorySnapshot {
+            days: vec![day("2026-08-20", "gpt-5-codex", 400)],
+            hours: vec![
+                hour("2026-06-01T09:00", "gpt-5-codex", 100),
+                hour("2026-08-20T09:00", "gpt-5-codex", 300),
+            ],
+        };
+        storage
+            .save_history(CODEX, &history, "Australia/Sydney", "2026-08-20T15:00:00Z")
+            .await
+            .expect("save history");
+
+        storage.run_retention_at("2026-08-20T15:00:00Z").await.expect("run retention");
+
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT DISTINCT hour_start FROM hourly_usage ORDER BY hour_start")
+                .fetch_all(&storage.pool)
+                .await
+                .expect("read the surviving hours");
+        assert_eq!(remaining, ["2026-08-20T09:00"]);
+        let days = storage
+            .load_usage_range(Some(CODEX), "2026-06-01", "2026-08-20")
+            .await
+            .expect("read the daily range");
+        assert_eq!(days.days.len(), 1, "the daily rows are untouched by the hourly cutoff");
+    }
+
     #[tokio::test]
     async fn migrations_leave_only_the_tables_the_core_writes() {
         let (storage, _database) = open_storage().await;
@@ -1035,6 +1244,7 @@ mod tests {
             storage.table_names().await.expect("read table names"),
             [
                 "daily_usage",
+                "hourly_usage",
                 "limit_current",
                 "limit_resets",
                 "limit_rollups",
@@ -1136,6 +1346,7 @@ mod tests {
         let (storage, _database) = open_storage().await;
         let first = HistorySnapshot {
             days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5", 200)],
+            hours: Vec::new(),
         };
         storage
             .save_history(CODEX, &first, "Australia/Brisbane", "2026-08-02T00:00:00Z")
@@ -1143,7 +1354,8 @@ mod tests {
             .expect("save first history");
 
         // A later parse no longer sees the rotated-away session that produced 08-01.
-        let second = HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 500)] };
+        let second =
+            HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 500)], hours: Vec::new() };
         storage
             .save_history(CODEX, &second, "Australia/Brisbane", "2026-08-02T01:00:00Z")
             .await
@@ -1166,8 +1378,12 @@ mod tests {
     #[tokio::test]
     async fn a_range_with_no_provider_counts_every_provider_together() {
         let (storage, _database) = open_storage().await;
-        let codex = HistorySnapshot { days: vec![day("2026-08-01", "gpt-5", 100)] };
-        let claude = HistorySnapshot { days: vec![day("2026-08-01", "claude-opus-5", 400)] };
+        let codex =
+            HistorySnapshot { days: vec![day("2026-08-01", "gpt-5", 100)], hours: Vec::new() };
+        let claude = HistorySnapshot {
+            days: vec![day("2026-08-01", "claude-opus-5", 400)],
+            hours: Vec::new(),
+        };
         storage
             .save_history(CODEX, &codex, "Australia/Brisbane", "2026-08-01T00:00:00Z")
             .await
@@ -1209,13 +1425,15 @@ mod tests {
         let (storage, _database) = open_storage().await;
         let first = HistorySnapshot {
             days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5", 200)],
+            hours: Vec::new(),
         };
         storage
             .save_history(CODEX, &first, "Australia/Brisbane", "2026-08-02T00:00:00Z")
             .await
             .expect("save Brisbane history");
 
-        let rebucketed = HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 250)] };
+        let rebucketed =
+            HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 250)], hours: Vec::new() };
         storage
             .save_history(CODEX, &rebucketed, "America/New_York", "2026-08-02T01:00:00Z")
             .await
@@ -1235,6 +1453,7 @@ mod tests {
         let (storage, _database) = open_storage().await;
         let first = HistorySnapshot {
             days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5", 200)],
+            hours: Vec::new(),
         };
         storage
             .save_history(CODEX, &first, "Australia/Brisbane", "2026-08-02T00:00:00Z")
@@ -1247,7 +1466,8 @@ mod tests {
         .await
         .expect("simulate an upgraded database");
 
-        let latest = HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 250)] };
+        let latest =
+            HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 250)], hours: Vec::new() };
         storage
             .save_history(CODEX, &latest, "Australia/Brisbane", "2026-08-02T01:00:00Z")
             .await
@@ -1271,6 +1491,7 @@ mod tests {
         let (storage, _database) = open_storage().await;
         let history = HistorySnapshot {
             days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5-codex", 300)],
+            hours: Vec::new(),
         };
         storage
             .save_history(CODEX, &history, "Australia/Brisbane", "2026-08-02T00:00:00Z")

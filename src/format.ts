@@ -139,3 +139,16 @@ export function formatAxisDate(value: string): string {
     new Date(`${value}T00:00:00`),
   );
 }
+
+/**
+ * The clock part of an hour bucket, for example 14:00. The axis carries the date
+ * separately, on the first label of each day, so the hours between it stay short.
+ */
+export function formatAxisHour(value: string): string {
+  return `${value.slice(11, 13)}:00`;
+}
+
+/** The calendar day an hour bucket belongs to. */
+export function hourDate(value: string): string {
+  return value.slice(0, 10);
+}

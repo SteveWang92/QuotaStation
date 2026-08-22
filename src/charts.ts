@@ -3,10 +3,11 @@
  * reasoned about and tested on its own.
  *
  * Every chart on the dashboard shares one x-axis shape — a run of consecutive local
- * calendar days — because they are all read against the same date range. The functions
- * here produce that axis, the value scale under it, and the geometry the marks are drawn
- * from; nothing here knows about SVG.
+ * buckets, calendar days or the hours inside them — because they are all read against the
+ * same date range. The functions here produce that axis, the value scale under it, and the
+ * geometry the marks are drawn from; nothing here knows about SVG.
  */
+import { toLocalDateString } from "./dateRanges";
 
 /** Every calendar day from `startDate` to `endDate` inclusive, as `YYYY-MM-DD`. */
 export function calendarDays(startDate: string, endDate: string): string[] {
@@ -21,18 +22,40 @@ export function calendarDays(startDate: string, endDate: string): string[] {
 }
 
 /**
- * Lines up sparse records against the full run of days.
+ * Every local hour from the start of `startDate` to the end of `endDate`, as
+ * `YYYY-MM-DDTHH:00`.
  *
- * The core stores only the days a provider was used on, which is what the totals and the
- * active-day average are counted from. A chart has to show the gaps as gaps, so the axis
- * comes from the calendar and a day with no record contributes `undefined`.
+ * A range ending today stops at the hour in progress rather than running on to midnight:
+ * the hours nobody has lived through yet are not empty usage, they are not yet hours.
  */
-export function alignToDays<T extends { date: string }>(
+export function calendarHours(startDate: string, endDate: string, now = new Date()): string[] {
+  const days = calendarDays(startDate, endDate);
+  const today = toLocalDateString(now);
+  const hours: string[] = [];
+  for (const day of days) {
+    const lastHour = day === today ? now.getHours() : 23;
+    if (day > today) break;
+    for (let hour = 0; hour <= lastHour; hour += 1) {
+      hours.push(`${day}T${String(hour).padStart(2, "0")}:00`);
+    }
+  }
+  return hours;
+}
+
+/**
+ * Lines up sparse records against the full run of buckets.
+ *
+ * The core stores only the days and hours a provider was used in, which is what the totals
+ * and the active-day average are counted from. A chart has to show the gaps as gaps, so
+ * the axis comes from the calendar and a bucket with no record contributes `undefined`.
+ */
+export function alignToBuckets<T>(
   records: T[],
-  days: string[],
+  buckets: string[],
+  keyOf: (record: T) => string,
 ): Array<T | undefined> {
-  const byDate = new Map(records.map((record) => [record.date, record]));
-  return days.map((day) => byDate.get(day));
+  const byKey = new Map(records.map((record) => [keyOf(record), record]));
+  return buckets.map((bucket) => byKey.get(bucket));
 }
 
 /**

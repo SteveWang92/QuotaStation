@@ -48,6 +48,17 @@ pub fn load_daily_summaries(
     })
 }
 
+/// The daily report's own parse, grouped by local hour instead. Each key is a local
+/// `YYYY-MM-DDTHH:00`; the summaries are the same shape the daily report returns.
+pub fn load_hourly_summaries(
+    shared: &SharedArgs,
+    project_filter: Option<&str>,
+) -> Result<Vec<(String, UsageSummary)>> {
+    progress::track_usage_load(progress::UsageLoadAgent("Claude"), shared.json, || {
+        daily::load_hourly_summaries_inner(shared, project_filter)
+    })
+}
+
 fn load_entries_inner(
     shared: &SharedArgs,
     project_filter: Option<&str>,

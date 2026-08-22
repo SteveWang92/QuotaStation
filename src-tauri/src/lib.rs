@@ -22,8 +22,8 @@ use std::{
 };
 
 use domain::{
-    DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot, UsageRangeSnapshot,
-    WatcherDiagnostics, WorkspaceSnapshot,
+    DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot, UsageHoursSnapshot,
+    UsageRangeSnapshot, WatcherDiagnostics, WorkspaceSnapshot,
 };
 use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
@@ -153,6 +153,21 @@ async fn get_usage_range(
     state
         .storage
         .load_usage_range(provider, &start_date, &end_date)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// The same range hour by hour, for the short ranges the dashboard draws that way.
+#[tauri::command]
+async fn get_usage_hours(
+    provider: Option<ProviderKind>,
+    start_date: String,
+    end_date: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<UsageHoursSnapshot, String> {
+    state
+        .storage
+        .load_usage_hours(provider, &start_date, &end_date)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1034,6 +1049,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             get_usage_range,
+            get_usage_hours,
             get_quota_history,
             refresh_now,
             get_diagnostics,
