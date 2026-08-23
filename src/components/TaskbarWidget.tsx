@@ -38,7 +38,7 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
                   <i aria-hidden="true">
                     <b
                       style={{
-                        width: `${Math.min(100, Math.max(0, limit.usedPercent))}%`,
+                        width: `${limit.usedPercent}%`,
                         background: quotaColor(limit),
                       }}
                     />

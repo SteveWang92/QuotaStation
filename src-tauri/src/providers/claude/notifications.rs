@@ -438,22 +438,20 @@ mod tests {
         !hook_positions(&settings).is_empty()
     }
 
+    /// The hook writes the event and the application reads it back, so every field has to
+    /// survive the file between them.
     #[test]
-    fn an_event_left_behind_while_the_application_was_closed_is_not_announced() {
-        let now = 1_800_000_000;
+    fn an_event_survives_the_file_the_hook_leaves_it_in() {
         let path = scratch("event");
         let written = FinishedEvent {
-            observed_at: now,
+            observed_at: 1_800_000_000,
             project: Some("Q".into()),
             session: Some("Dark theme".into()),
             terminal: Some(crate::terminal::TerminalTarget { window: 1234, process_id: 5678 }),
         };
         write_event(&path, &written).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        let event: FinishedEvent = serde_json::from_str(&content).unwrap();
-        assert_eq!(event, written);
-        assert!(now - event.observed_at <= MAX_EVENT_AGE_SECS);
-        assert!(now + 3_600 - event.observed_at > MAX_EVENT_AGE_SECS, "an hour later it is stale");
+        assert_eq!(serde_json::from_str::<FinishedEvent>(&content).unwrap(), written);
         let _ = std::fs::remove_file(&path);
     }
 

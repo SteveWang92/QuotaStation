@@ -18,12 +18,16 @@ const TOKEN_FIELDS: Array<keyof TokenUsage> = [
   "total",
 ];
 
-/** Whether hourly rows are a complete representation of the same stored range. */
+/**
+ * Whether hourly rows are a complete representation of the same stored range. Both answers
+ * are read for one resolved range, so completeness is the only question: hourly rows start
+ * existing only after a provider's first refresh on this build, and a range no provider
+ * covers in full has to stay on the daily axis.
+ */
 export function hourlyUsageMatchesRange(
   hours: UsageHoursSnapshot,
   range: UsageRangeSnapshot,
 ): boolean {
-  if (hours.startDate !== range.startDate || hours.endDate !== range.endDate) return false;
   return TOKEN_FIELDS.every(
     (field) => hours.hours.reduce((sum, hour) => sum + hour.usage[field], 0) === range.usage[field],
   );

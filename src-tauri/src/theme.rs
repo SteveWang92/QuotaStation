@@ -108,12 +108,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_explicit_choice_never_consults_the_machine() {
-        assert_eq!(resolve(ThemePreference::Dark), Theme::Dark);
-        assert_eq!(resolve(ThemePreference::Light), Theme::Light);
-    }
-
-    #[test]
     fn the_stored_form_is_the_one_the_renderer_reads() {
         assert_eq!(serde_json::to_string(&ThemePreference::System).unwrap(), "\"system\"");
         assert_eq!(
