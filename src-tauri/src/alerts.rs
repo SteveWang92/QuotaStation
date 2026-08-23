@@ -463,6 +463,7 @@ mod tests {
             previous_resets_at: anchored_at,
             used_percent_before: 94.0,
             early_by_seconds: 0,
+            tokens_in_window: None,
             classification: ResetClassification::Scheduled,
         };
         // A restart is recognised from the collapse in the share itself, so the reading at
@@ -538,6 +539,7 @@ mod tests {
             previous_resets_at: 1_800_000_000,
             used_percent_before: 91.0,
             early_by_seconds: 0,
+            tokens_in_window: None,
             classification: ResetClassification::Scheduled,
         };
         let mut restarted = provider(vec![window(LimitKind::Secondary, 20.0, 1_800_604_800)]);
@@ -571,6 +573,7 @@ mod tests {
             previous_resets_at: anchored_at,
             used_percent_before: 88.0,
             early_by_seconds: 0,
+            tokens_in_window: None,
             classification: ResetClassification::Scheduled,
         };
         let mut announced = Announced::default();

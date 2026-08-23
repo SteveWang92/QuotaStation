@@ -191,6 +191,23 @@ identify its quota bucket. QuotaStation therefore does not attach that ambiguous
 to the five-hour window. Claude has no equivalent reset backfill, and its restart history
 begins when monitoring is enabled.
 
+Each recorded restart also carries the tokens the window it closed spent. That window runs
+from the restart before it to the earlier of its published expiry and this restart: a window
+rebuilt early stops when the restart anchored the next one, while one that expired unused
+stops at its expiry and is followed by however long it took for the next request to anchor
+the next window — an idle gap that belongs to neither. The span is held to the window's own
+length as well, so a restart nothing recorded between cannot credit one window with days of
+work; a window that restarted early is shorter than its length rather than longer, so that
+limit never applies to one of those. An hour is credited to whichever window was running
+when it opened, so no hour is counted twice; the figure is therefore approximate at the two
+boundaries and exact between them, which is why the interface writes it with a tilde.
+
+Hourly rows are kept for 14 days and reset events indefinitely, so the total is stored on
+the event rather than summed on the way out. It is rebuilt on every write for as long as all
+the hours behind it are still stored, and left alone once the oldest of them is pruned: a
+restart from last year keeps the figure it was given at the time, and one older than the
+hourly window has ever covered reports nothing rather than a zero.
+
 ## Runtime ownership
 
 - The Rust core owns the single-instance lifecycle, tray, provider child processes,

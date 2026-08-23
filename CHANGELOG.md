@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Added
+
+- The reset history says how many tokens were spent inside each window that reset.
+
 ## [0.4.0] - 2026-08-23
 
 ### Added

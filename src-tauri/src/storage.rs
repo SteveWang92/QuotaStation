@@ -34,6 +34,27 @@ const BACKFILL_OVERLAP_HOURS: i64 = 48;
 /// list the ones before it, neither of which needs the whole history.
 const RECENT_RESET_LIMIT: i64 = 8;
 
+/// The columns every query over `limit_resets` selects. The token total among them is
+/// stored rather than summed on the way out, so it outlives the hourly rows it was built
+/// from — see [`Storage::refresh_reset_tokens`].
+const RESET_COLUMNS: &str = "window_kind, window_duration_mins, anchored_at, new_resets_at, previous_resets_at, \
+    used_percent_before, tokens_in_window, early_by_seconds, classification";
+
+/// The restart before this one of the same window, which is where the window this one
+/// closed began. `NULL` for the first restart recorded of a window.
+const RESET_PREVIOUS_ANCHOR: &str = "( \
+      SELECT previous.anchored_at FROM limit_resets AS previous \
+      WHERE previous.provider_instance_id = limit_resets.provider_instance_id \
+      AND previous.window_kind = limit_resets.window_kind \
+      AND previous.anchored_at < limit_resets.anchored_at \
+      ORDER BY previous.anchored_at DESC LIMIT 1)";
+
+/// When the window a restart closed stopped counting. A window that expired unused stops
+/// at its published expiry and the next one is anchored at the next request, which can be
+/// hours of idleness later; a window rebuilt early stops when the restart anchored the new
+/// one. Reading the earlier of the two keeps that idle gap out of the closed window.
+const RESET_WINDOW_END: &str = "MIN(limit_resets.previous_resets_at, limit_resets.anchored_at)";
+
 fn kind_column(kind: LimitKind) -> &'static str {
     match kind {
         LimitKind::Primary => "primary",
@@ -41,8 +62,8 @@ fn kind_column(kind: LimitKind) -> &'static str {
     }
 }
 
-/// One recorded restart, from a row carrying the eight columns `limit_resets` stores. The
-/// recent list and the range query select the same columns, so they read them the same way.
+/// One recorded restart, from a row carrying [`RESET_COLUMNS`]. The recent list and the
+/// range query select the same columns, so they read them the same way.
 fn reset_event(row: sqlx::sqlite::SqliteRow) -> Option<LimitResetEvent> {
     let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
     let window_duration_mins: i64 = row.try_get("window_duration_mins").ok()?;
@@ -58,6 +79,11 @@ fn reset_event(row: sqlx::sqlite::SqliteRow) -> Option<LimitResetEvent> {
         new_resets_at: row.try_get("new_resets_at").ok()?,
         previous_resets_at: row.try_get("previous_resets_at").ok()?,
         used_percent_before: row.try_get("used_percent_before").ok()?,
+        tokens_in_window: row
+            .try_get::<Option<i64>, _>("tokens_in_window")
+            .ok()
+            .flatten()
+            .and_then(|tokens| u64::try_from(tokens).ok()),
         early_by_seconds: row.try_get("early_by_seconds").ok()?,
         classification,
     })
@@ -216,6 +242,7 @@ impl Storage {
             )
             .execute(&mut *tx).await?;
         }
+        Self::refresh_reset_tokens(&mut tx, provider_id).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -305,6 +332,50 @@ impl Storage {
         Ok(())
     }
 
+    /// Fills in the tokens each recorded restart carried, for the events whose hourly rows
+    /// are all still stored.
+    ///
+    /// The window a restart closed runs from [`RESET_PREVIOUS_ANCHOR`] — or, for the first
+    /// restart recorded of a window, the start its published expiry implies — to
+    /// [`RESET_WINDOW_END`], and is held to its own length so that a restart nothing
+    /// recorded between cannot credit one window with days of work. Hourly buckets are the
+    /// finest resolution kept, so a bucket is credited to whichever window was running when
+    /// it opened and the hour a restart falls in belongs to the window that starts there:
+    /// no bucket is counted twice, and the total is approximate at the two boundaries only.
+    ///
+    /// The events outlive those rows, so a total is rebuilt on every write for as long as
+    /// the hours behind it are complete and left alone once the oldest of them has been
+    /// pruned — which is what keeps a restart from a year ago reporting the figure it was
+    /// given at the time.
+    async fn refresh_reset_tokens(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        provider_id: i64,
+    ) -> Result<()> {
+        let window_start = format!(
+            "MAX(COALESCE({RESET_PREVIOUS_ANCHOR}, limit_resets.previous_resets_at - \
+             limit_resets.window_duration_mins * 60), {RESET_WINDOW_END} - \
+             limit_resets.window_duration_mins * 60)"
+        );
+        sqlx::query(&format!(
+            "UPDATE limit_resets SET tokens_in_window = ( \
+             SELECT SUM(total_tokens) FROM hourly_usage \
+             WHERE hourly_usage.provider_instance_id = limit_resets.provider_instance_id \
+             AND hour_start >= strftime('%Y-%m-%dT%H:00', {window_start}, 'unixepoch', \
+               'localtime') \
+             AND hour_start <= strftime('%Y-%m-%dT%H:00', limit_resets.previous_resets_at, \
+               'unixepoch', 'localtime') \
+             AND hour_start < strftime('%Y-%m-%dT%H:00', limit_resets.anchored_at, 'unixepoch', \
+               'localtime')) \
+             WHERE provider_instance_id = ? \
+             AND date({window_start}, 'unixepoch', 'localtime') \
+             >= date('now', 'localtime', '-{HOURLY_HISTORY_DAYS} days')"
+        ))
+        .bind(provider_id)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
     /// The instant a rollout scan may start from, leaving enough overlap for a window
     /// that reset either side of the previous scan to still be paired with a reading.
     pub async fn reset_backfill_start(&self, provider: ProviderKind) -> Result<Option<i64>> {
@@ -346,6 +417,7 @@ impl Storage {
         for event in &events {
             Self::insert_reset(&mut tx, provider_id, event, "backfill", scanned_at).await?;
         }
+        Self::refresh_reset_tokens(&mut tx, provider_id).await?;
         sqlx::query(
             "INSERT INTO retention_state (job_name, last_completed_at, last_status, last_error) \
              VALUES (?, ?, 'succeeded', NULL) ON CONFLICT(job_name) DO UPDATE SET \
@@ -386,11 +458,10 @@ impl Storage {
 
     pub async fn load_recent_resets(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
         let provider_id = self.provider_id(provider).await?;
-        let rows = sqlx::query(
-            "SELECT window_kind, window_duration_mins, anchored_at, new_resets_at, previous_resets_at, \
-             used_percent_before, early_by_seconds, classification FROM limit_resets \
-             WHERE provider_instance_id = ? ORDER BY anchored_at DESC LIMIT ?",
-        )
+        let rows = sqlx::query(&format!(
+            "SELECT {RESET_COLUMNS} FROM limit_resets \
+             WHERE provider_instance_id = ? ORDER BY anchored_at DESC LIMIT ?"
+        ))
         .bind(provider_id)
         .bind(RECENT_RESET_LIMIT)
         .fetch_all(&self.pool)
@@ -460,6 +531,9 @@ impl Storage {
                     .await?;
             }
         }
+        // The hours a recorded restart's window spans have just been rewritten, so the
+        // totals built from them are rebuilt here rather than left a parse behind.
+        Self::refresh_reset_tokens(&mut tx, provider_id).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -956,13 +1030,11 @@ impl Storage {
             });
         }
 
-        let reset_rows = sqlx::query(
-            "SELECT window_kind, window_duration_mins, anchored_at, new_resets_at, \
-             previous_resets_at, used_percent_before, early_by_seconds, classification \
-             FROM limit_resets WHERE provider_instance_id = ? \
+        let reset_rows = sqlx::query(&format!(
+            "SELECT {RESET_COLUMNS} FROM limit_resets WHERE provider_instance_id = ? \
              AND date(anchored_at, 'unixepoch', 'localtime') BETWEEN ? AND ? \
-             ORDER BY anchored_at ASC",
-        )
+             ORDER BY anchored_at ASC"
+        ))
         .bind(provider_id)
         .bind(&start)
         .bind(&end)
@@ -1009,7 +1081,7 @@ impl Storage {
         let history_success: Option<String> = instance.try_get("last_history_success_at")?;
         let rows = sqlx::query(
             "SELECT acquisition_path, started_at, status, error_message FROM refresh_runs \
-             WHERE provider_instance_id = ? AND id IN (\
+             WHERE provider_instance_id = ? AND id IN ( \
                SELECT MAX(id) FROM refresh_runs WHERE provider_instance_id = ? GROUP BY acquisition_path\
              )",
         )
@@ -1771,6 +1843,157 @@ mod tests {
         let events = storage.load_recent_resets(claude).await.expect("load Claude resets");
         assert_eq!(events.len(), 1, "the restart is recorded");
         assert_eq!(events[0].used_percent_before, 78.0);
+    }
+
+    /// A local hour yesterday, as both the key its usage is stored under and the instant a
+    /// restart anchored there falls at. The day moves with the clock because a window's total
+    /// is only rebuilt while the hours behind it are still kept.
+    fn yesterday_at(hour: i8) -> (String, i64) {
+        let date = jiff::Zoned::now().date().yesterday().expect("a previous day");
+        let epoch = date
+            .at(hour, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::system())
+            .expect("a resolvable local hour")
+            .timestamp()
+            .as_second();
+        (format!("{date}T{hour:02}:00"), epoch)
+    }
+
+    /// Two restarts of a five-hour window and the hours of usage around them. The expiry is
+    /// the one the closed window was still publishing when the second restart was read, which
+    /// is what says whether that window ran to its end or expired unused some time before it.
+    async fn two_restarts(
+        storage: &Storage,
+        first: i64,
+        second: i64,
+        published_expiry: i64,
+        hours: Vec<HistoryHour>,
+    ) {
+        let window = |observed_at, used_percent, resets_at| WindowObservation {
+            observed_at,
+            kind: LimitKind::Primary,
+            used_percent,
+            window_duration_mins: 300,
+            resets_at,
+        };
+        storage
+            .backfill_resets(
+                CODEX,
+                &[
+                    window(first - 600, 40.0, first + 1_200),
+                    window(first + 600, 0.0, first + 18_000),
+                    window(second - 600, 55.0, published_expiry),
+                    window(second + 600, 2.0, second + 18_000),
+                ],
+                "2026-08-20T12:00:00Z",
+            )
+            .await
+            .expect("record the two restarts");
+        let date = jiff::Zoned::now().date().yesterday().expect("a previous day").to_string();
+        storage
+            .save_history(
+                CODEX,
+                &HistorySnapshot { days: vec![day(&date, "gpt-5-codex", 2_200)], hours },
+                "Australia/Sydney",
+                "2026-08-20T12:00:00Z",
+            )
+            .await
+            .expect("save history");
+    }
+
+    /// The reset list says how much was spent inside the window each restart closed, and the
+    /// hours are credited to the window that was running when they opened: the hour before
+    /// the window began belongs to the window before it, and the hour the restart fell in
+    /// belongs to the window that started there.
+    #[tokio::test]
+    async fn a_restart_reports_the_tokens_the_window_it_closed_carried() {
+        let (storage, _database) = open_storage().await;
+        let (before, _) = yesterday_at(5);
+        let (opening, first) = yesterday_at(6);
+        let (middle, _) = yesterday_at(9);
+        let (closing, second) = yesterday_at(11);
+        two_restarts(
+            &storage,
+            first,
+            second,
+            second,
+            vec![
+                hour(&before, "gpt-5-codex", 1_000),
+                hour(&opening, "gpt-5-codex", 200),
+                hour(&middle, "gpt-5-codex", 300),
+                hour(&closing, "gpt-5-codex", 700),
+            ],
+        )
+        .await;
+
+        let events = storage.load_recent_resets(CODEX).await.expect("load resets");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].anchored_at, second, "the newest restart is listed first");
+        assert_eq!(events[0].tokens_in_window, Some(500));
+    }
+
+    /// A restart that went unrecorded leaves a gap far longer than the window it closed, and
+    /// crediting the whole gap to it would report work three windows ago as this one's.
+    #[tokio::test]
+    async fn a_window_is_credited_with_no_more_than_its_own_length() {
+        let (storage, _database) = open_storage().await;
+        let (_, midnight) = yesterday_at(0);
+        let (long_before, _) = yesterday_at(3);
+        let (opening, _) = yesterday_at(6);
+        let (middle, _) = yesterday_at(9);
+        let (_, second) = yesterday_at(11);
+        two_restarts(
+            &storage,
+            midnight,
+            second,
+            second,
+            vec![
+                hour(&long_before, "gpt-5-codex", 1_000),
+                hour(&opening, "gpt-5-codex", 200),
+                hour(&middle, "gpt-5-codex", 300),
+            ],
+        )
+        .await;
+
+        let events = storage.load_recent_resets(CODEX).await.expect("load resets");
+        assert_eq!(events[0].anchored_at, second);
+        assert_eq!(
+            events[0].tokens_in_window,
+            Some(500),
+            "the eleven-hour gap is read as the five-hour window it can have been",
+        );
+    }
+
+    /// A window that expired unused is followed by however long it took for the next request
+    /// to anchor the next one. That idle gap belongs to neither window, and reading the
+    /// closed one as far as the restart would have credited it with the whole of it.
+    #[tokio::test]
+    async fn a_window_that_expired_before_the_next_one_began_stops_at_its_expiry() {
+        let (storage, _database) = open_storage().await;
+        let (opening, first) = yesterday_at(2);
+        let (middle, _) = yesterday_at(6);
+        let (after_expiry, _) = yesterday_at(10);
+        let (_, second) = yesterday_at(13);
+        two_restarts(
+            &storage,
+            first,
+            second,
+            first + 18_000,
+            vec![
+                hour(&opening, "gpt-5-codex", 400),
+                hour(&middle, "gpt-5-codex", 600),
+                hour(&after_expiry, "gpt-5-codex", 999),
+            ],
+        )
+        .await;
+
+        let events = storage.load_recent_resets(CODEX).await.expect("load resets");
+        assert_eq!(events[0].anchored_at, second);
+        assert_eq!(
+            events[0].tokens_in_window,
+            Some(1_000),
+            "an hour after the window stopped counting is not part of what it carried",
+        );
     }
 
     #[tokio::test]

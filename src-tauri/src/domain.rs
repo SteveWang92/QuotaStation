@@ -198,6 +198,11 @@ pub struct LimitResetEvent {
     pub new_resets_at: i64,
     pub previous_resets_at: i64,
     pub used_percent_before: f64,
+    /// Tokens recorded against the window this restart closed, or `None` when no hourly
+    /// row ever covered it. Stored on the event rather than summed on the way out, because
+    /// the hourly rows behind it are pruned long before the event is — see
+    /// `Storage::refresh_reset_tokens` for how it is built and when it stops moving.
+    pub tokens_in_window: Option<u64>,
     pub early_by_seconds: i64,
     pub classification: ResetClassification,
 }

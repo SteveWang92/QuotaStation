@@ -261,7 +261,7 @@ button { font: inherit; }
    only way the verdict can be sized to its own longest phrase and still begin on the same
    vertical line in every row. The rows carry their own border, so they stay grid items and
    borrow the columns through `subgrid` instead of dissolving into the list. */
-.reset-history ul { display: grid; grid-template-columns: minmax(0, 128px) minmax(0, 1fr) 72px max-content; column-gap: 12px; margin: 0; padding: 0 28px 14px; list-style: none; }
+.reset-history ul { display: grid; grid-template-columns: minmax(0, 128px) minmax(0, 1fr) 72px 62px max-content; column-gap: 12px; margin: 0; padding: 0 28px 14px; list-style: none; }
 .reset-history li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line-soft); }
 .reset-history li time { color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .reset-history li span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

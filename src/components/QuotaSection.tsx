@@ -1,4 +1,9 @@
-import { formatCountdown, formatEarlyBy, formatResetTimestamp } from "../format";
+import {
+  formatCompactNumber,
+  formatCountdown,
+  formatEarlyBy,
+  formatResetTimestamp,
+} from "../format";
 import { quotaColor } from "../theme";
 import type { LimitResetEvent, LimitWindow } from "../types";
 
@@ -100,6 +105,19 @@ function ResetHistory({ resets }: { resets: LimitResetEvent[] }) {
             </time>
             <span>{event.windowLabel}</span>
             <strong>{event.usedPercentBefore.toFixed(0)}% used</strong>
+            {/* Usage is stored by the hour, so a window's total is exact in the middle and
+                approximate at its two ends; the tilde is what says so at a glance. */}
+            <strong
+              title={
+                event.tokensInWindow === null
+                  ? "No hourly usage was recorded for this window"
+                  : "Summed from the hours that began inside this window"
+              }
+            >
+              {event.tokensInWindow === null
+                ? "—"
+                : `~${formatCompactNumber(event.tokensInWindow)}`}
+            </strong>
             <em>
               {event.classification === "unplanned"
                 ? `possibly ${formatEarlyBy(event.earlyBySeconds)}`

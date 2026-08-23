@@ -49,6 +49,12 @@ export interface LimitResetEvent {
   newResetsAt: number;
   previousResetsAt: number;
   usedPercentBefore: number;
+  /**
+   * Tokens recorded against the window this restart closed, or `null` when no hourly usage
+   * ever covered it. Hourly buckets are the finest resolution behind it, so the total is
+   * approximate at the two boundaries and the surfaces say so.
+   */
+  tokensInWindow: number | null;
   earlyBySeconds: number;
   classification: "scheduled" | "unplanned";
 }

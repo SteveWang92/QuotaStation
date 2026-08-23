@@ -77,6 +77,9 @@ pub fn detect(previous: WindowObservation, current: WindowObservation) -> Option
         new_resets_at: current.resets_at,
         previous_resets_at: previous.resets_at,
         used_percent_before: previous.used_percent,
+        // Detection compares two quota readings and knows nothing of the usage rows; the
+        // total is attached when the stored event is read back.
+        tokens_in_window: None,
         early_by_seconds,
         classification: if early_by_seconds > UNPLANNED_THRESHOLD_SECONDS {
             ResetClassification::Unplanned
