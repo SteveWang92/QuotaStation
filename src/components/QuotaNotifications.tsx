@@ -10,7 +10,7 @@ import type { AppSettings } from "../types";
  * three on is a handful of notifications a day rather than one per refresh.
  */
 export function QuotaNotifications() {
-  const { settings, error: settingsError } = useAppSettings();
+  const settings = useAppSettings();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,9 +34,7 @@ export function QuotaNotifications() {
           Desktop notifications for what changes while QuotaStation is running with no window open.
           Each is raised once and stays quiet until the condition clears.
         </p>
-        {error || settingsError ? (
-          <p className="provider-consent-error">{error ?? settingsError}</p>
-        ) : null}
+        {error ? <p className="provider-consent-error">{error}</p> : null}
         <div className="consent-options">
           <label>
             <input

@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { errorMessage } from "./errors";
 import type { AppSettings } from "./types";
 
 /**
@@ -11,55 +10,35 @@ import type { AppSettings } from "./types";
  * would quietly undo whatever another card changed since. They share this instead.
  */
 let current: AppSettings | null = null;
-let loadError: string | null = null;
 let loading: Promise<unknown> | null = null;
 let saveQueue: Promise<void> = Promise.resolve();
-interface AppSettingsState {
-  settings: AppSettings | null;
-  error: string | null;
-}
-
-const listeners = new Set<(state: AppSettingsState) => void>();
-
-function snapshot(): AppSettingsState {
-  return { settings: current, error: loadError };
-}
-
-function notify() {
-  const state = snapshot();
-  for (const listener of listeners) listener(state);
-}
+const listeners = new Set<(settings: AppSettings | null) => void>();
 
 function publish(next: AppSettings) {
   current = next;
-  loadError = null;
-  notify();
+  for (const listener of listeners) listener(next);
 }
 
-/** The settings as last read or written, plus any failure from the initial read. */
-export function useAppSettings(): AppSettingsState {
-  const [state, setState] = useState(snapshot);
+/** The settings as last read or written, or `null` until the first read lands. */
+export function useAppSettings(): AppSettings | null {
+  const [settings, setSettings] = useState(current);
 
   useEffect(() => {
-    listeners.add(setState);
-    setState(snapshot());
+    listeners.add(setSettings);
+    setSettings(current);
     if (current === null && loading === null) {
       loading = invoke<AppSettings>("get_app_settings")
         .then(publish)
-        .catch((cause) => {
-          loadError = errorMessage(cause);
-          notify();
-        })
         .finally(() => {
           loading = null;
         });
     }
     return () => {
-      listeners.delete(setState);
+      listeners.delete(setSettings);
     };
   }, []);
 
-  return state;
+  return settings;
 }
 
 /** Records a change to some of the settings and hands every card the saved result. */

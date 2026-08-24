@@ -13,7 +13,7 @@ import type { TaskbarDisplay, ThemePreference } from "../types";
  * reason went to the log. They belong beside the other preferences.
  */
 export function GeneralSettings() {
-  const { settings, error: settingsError } = useAppSettings();
+  const settings = useAppSettings();
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [shortcutCreated, setShortcutCreated] = useState(false);
@@ -21,12 +21,8 @@ export function GeneralSettings() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void invoke<boolean>("get_autostart")
-      .then(setAutostart)
-      .catch((cause) => setError(errorMessage(cause)));
-    void invoke<TaskbarDisplay[]>("get_taskbar_displays")
-      .then(setDisplays)
-      .catch((cause) => setError(errorMessage(cause)));
+    void invoke<boolean>("get_autostart").then(setAutostart);
+    void invoke<TaskbarDisplay[]>("get_taskbar_displays").then(setDisplays);
   }, []);
 
   const changeAutostart = useCallback(async (enabled: boolean) => {
@@ -98,9 +94,7 @@ export function GeneralSettings() {
           Where QuotaStation shows up on this machine. Nothing here reads a provider or leaves the
           local system.
         </p>
-        {error || settingsError ? (
-          <p className="provider-consent-error">{error ?? settingsError}</p>
-        ) : null}
+        {error ? <p className="provider-consent-error">{error}</p> : null}
         <div className="consent-options">
           <label>
             Theme

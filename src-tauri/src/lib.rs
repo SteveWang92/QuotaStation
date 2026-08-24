@@ -930,10 +930,8 @@ fn write_desktop_shortcut(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// Whether Windows starts QuotaStation on sign-in. The plugin owns the registration, so
 /// this reports what it holds rather than a copy kept in the settings file.
 #[tauri::command]
-fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
-    app.autolaunch().is_enabled().map_err(|error| {
-        sanitize::sanitize_error(&error.to_string(), "Start-with-Windows read failed")
-    })
+fn get_autostart(app: tauri::AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
 }
 
 #[tauri::command]
@@ -943,9 +941,7 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     result.map_err(|error| {
         sanitize::sanitize_error(&error.to_string(), "Start-with-Windows update failed")
     })?;
-    manager.is_enabled().map_err(|error| {
-        sanitize::sanitize_error(&error.to_string(), "Start-with-Windows read failed")
-    })
+    Ok(manager.is_enabled().unwrap_or(enabled))
 }
 
 /// Puts a shortcut on the desktop. The location is the user's own desktop, so the path is
@@ -1036,7 +1032,8 @@ pub fn run() {
                 if !provider.is_installed() {
                     continue;
                 }
-                let snapshot = tauri::async_runtime::block_on(storage.load_snapshot(provider))?;
+                let snapshot = tauri::async_runtime::block_on(storage.load_snapshot(provider))
+                    .unwrap_or_else(|_| ProviderSnapshot::new(provider));
                 snapshots.insert(provider, snapshot);
             }
             let state = Arc::new(AppState {
