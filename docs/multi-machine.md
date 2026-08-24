@@ -33,8 +33,9 @@ On every machine:
 
 1. Open **Settings** and find **Shared usage folder**.
 2. Enter a display name for that machine.
-3. Enter the same synced folder path on that machine. The paths do not need to be textually
-   identical; they only need to refer to the corresponding Syncthing folder.
+3. Choose the synced folder with the Windows folder picker. It opens at the user's Documents
+   folder when no folder has been chosen yet. The paths on the two machines do not need to be
+   textually identical; they only need to refer to the corresponding Syncthing folder.
 4. Refresh QuotaStation after the folder exists. Export and import then run automatically
    after history refreshes.
 
@@ -43,8 +44,9 @@ that machine.
 
 ## Set up Syncthing on Windows
 
-The official Windows build is a portable archive: extract it into a folder where it can stay
-and run `syncthing.exe`. This does not require an installer or administrator access.
+Download Syncthing from its [official downloads page](https://syncthing.net/downloads/). The
+base Windows build is a portable archive: extract it into a folder where it can stay and run
+`syncthing.exe`. This does not require an installer or administrator access.
 
 1. Start Syncthing once on both machines and open its local web interface.
 2. On one machine, copy its device ID from **Actions > Show ID**. Add that ID as a remote
@@ -53,6 +55,17 @@ and run `syncthing.exe`. This does not require an installer or administrator acc
    folder on the second machine and choose a local path there.
 4. Wait until Syncthing reports the folder as up to date, then enter each local path in
    QuotaStation's **Shared usage folder** setting.
+
+Syncthing does not store the folder on a central server. The two machines exchange files
+directly, and public discovery and relay services only help them find and reach each other.
+Relay traffic remains end-to-end encrypted. Both machines do not need to stay online all the
+time, but they must be online at the same time at some point for pending changes to transfer;
+an offline machine catches up the next time they overlap.
+
+No server, port forwarding, static IP address, or private relay is normally required. Device
+IDs must be exchanged and the folder accepted on both machines as described above. Global
+discovery, NAT traversal, and relaying are enabled by default; if a managed firewall blocks
+Syncthing, allow the Windows firewall prompt or ask the network administrator to permit it.
 
 Do not put this folder inside an existing OneDrive, Dropbox, Google Drive, or other cloud-sync
 folder. Two sync engines watching the same files create a second synchronization layer and

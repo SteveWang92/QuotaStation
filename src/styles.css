@@ -328,6 +328,12 @@ button { font: inherit; }
 .sharing-fields label { min-width: 0; display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 620; }
 .sharing-fields input { width: 100%; height: 34px; padding: 0 9px; border: 1px solid var(--line-field); border-radius: 4px; color: var(--text); background: var(--field-strong); font: inherit; font-size: 12px; }
 .sharing-fields input:disabled { opacity: 0.55; }
+.folder-picker-field { grid-column: 1 / -1; }
+.folder-picker { display: flex; align-items: center; gap: 8px; }
+.folder-picker input { min-width: 0; flex: 1; }
+.folder-picker button { height: 34px; flex: none; padding: 0 11px; border: 1px solid var(--line-field); border-radius: 4px; color: var(--text-dim); background: var(--field); cursor: pointer; font-size: 11px; font-weight: 620; }
+.folder-picker button:hover { border-color: var(--line-hover); background: var(--hover); }
+.folder-picker button:disabled { opacity: 0.55; cursor: wait; }
 
 .confirm-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 32px; background: var(--overlay-strong); }
 .confirm-dialog { width: min(520px, 100%); padding: 20px 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 24px 60px var(--shadow); }

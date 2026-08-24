@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { documentDir } from "@tauri-apps/api/path";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import { saveAppSettings, useAppSettings } from "../appSettings";
 import { errorMessage } from "../errors";
@@ -85,6 +87,24 @@ export function GeneralSettings() {
       setBusy(false);
     }
   }, []);
+
+  const chooseSharedFolder = useCallback(async () => {
+    setBusy(true);
+    setSharingError(null);
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose shared usage folder",
+        defaultPath: settings?.sharedUsageFolder ?? (await documentDir()),
+      });
+      if (selected !== null) await saveAppSettings({ sharedUsageFolder: selected });
+    } catch (cause) {
+      setSharingError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, [settings?.sharedUsageFolder]);
 
   const createShortcut = useCallback(async () => {
     setBusy(true);
@@ -173,24 +193,33 @@ export function GeneralSettings() {
           </p>
           {sharingError ? <p className="provider-consent-error">{sharingError}</p> : null}
           <div className="sharing-fields">
-            <label>
+            <label className="folder-picker-field">
               Folder path
-              <input
-                type="text"
-                key={settings?.sharedUsageFolder ?? "folder-unset"}
-                defaultValue={settings?.sharedUsageFolder ?? ""}
-                placeholder="C:\\Users\\you\\Sync\\QuotaStation"
-                disabled={busy || settings === null}
-                onBlur={(event) => {
-                  const sharedUsageFolder = event.target.value.trim() || null;
-                  if (sharedUsageFolder !== settings?.sharedUsageFolder) {
-                    void changeSharing({ sharedUsageFolder });
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") event.currentTarget.blur();
-                }}
-              />
+              <span className="folder-picker">
+                <input
+                  type="text"
+                  value={settings?.sharedUsageFolder ?? ""}
+                  placeholder="Not enabled"
+                  readOnly
+                  disabled={settings === null}
+                />
+                <button
+                  type="button"
+                  disabled={busy || settings === null}
+                  onClick={() => void chooseSharedFolder()}
+                >
+                  Choose folder
+                </button>
+                {settings?.sharedUsageFolder ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void changeSharing({ sharedUsageFolder: null })}
+                  >
+                    Disable
+                  </button>
+                ) : null}
+              </span>
             </label>
             <label>
               This machine's display name
