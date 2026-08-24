@@ -33,16 +33,52 @@ On every machine:
 
 1. Open **Settings** and find **Shared usage folder**.
 2. Enter a display name for that machine.
-3. Choose the synced folder with the Windows folder picker. It opens at the user's Documents
-   folder when no folder has been chosen yet. The paths on the two machines do not need to be
-   textually identical; they only need to refer to the corresponding Syncthing folder.
+3. Choose the corresponding local folder managed by the selected sync tool. The picker opens
+   at the user's Documents folder when no folder has been chosen yet. The paths on the two
+   machines do not need to be textually identical.
 4. Refresh QuotaStation after the folder exists. Export and import then run automatically
    after history refreshes.
 
 Leaving the folder path blank disables sharing without changing the usage already stored on
 that machine.
 
-## Set up Syncthing on Windows
+## Choose a sync method
+
+Use exactly one sync tool for the shared folder:
+
+- **Proton Drive** is the recommended choice when the machines are rarely or never online
+  together. Each machine can upload to Proton's cloud storage and shut down before the other
+  downloads the change.
+- **Syncthing** is the cloud-free choice when the machines regularly overlap online. It
+  transfers directly between them, so they must be online at the same time at some point.
+
+Both use accounts or device identities that are independent of the Windows sign-in account.
+
+## Option A — Proton Drive
+
+Proton Drive Free includes 5 GB and supports a Windows desktop application. QuotaStation's
+aggregate files use only a tiny fraction of that allowance. Proton Drive encrypts file
+contents and names end to end.
+
+1. Download the app from the
+   [official Proton Drive page](https://proton.me/drive/download) and install it on both
+   machines.
+2. Sign in to the same Proton Account on both machines. This account is separate from the
+   Windows sign-in account.
+3. In File Explorer, create a `QuotaStation` folder under
+   `Proton Drive\My files`. Wait for it to appear on the other machine.
+4. On both machines, right-click that folder and select **Always keep on this device**. This
+   prevents an online-only placeholder from hiding an aggregate file from QuotaStation.
+5. Select that local `QuotaStation` folder in QuotaStation's **Shared usage folder**
+   setting on both machines.
+6. Leave Proton Drive's start-with-Windows setting enabled so each machine uploads or
+   downloads pending files whenever it next starts.
+
+The machines do not need to overlap online. One can upload and shut down; Proton stores the
+encrypted copy until the other machine next connects. Proton distributes a Windows installer,
+so a managed computer whose policy blocks software installation may still require IT approval.
+
+## Option B — Syncthing
 
 Download Syncthing from its [official downloads page](https://syncthing.net/downloads/). The
 base Windows build is a portable archive: extract it into a folder where it can stay and run
@@ -67,10 +103,6 @@ IDs must be exchanged and the folder accepted on both machines as described abov
 discovery, NAT traversal, and relaying are enabled by default; if a managed firewall blocks
 Syncthing, allow the Windows firewall prompt or ask the network administrator to permit it.
 
-Do not put this folder inside an existing OneDrive, Dropbox, Google Drive, or other cloud-sync
-folder. Two sync engines watching the same files create a second synchronization layer and
-can race or duplicate conflict handling.
-
 For automatic startup without administrator access, create a shortcut in:
 
 ```text
@@ -87,3 +119,13 @@ C:\path\to\syncthing.exe --no-console --no-browser
 This starts Syncthing at user logon without opening a console or browser. The procedure and
 the alternative `shell:startup` path are maintained in the
 [official Syncthing autostart documentation](https://docs.syncthing.net/users/autostart.html#run-at-user-log-on-using-the-startup-folder).
+
+## Do not layer sync tools
+
+Do not let two sync clients manage the same shared folder. In particular:
+
+- do not add the Proton Drive folder to Syncthing; and
+- do not put the Syncthing folder inside Proton Drive, OneDrive, Dropbox, Google Drive, or
+  another cloud-sync folder.
+
+Two sync engines watching the same files can race and create conflicting copies.
