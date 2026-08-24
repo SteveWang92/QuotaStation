@@ -41,12 +41,15 @@ const EMPTY_USAGE_RANGE: UsageRangeSnapshot = {
   apiEquivalentCostUsd: null,
   models: [],
   days: [],
+  devices: [],
 };
 
 const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
   watcher: { status: "starting", watchedLocationCount: 0, lastEventAt: null, error: null },
   acquisitions: [],
   retention: { status: "pending", lastCompletedAt: null, error: null },
+  sharedFolder: { status: "off", lastCompletedAt: null, error: null },
+  devices: [],
   parserRevision: "",
   pricingCatalogRevision: "",
   appVersion: "",
@@ -76,7 +79,7 @@ watchTheme(IS_TASKBAR_WIDGET);
  */
 function readErrors(provider: ProviderSnapshot): string[] {
   return [
-    provider.liveError === null ? null : `Quota: ${provider.liveError}`,
+    provider.remoteUsageOnly || provider.liveError === null ? null : `Quota: ${provider.liveError}`,
     provider.historyError === null ? null : `History: ${provider.historyError}`,
   ].filter((message): message is string => message !== null);
 }
@@ -106,10 +109,12 @@ function Dashboard() {
   const [selectedProvider, setSelectedProvider] = useState<HistoryProvider>("all");
   const providerRef = useRef<HistoryProvider>("all");
   const rangeRequestId = useRef(0);
+  const [selectedDevice, setSelectedDevice] = useState<string | null>(null);
+  const deviceRef = useRef<string | null>(null);
   const rangeRequested = useRef(false);
 
   const loadUsageRange = useCallback(
-    async (range: DateRangeSelection, rangeProvider: HistoryProvider) => {
+    async (range: DateRangeSelection, rangeProvider: HistoryProvider, device: string | null) => {
       const resolvedRange = resolveDateRange(range);
       activeRangeRef.current = resolvedRange;
       const requestId = ++rangeRequestId.current;
@@ -122,11 +127,13 @@ function Dashboard() {
         const [next, previous, quota, hourly] = await Promise.all([
           invoke<UsageRangeSnapshot>("get_usage_range", {
             provider,
+            device,
             startDate: resolvedRange.startDate,
             endDate: resolvedRange.endDate,
           }),
           invoke<UsageRangeSnapshot>("get_usage_range", {
             provider,
+            device,
             startDate: earlier.startDate,
             endDate: earlier.endDate,
           }),
@@ -145,6 +152,7 @@ function Dashboard() {
           isHourlyRange(resolvedRange.startDate, resolvedRange.endDate)
             ? invoke<UsageHoursSnapshot>("get_usage_hours", {
                 provider,
+                device,
                 startDate: resolvedRange.startDate,
                 endDate: resolvedRange.endDate,
               })
@@ -196,7 +204,7 @@ function Dashboard() {
       // a range.
       if (!rangeRequested.current || providerChanged || hasRolledOver(activeRangeRef.current)) {
         rangeRequested.current = true;
-        void loadUsageRange(activeRangeRef.current, rangeProvider);
+        void loadUsageRange(activeRangeRef.current, rangeProvider, deviceRef.current);
       }
     },
     [loadDiagnostics, loadUsageRange],
@@ -210,8 +218,19 @@ function Dashboard() {
   const selectProvider = useCallback(
     (provider: HistoryProvider) => {
       providerRef.current = provider;
+      deviceRef.current = null;
       setSelectedProvider(provider);
-      void loadUsageRange(activeRangeRef.current, provider);
+      setSelectedDevice(null);
+      void loadUsageRange(activeRangeRef.current, provider, null);
+    },
+    [loadUsageRange],
+  );
+
+  const selectDevice = useCallback(
+    (device: string | null) => {
+      deviceRef.current = device;
+      setSelectedDevice(device);
+      void loadUsageRange(activeRangeRef.current, providerRef.current, device);
     },
     [loadUsageRange],
   );
@@ -220,7 +239,7 @@ function Dashboard() {
     (range: DateRangeSelection) => {
       activeRangeRef.current = range;
       setActiveRange(range);
-      void loadUsageRange(range, providerRef.current);
+      void loadUsageRange(range, providerRef.current, deviceRef.current);
     },
     [loadUsageRange],
   );
@@ -232,7 +251,7 @@ function Dashboard() {
       await invoke("refresh_now");
       setCommandError(null);
       await Promise.all([
-        loadUsageRange(activeRangeRef.current, providerRef.current),
+        loadUsageRange(activeRangeRef.current, providerRef.current, deviceRef.current),
         loadDiagnostics(),
       ]);
     } catch (error) {
@@ -247,7 +266,7 @@ function Dashboard() {
     let stopListening = () => {};
     void listen("history-updated", () => {
       rangeRequested.current = true;
-      void loadUsageRange(activeRangeRef.current, providerRef.current);
+      void loadUsageRange(activeRangeRef.current, providerRef.current, deviceRef.current);
     })
       .then((unlisten) => {
         if (disposed) unlisten();
@@ -262,14 +281,17 @@ function Dashboard() {
     };
   }, [loadUsageRange]);
 
-  const showClaudeSettings = workspace.providers.some((provider) => provider.provider === "claude");
+  const showClaudeSettings = workspace.providers.some(
+    (provider) => provider.provider === "claude" && !provider.remoteUsageOnly,
+  );
   const interfaceError = snapshotError ?? commandError;
   // The panel is behind a control now, so anything wrong inside it has to be visible from
   // outside it; otherwise a failed acquisition path is only found by looking for it.
   const diagnosticsAttention =
     interfaceError !== null ||
     diagnostics.watcher.status !== "active" ||
-    diagnostics.acquisitions.some((acquisition) => acquisition.status === "failed");
+    diagnostics.acquisitions.some((acquisition) => acquisition.status === "failed") ||
+    diagnostics.sharedFolder.status === "failed";
 
   return (
     <main className="app-shell">
@@ -303,12 +325,18 @@ function Dashboard() {
                 {message}
               </p>
             ))}
-            <QuotaSection
-              provider={provider.displayName}
-              limits={provider.limits}
-              earnedResetCount={provider.earnedResetCount}
-              resets={provider.recentResets}
-            />
+            {provider.remoteUsageOnly ? (
+              <p className="provider-quota-note">
+                Usage is synced from another device. Quota can only be read on that device.
+              </p>
+            ) : (
+              <QuotaSection
+                provider={provider.displayName}
+                limits={provider.limits}
+                earnedResetCount={provider.earnedResetCount}
+                resets={provider.recentResets}
+              />
+            )}
           </section>
         ))}
       </div>
@@ -318,6 +346,8 @@ function Dashboard() {
           providers={workspace.providers}
           activeProvider={selectedProvider}
           onSelectProvider={selectProvider}
+          activeDevice={selectedDevice}
+          onSelectDevice={selectDevice}
           range={usageRange}
           hours={usageHours}
           previousRange={previousRange}

@@ -68,6 +68,8 @@ interface UsageSummaryProps {
   providers: ProviderSnapshot[];
   activeProvider: HistoryProvider;
   onSelectProvider: (provider: HistoryProvider) => void;
+  activeDevice: string | null;
+  onSelectDevice: (device: string | null) => void;
   range: UsageRangeSnapshot;
   /** The same range hour by hour, when it is short enough to be read that way. */
   hours: UsageHoursSnapshot | null;
@@ -94,6 +96,8 @@ export function UsageSummary({
   providers,
   activeProvider,
   onSelectProvider,
+  activeDevice,
+  onSelectDevice,
   range,
   hours,
   previousRange,
@@ -237,37 +241,61 @@ export function UsageSummary({
           <span className="section-kicker">Usage history</span>
           <h2>{selection.label}</h2>
         </div>
-        {providers.length > 1 ? (
-          <div className="provider-tabs" role="tablist" aria-label="Usage history provider">
-            {/* Everything counted together comes first, because it is the whole of what
-                this machine spent and each provider below it is a part of that. */}
-            <button
-              type="button"
-              role="tab"
-              aria-selected={combined}
-              className={combined ? "active" : ""}
-              onClick={() => {
-                setOpenDay(null);
-                onSelectProvider("all");
-              }}
-            >
-              All
-            </button>
-            {providers.map((provider) => (
-              <button
-                type="button"
-                key={provider.provider}
-                role="tab"
-                aria-selected={provider.provider === activeProvider}
-                className={provider.provider === activeProvider ? "active" : ""}
-                onClick={() => {
-                  setOpenDay(null);
-                  onSelectProvider(provider.provider);
-                }}
-              >
-                {provider.displayName}
-              </button>
-            ))}
+        {providers.length > 1 || range.devices.length > 1 ? (
+          <div className="history-filters">
+            {providers.length > 1 ? (
+              <div className="provider-tabs" role="tablist" aria-label="Usage history provider">
+                {/* Everything counted together comes first, because it is the whole and
+                    each provider below it is one part of that total. */}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={combined}
+                  className={combined ? "active" : ""}
+                  onClick={() => {
+                    setOpenDay(null);
+                    onSelectProvider("all");
+                  }}
+                >
+                  All
+                </button>
+                {providers.map((provider) => (
+                  <button
+                    type="button"
+                    key={provider.provider}
+                    role="tab"
+                    aria-selected={provider.provider === activeProvider}
+                    className={provider.provider === activeProvider ? "active" : ""}
+                    onClick={() => {
+                      setOpenDay(null);
+                      onSelectProvider(provider.provider);
+                    }}
+                  >
+                    {provider.displayName}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {range.devices.length > 1 ? (
+              <label className="device-filter">
+                <span>Device</span>
+                <select
+                  value={activeDevice ?? ""}
+                  disabled={loading}
+                  onChange={(event) => {
+                    setOpenDay(null);
+                    onSelectDevice(event.target.value === "" ? null : event.target.value);
+                  }}
+                >
+                  <option value="">All devices</option>
+                  {range.devices.map((device) => (
+                    <option key={device.deviceId} value={device.deviceId}>
+                      {device.local ? "This machine" : device.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
           </div>
         ) : null}
         <div className="range-control" role="group" aria-label="Usage date range">
@@ -440,7 +468,7 @@ export function UsageSummary({
           </div>
         ) : null}
 
-        <div className="history-grid">
+        <div className={`history-grid${range.devices.length > 1 ? " multi-device" : ""}`}>
           <article className="history-card breakdown-card">
             <div className="card-heading">
               <div>
@@ -508,6 +536,32 @@ export function UsageSummary({
               )}
             </div>
           </article>
+
+          {range.devices.length > 1 ? (
+            <article className="history-card device-card">
+              <div className="card-heading">
+                <div>
+                  <h3>Devices</h3>
+                  <span>{range.devices.length} devices · by total tokens</span>
+                </div>
+              </div>
+              <div className="device-list">
+                {range.devices.map((device) => (
+                  <div className="device-row" key={device.deviceId}>
+                    <span title={device.displayName}>
+                      {device.displayName}
+                      {device.local ? <small>This machine</small> : null}
+                    </span>
+                    <strong>{formatNumber(device.tokens)}</strong>
+                    <span>{device.percent.toFixed(1)}%</span>
+                    <div className="device-track">
+                      <i style={{ width: `${device.percent}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </article>
+          ) : null}
 
           <article className="history-card token-card">
             <div className="card-heading">

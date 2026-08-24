@@ -29,6 +29,7 @@ describe("hourly range completeness", () => {
       apiEquivalentCostUsd: null,
       models: [],
       days: [],
+      devices: [],
     };
     const partial = {
       startDate: range.startDate,

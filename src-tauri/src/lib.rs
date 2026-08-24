@@ -110,16 +110,42 @@ impl AppState {
         self.detected_providers.lock().map(|providers| providers.clone()).unwrap_or_default()
     }
 
-    /// Which provider clients have left usage records on this machine. A client can be
-    /// installed or signed in at any time, so this is re-checked with every full refresh
-    /// rather than only at startup.
-    fn detect_providers(&self) -> Vec<ProviderKind> {
-        let detected: Vec<ProviderKind> =
-            ProviderKind::ALL.into_iter().filter(|provider| provider.is_installed()).collect();
-        if let Ok(mut providers) = self.detected_providers.lock() {
-            providers.clone_from(&detected);
+    /// Which provider clients have left usage records on this machine. These are the only
+    /// providers the live reader, history parser and filesystem watcher may touch.
+    fn local_providers() -> Vec<ProviderKind> {
+        ProviderKind::ALL.into_iter().filter(|provider| provider.is_installed()).collect()
+    }
+
+    /// Refreshes the display list from local clients plus every provider represented by
+    /// imported usage. Remote snapshots are reloaded after each import so today's compact
+    /// totals move with the history tab instead of waiting for a restart.
+    async fn refresh_enabled_providers(&self) -> anyhow::Result<()> {
+        let local = Self::local_providers();
+        let stored = self.storage.load_usage_providers().await?;
+        let enabled = ProviderKind::ALL
+            .into_iter()
+            .filter(|provider| local.contains(provider) || stored.contains(provider))
+            .collect::<Vec<_>>();
+        let mut remote = Vec::new();
+        for &provider in enabled.iter().filter(|provider| !local.contains(provider)) {
+            let mut snapshot = self.storage.load_snapshot(provider).await?;
+            snapshot.remote_usage_only = true;
+            snapshot.limits.clear();
+            snapshot.earned_reset_count = None;
+            snapshot.recent_resets.clear();
+            snapshot.live_error = None;
+            snapshot.resolve_derived_state();
+            remote.push((provider, snapshot));
         }
-        detected
+        {
+            let mut snapshots = self.snapshots.write().await;
+            snapshots.retain(|provider, _| enabled.contains(provider));
+            snapshots.extend(remote);
+        }
+        if let Ok(mut providers) = self.detected_providers.lock() {
+            providers.clone_from(&enabled);
+        }
+        Ok(())
     }
 
     async fn with_snapshot(
@@ -143,6 +169,7 @@ impl AppState {
     /// The payload every surface consumes. Derived state is resolved here so a snapshot
     /// never reaches the renderer with a status that disagrees with its own errors.
     async fn workspace_snapshot(&self) -> WorkspaceSnapshot {
+        let local = Self::local_providers();
         let snapshots = self.snapshots.read().await;
         let providers = self
             .enabled_providers()
@@ -152,6 +179,13 @@ impl AppState {
                     .get(&provider)
                     .cloned()
                     .unwrap_or_else(|| ProviderSnapshot::new(provider));
+                snapshot.remote_usage_only = !local.contains(&provider);
+                if snapshot.remote_usage_only {
+                    snapshot.limits.clear();
+                    snapshot.earned_reset_count = None;
+                    snapshot.recent_resets.clear();
+                    snapshot.live_error = None;
+                }
                 snapshot.resolve_derived_state();
                 snapshot
             })
@@ -170,13 +204,14 @@ async fn get_usage_range(
     // No provider is the combined history: the dashboard's "All" tab reads every
     // provider in one query rather than adding up separate answers in the renderer.
     provider: Option<ProviderKind>,
+    device: Option<String>,
     start_date: String,
     end_date: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<UsageRangeSnapshot, String> {
     state
         .storage
-        .load_usage_range(provider, &start_date, &end_date)
+        .load_usage_range(provider, device.as_deref(), &start_date, &end_date)
         .await
         .map_err(|error| error.to_string())
 }
@@ -185,13 +220,14 @@ async fn get_usage_range(
 #[tauri::command]
 async fn get_usage_hours(
     provider: Option<ProviderKind>,
+    device: Option<String>,
     start_date: String,
     end_date: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<UsageHoursSnapshot, String> {
     state
         .storage
-        .load_usage_hours(provider, &start_date, &end_date)
+        .load_usage_hours(provider, device.as_deref(), &start_date, &end_date)
         .await
         .map_err(|error| error.to_string())
 }
@@ -523,7 +559,7 @@ async fn get_diagnostics(
     state: State<'_, Arc<AppState>>,
 ) -> Result<DiagnosticsSnapshot, String> {
     let mut acquisitions = Vec::new();
-    for provider in state.enabled_providers() {
+    for provider in AppState::local_providers() {
         acquisitions.extend(state.storage.load_acquisition_diagnostics(provider).await.map_err(
             |error| sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable"),
         )?);
@@ -564,7 +600,7 @@ async fn get_diagnostics(
 /// closed. Replaying it on startup is what makes the restart history complete rather than
 /// starting from whenever this feature was installed.
 async fn backfill_resets(state: &Arc<AppState>) -> anyhow::Result<()> {
-    for provider in state.enabled_providers() {
+    for provider in AppState::local_providers() {
         let since = state.storage.reset_backfill_start(provider).await?;
         let observations = providers::read_observations(provider, since).await?;
         if observations.is_empty() {
@@ -1072,11 +1108,9 @@ pub fn run() {
             if let Err(error) = tauri::async_runtime::block_on(storage.run_retention_if_due()) {
                 log::write(format!("normalized data retention failed: {error:#}"));
             }
+            let local_providers = AppState::local_providers();
             let mut snapshots = BTreeMap::new();
-            for provider in ProviderKind::ALL {
-                if !provider.is_installed() {
-                    continue;
-                }
+            for &provider in &local_providers {
                 let snapshot = tauri::async_runtime::block_on(storage.load_snapshot(provider))
                     .unwrap_or_else(|_| ProviderSnapshot::new(provider));
                 snapshots.insert(provider, snapshot);
@@ -1093,16 +1127,18 @@ pub fn run() {
                 quick_panel_toggled_at: StdMutex::new(None),
                 quick_panel_shown_at: StdMutex::new(None),
                 settings: StdMutex::new(settings),
-                detected_providers: StdMutex::new(Vec::new()),
+                detected_providers: StdMutex::new(local_providers),
                 settings_path,
             });
-            state.detect_providers();
             // What the device split calls this machine, so a split reads "Workshop" rather
             // than an identifier — and follows the machine being renamed.
             if let Err(error) =
                 tauri::async_runtime::block_on(state.storage.record_local_device(&device_name))
             {
                 log::write(format!("this machine could not be named: {error:#}"));
+            }
+            if let Err(error) = tauri::async_runtime::block_on(state.refresh_enabled_providers()) {
+                log::write(format!("usage providers could not be loaded: {error:#}"));
             }
             app.manage(state.clone());
             let _ = APP.set(app.handle().clone());

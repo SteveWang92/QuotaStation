@@ -10,6 +10,7 @@ on `main`, with the matching section below as its notes.
 ### Added
 
 - The reset history says how many tokens were spent inside each window that reset.
+- Usage from multiple machines can be combined, inspected by device, and filtered across the history dashboard.
 
 ## [0.4.0] - 2026-08-23
 

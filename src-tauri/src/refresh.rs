@@ -18,7 +18,7 @@ const STORAGE_FALLBACK: &str = "Local storage write failed";
 pub async fn refresh_all(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSnapshot {
     let _publish_guard = state.refresh_publish_lock.lock().await;
     // A client can be installed, or signed in for the first time, while this is running.
-    let providers = state.detect_providers();
+    let providers = AppState::local_providers();
     tokio::join!(refresh_live_for(state, &providers), refresh_history_for(state, &providers));
     let workspace = publish_snapshot(app, state).await;
     let _ = app.emit("history-updated", ());
@@ -33,7 +33,7 @@ pub async fn refresh_live_for_provider(
     provider: ProviderKind,
 ) {
     let _publish_guard = state.refresh_publish_lock.lock().await;
-    if !state.enabled_providers().contains(&provider) {
+    if !AppState::local_providers().contains(&provider) {
         return;
     }
     refresh_live_for(state, &[provider]).await;
@@ -42,7 +42,7 @@ pub async fn refresh_live_for_provider(
 
 pub async fn refresh_history(app: &AppHandle, state: &Arc<AppState>) {
     let _publish_guard = state.refresh_publish_lock.lock().await;
-    refresh_history_for(state, &state.enabled_providers()).await;
+    refresh_history_for(state, &AppState::local_providers()).await;
     publish_snapshot(app, state).await;
     let _ = app.emit("history-updated", ());
 }
@@ -77,6 +77,9 @@ async fn refresh_history_for(state: &Arc<AppState>, providers: &[ProviderKind]) 
     // counts every machine rather than this one and yesterday's news from the rest.
     let shared_folder = crate::sync::run(state).await;
     *state.shared_folder_diagnostics.write().await = shared_folder;
+    if let Err(error) = state.refresh_enabled_providers().await {
+        crate::log::write(format!("usage providers could not be refreshed: {error:#}"));
+    }
 }
 
 /// A session-file burst may change both history and live quota. Keep the two reads behind
@@ -87,7 +90,7 @@ pub async fn refresh_changed_provider(
     provider: ProviderKind,
 ) {
     let _publish_guard = state.refresh_publish_lock.lock().await;
-    if !state.enabled_providers().contains(&provider) {
+    if !AppState::local_providers().contains(&provider) {
         return;
     }
     refresh_history_for(state, &[provider]).await;

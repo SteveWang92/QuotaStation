@@ -183,6 +183,8 @@ each rule is what it is are all in
 [Architecture — Local database](architecture.md#local-database). Retention runs at startup
 and every 24 hours, never during a refresh, and never issues `VACUUM`.
 
+See [Multi-machine usage](multi-machine.md) for aggregate sharing and Syncthing setup.
+
 ## Refresh lifecycle and diagnostics
 
 Which source may answer for which provider, and why, belongs to

@@ -232,6 +232,10 @@ pub struct ProviderSnapshot {
     pub display_name: String,
     /// The same name in the three characters a crowded row can spare.
     pub short_name: String,
+    /// This machine has no local client for the provider, but another device contributed
+    /// usage rows. Its history is complete enough to display; quota remains readable only
+    /// on the machine that runs the provider.
+    pub remote_usage_only: bool,
     pub plan_type: Option<String>,
     pub limits: Vec<LimitWindow>,
     pub earned_reset_count: Option<u64>,
@@ -259,6 +263,7 @@ impl ProviderSnapshot {
             provider,
             display_name: provider.display_name().to_string(),
             short_name: provider.short_name().to_string(),
+            remote_usage_only: false,
             plan_type: None,
             limits: Vec::new(),
             earned_reset_count: None,
@@ -282,6 +287,15 @@ impl ProviderSnapshot {
     /// Quota freshness follows only from live acquisition and each window's own source
     /// timestamp. A successful history parse must never renew an older quota reading.
     pub fn resolve_derived_state(&mut self) {
+        if self.remote_usage_only {
+            self.freshness = Freshness::Fresh;
+            self.stale_age_seconds = None;
+            self.compact_status = CompactStatus {
+                level: CompactStatusLevel::Healthy,
+                label: "Usage from another device".to_string(),
+            };
+            return;
+        }
         let now = jiff::Timestamp::now().as_second();
         for limit in &mut self.limits {
             let age = now.saturating_sub(limit.observed_at);

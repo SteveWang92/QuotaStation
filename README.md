@@ -42,6 +42,7 @@ What it does today:
 
 - [Architecture](docs/architecture.md)
 - [Development](docs/development.md)
+- [Multi-machine usage](docs/multi-machine.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 - [Support](SUPPORT.md)

@@ -1032,13 +1032,30 @@ impl Storage {
 
         snapshot.recent_resets = self.load_recent_resets(provider).await?;
         let date = jiff::Zoned::now().date().to_string();
-        let today = self.load_usage_range(Some(provider), &date, &date).await?;
+        let today = self.load_usage_range(Some(provider), None, &date, &date).await?;
         snapshot.today = today.usage;
         snapshot.models = today.models;
         snapshot.api_equivalent_cost_usd = today.api_equivalent_cost_usd;
         snapshot.resolve_derived_state();
         snapshot.pricing_catalog_revision = PRICING_CATALOG_REVISION.to_string();
         Ok(snapshot)
+    }
+
+    /// Providers that have usage rows on any device. Imported rows count exactly like
+    /// local ones here: this list drives which histories have a tab, not which clients this
+    /// machine can ask for live quota.
+    pub async fn load_usage_providers(&self) -> Result<Vec<ProviderKind>> {
+        let keys: Vec<String> = sqlx::query_scalar(
+            "SELECT provider FROM provider_instances WHERE id IN ( \
+             SELECT provider_instance_id FROM daily_usage UNION \
+             SELECT provider_instance_id FROM hourly_usage)",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(ProviderKind::ALL
+            .into_iter()
+            .filter(|provider| keys.iter().any(|key| key == provider.key()))
+            .collect())
     }
 
     /// The usage in a date range, for one provider or for every provider at once.
@@ -1050,6 +1067,7 @@ impl Storage {
     pub async fn load_usage_range(
         &self,
         provider: Option<ProviderKind>,
+        device: Option<&str>,
         start_date: &str,
         end_date: &str,
     ) -> Result<UsageRangeSnapshot> {
@@ -1067,11 +1085,14 @@ impl Storage {
              SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens, \
              SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd \
              FROM daily_usage WHERE (? IS NULL OR provider_instance_id = ?) \
+             AND (? IS NULL OR device = ?) \
              AND usage_date BETWEEN ? AND ? \
              GROUP BY usage_date, model ORDER BY usage_date ASC, total_tokens DESC",
         )
         .bind(provider_id)
         .bind(provider_id)
+        .bind(device)
+        .bind(device)
         .bind(start.to_string())
         .bind(end.to_string())
         .fetch_all(&self.pool)
@@ -1123,8 +1144,13 @@ impl Storage {
             })
             .collect();
 
+        let split_total = if device.is_none() {
+            total.total
+        } else {
+            self.load_usage_total(provider_id, &start.to_string(), &end.to_string()).await?
+        };
         let devices = self
-            .load_device_split(provider_id, &start.to_string(), &end.to_string(), total.total)
+            .load_device_split(provider_id, &start.to_string(), &end.to_string(), split_total)
             .await?;
         Ok(UsageRangeSnapshot {
             start_date: start.to_string(),
@@ -1135,6 +1161,25 @@ impl Storage {
             days,
             devices,
         })
+    }
+
+    async fn load_usage_total(
+        &self,
+        provider_id: Option<i64>,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<u64> {
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM daily_usage \
+             WHERE (? IS NULL OR provider_instance_id = ?) AND usage_date BETWEEN ? AND ?",
+        )
+        .bind(provider_id)
+        .bind(provider_id)
+        .bind(start_date)
+        .bind(end_date)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(total as u64)
     }
 
     /// Which machines the range's tokens came from. Devices with nothing in the range are
@@ -1185,6 +1230,7 @@ impl Storage {
     pub async fn load_usage_hours(
         &self,
         provider: Option<ProviderKind>,
+        device: Option<&str>,
         start_date: &str,
         end_date: &str,
     ) -> Result<UsageHoursSnapshot> {
@@ -1197,10 +1243,12 @@ impl Storage {
             None => None,
         };
         let rows = sqlx::query(
-            "SELECT hour_start, model, SUM(input_tokens) AS input_tokens,              SUM(cache_read_tokens) AS cache_read_tokens, SUM(output_tokens) AS output_tokens,              SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens,              SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd              FROM hourly_usage WHERE (? IS NULL OR provider_instance_id = ?)              AND date(hour_start) BETWEEN ? AND ?              GROUP BY hour_start, model ORDER BY hour_start ASC, total_tokens DESC",
+            "SELECT hour_start, model, SUM(input_tokens) AS input_tokens,              SUM(cache_read_tokens) AS cache_read_tokens, SUM(output_tokens) AS output_tokens,              SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens,              SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd              FROM hourly_usage WHERE (? IS NULL OR provider_instance_id = ?)              AND (? IS NULL OR device = ?) AND date(hour_start) BETWEEN ? AND ?              GROUP BY hour_start, model ORDER BY hour_start ASC, total_tokens DESC",
         )
         .bind(provider_id)
         .bind(provider_id)
+        .bind(device)
+        .bind(device)
         .bind(start.to_string())
         .bind(end.to_string())
         .fetch_all(&self.pool)
@@ -1503,6 +1551,21 @@ mod tests {
         }
     }
 
+    fn device_row(provider: &str, bucket: &str, model: &str, total: u64) -> DeviceUsageRow {
+        DeviceUsageRow {
+            provider: provider.to_string(),
+            bucket: bucket.to_string(),
+            model: model.to_string(),
+            service_tier: "mixed".to_string(),
+            input: total / 2,
+            cache_read: 0,
+            output: total / 2,
+            reasoning: 0,
+            total,
+            cost_usd: Some(1.0),
+        }
+    }
+
     #[tokio::test]
     async fn an_hourly_range_is_read_back_one_point_per_recorded_hour() {
         let (storage, _database) = open_storage().await;
@@ -1519,7 +1582,7 @@ mod tests {
             .expect("save history");
 
         let hours = storage
-            .load_usage_hours(Some(CODEX), "2026-08-20", "2026-08-20")
+            .load_usage_hours(Some(CODEX), None, "2026-08-20", "2026-08-20")
             .await
             .expect("read the hourly range");
         assert_eq!(
@@ -1545,7 +1608,7 @@ mod tests {
                 .expect("save history");
         }
         let hours = storage
-            .load_usage_hours(Some(CODEX), "2026-08-20", "2026-08-20")
+            .load_usage_hours(Some(CODEX), None, "2026-08-20", "2026-08-20")
             .await
             .expect("read the hourly range");
         assert_eq!(hours.hours.len(), 1);
@@ -1576,7 +1639,7 @@ mod tests {
                 .expect("read the surviving hours");
         assert_eq!(remaining, ["2026-08-20T09:00"]);
         let days = storage
-            .load_usage_range(Some(CODEX), "2026-06-01", "2026-08-20")
+            .load_usage_range(Some(CODEX), None, "2026-06-01", "2026-08-20")
             .await
             .expect("read the daily range");
         assert_eq!(days.days.len(), 1, "the daily rows are untouched by the hourly cutoff");
@@ -1708,7 +1771,7 @@ mod tests {
             .expect("save second history");
 
         let range = storage
-            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02")
+            .load_usage_range(Some(CODEX), None, "2026-08-01", "2026-08-02")
             .await
             .expect("load range");
         assert_eq!(range.days.len(), 2, "the day outside the parse must survive");
@@ -1745,7 +1808,7 @@ mod tests {
             .expect("save Claude history");
 
         let combined = storage
-            .load_usage_range(None, "2026-08-01", "2026-08-01")
+            .load_usage_range(None, None, "2026-08-01", "2026-08-01")
             .await
             .expect("load combined range");
         assert_eq!(combined.usage.total, 500);
@@ -1757,12 +1820,90 @@ mod tests {
         assert_eq!(combined.models.len(), 2, "each provider's models keep their own row");
 
         let single = storage
-            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-01")
+            .load_usage_range(Some(CODEX), None, "2026-08-01", "2026-08-01")
             .await
             .expect("load Codex range");
         assert_eq!(
             single.usage.total, 100,
             "asking for one provider still answers for that one alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_filter_narrows_daily_and_hourly_usage_without_hiding_the_split() {
+        let (storage, _database) = open_storage().await;
+        storage.record_local_device("This machine").await.expect("name the local device");
+        storage
+            .save_history(
+                CODEX,
+                &HistorySnapshot {
+                    days: vec![day("2026-08-01", "gpt-5", 100)],
+                    hours: vec![hour("2026-08-01T09:00", "gpt-5", 100)],
+                },
+                "Australia/Brisbane",
+                "2026-08-01T10:00:00Z",
+            )
+            .await
+            .expect("save local history");
+        let daily = [device_row("codex", "2026-08-01", "gpt-5", 400)];
+        let hourly = [device_row("codex", "2026-08-01T09:00", "gpt-5", 400)];
+        storage
+            .import_device(
+                &DeviceImport {
+                    id: "workshop",
+                    display_name: "Workshop",
+                    parser_revision: "test",
+                    source_modified_at: 1,
+                    daily: &daily,
+                    hourly: &hourly,
+                },
+                "2026-08-01T10:01:00Z",
+            )
+            .await
+            .expect("import the other device");
+
+        let local = storage
+            .load_usage_range(Some(CODEX), Some(LOCAL_DEVICE), "2026-08-01", "2026-08-01")
+            .await
+            .expect("load local usage");
+        assert_eq!(local.usage.total, 100);
+        assert_eq!(local.devices.len(), 2, "the filter choices remain visible");
+        assert_eq!(local.devices.iter().map(|device| device.tokens).sum::<u64>(), 500);
+
+        let remote = storage
+            .load_usage_range(Some(CODEX), Some("workshop"), "2026-08-01", "2026-08-01")
+            .await
+            .expect("load remote usage");
+        assert_eq!(remote.usage.total, 400);
+        let remote_hours = storage
+            .load_usage_hours(Some(CODEX), Some("workshop"), "2026-08-01", "2026-08-01")
+            .await
+            .expect("load remote hours");
+        assert_eq!(remote_hours.hours[0].usage.total, 400);
+    }
+
+    #[tokio::test]
+    async fn imported_usage_makes_a_provider_available_without_local_history() {
+        let (storage, _database) = open_storage().await;
+        let daily = [device_row("claude", "2026-08-01", "claude-opus-5", 400)];
+        storage
+            .import_device(
+                &DeviceImport {
+                    id: "workshop",
+                    display_name: "Workshop",
+                    parser_revision: "test",
+                    source_modified_at: 1,
+                    daily: &daily,
+                    hourly: &[],
+                },
+                "2026-08-01T10:01:00Z",
+            )
+            .await
+            .expect("import remote Claude usage");
+
+        assert_eq!(
+            storage.load_usage_providers().await.expect("load providers"),
+            [ProviderKind::Claude]
         );
     }
 
@@ -1786,7 +1927,7 @@ mod tests {
             .expect("rebuild New York history");
 
         let range = storage
-            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02")
+            .load_usage_range(Some(CODEX), None, "2026-08-01", "2026-08-02")
             .await
             .expect("load range");
         assert_eq!(range.days.len(), 1, "rows bucketed in the previous timezone must not survive");
@@ -1820,7 +1961,7 @@ mod tests {
             .expect("adopt the current timezone");
 
         let range = storage
-            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02")
+            .load_usage_range(Some(CODEX), None, "2026-08-01", "2026-08-02")
             .await
             .expect("load range");
         assert_eq!(
@@ -1845,7 +1986,7 @@ mod tests {
             .expect("save history");
 
         let range = storage
-            .load_usage_range(Some(CODEX), "2026-08-02", "2026-08-02")
+            .load_usage_range(Some(CODEX), None, "2026-08-02", "2026-08-02")
             .await
             .expect("load range");
         assert_eq!(range.days.len(), 1);

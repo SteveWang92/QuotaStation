@@ -261,6 +261,8 @@ telemetry, mutation calls, and raw-data upload behavior are excluded.
   directory, recording which source answered and why a read failed. It carries no session
   content, no credential, and no provider paths, and is rolled over at half a megabyte.
 
+See [Multi-machine usage](multi-machine.md) for the aggregate-sharing boundary and setup.
+
 ## Deferred decisions
 
 - Pricing catalog update policy and unknown-service-tier display behavior

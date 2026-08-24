@@ -14,6 +14,7 @@ export function emptySnapshot(
     provider,
     displayName,
     shortName,
+    remoteUsageOnly: false,
     planType: null,
     limits: [],
     earnedResetCount: null,

@@ -25,17 +25,15 @@ pub fn start(app: AppHandle, state: Arc<AppState>) -> Result<()> {
     let (sender, receiver) = mpsc::unbounded_channel();
     let mut watchers = BTreeMap::new();
     let failed = Arc::new(StdMutex::new(BTreeSet::new()));
-    let (_, complete) = reconcile_watchers(&state, &sender, &failed, &mut watchers);
+    let (_, complete) = reconcile_watchers(&sender, &failed, &mut watchers);
     report_reconcile(&sender, complete, watchers.len());
 
-    let manager_state = state.clone();
     std::thread::Builder::new()
         .name("session-watcher".to_string())
         .spawn(move || {
             loop {
                 std::thread::park_timeout(Duration::from_secs(60));
-                let (changed, complete) =
-                    reconcile_watchers(&manager_state, &sender, &failed, &mut watchers);
+                let (changed, complete) = reconcile_watchers(&sender, &failed, &mut watchers);
                 if changed || !complete {
                     report_reconcile(&sender, complete, watchers.len());
                 }
@@ -48,14 +46,13 @@ pub fn start(app: AppHandle, state: Arc<AppState>) -> Result<()> {
 }
 
 fn reconcile_watchers(
-    state: &AppState,
     sender: &mpsc::UnboundedSender<WatcherMessage>,
     failed: &Arc<StdMutex<BTreeSet<WatchKey>>>,
     watchers: &mut BTreeMap<WatchKey, RecommendedWatcher>,
 ) -> (bool, bool) {
     let mut desired = BTreeSet::new();
     let mut discovery_complete = true;
-    for provider in state.detect_providers() {
+    for provider in AppState::local_providers() {
         let Ok(locations) = provider.usage_paths() else {
             discovery_complete = false;
             let _ = sender.send(WatcherMessage::Failed);

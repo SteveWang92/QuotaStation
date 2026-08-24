@@ -91,6 +91,9 @@ pub fn pending(
     announced.seeded = true;
     let mut alerts = Vec::new();
     for provider in &workspace.providers {
+        if provider.remote_usage_only {
+            continue;
+        }
         collect_quota(announced, provider, settings, seeding, &mut alerts);
         collect_failure(announced, provider, settings, seeding, &mut alerts);
         collect_resets(announced, provider, settings, seeding, &mut alerts);
@@ -591,6 +594,27 @@ mod tests {
         let alerts = pending(&mut announced, &workspace(next), &settings);
         assert_eq!(alerts.len(), 1);
         assert!(alerts[0].title.contains("quota reset"));
+    }
+
+    #[test]
+    fn remote_usage_is_neither_unavailable_nor_a_read_failure() {
+        let mut remote = provider(Vec::new());
+        remote.remote_usage_only = true;
+        remote.resolve_derived_state();
+        assert_eq!(remote.compact_status.level, CompactStatusLevel::Healthy);
+
+        let mut announced = Announced::default();
+        let settings = AppSettings::default();
+        pending(&mut announced, &workspace(answering()), &settings);
+        remote.compact_status = CompactStatus {
+            level: CompactStatusLevel::Unavailable,
+            label: "Provider unavailable".to_string(),
+        };
+        remote.live_error = Some("Quota read failed".to_string());
+        assert!(
+            pending(&mut announced, &workspace(remote), &settings).is_empty(),
+            "a provider whose quota belongs to another device must not raise a failure alert"
+        );
     }
 
     #[test]
