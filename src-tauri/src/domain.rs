@@ -641,6 +641,43 @@ pub struct UsageRangeSnapshot {
     pub api_equivalent_cost_usd: Option<f64>,
     pub models: Vec<ModelUsage>,
     pub days: Vec<DailyUsagePoint>,
+    /// Which machines the range's tokens were parsed on, largest first. One entry is the
+    /// ordinary case and says nothing worth drawing; the split matters once a second
+    /// machine's aggregates are being read in.
+    pub devices: Vec<DeviceUsage>,
+}
+
+/// One machine's share of a range.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceUsage {
+    pub device_id: String,
+    pub display_name: String,
+    pub local: bool,
+    pub tokens: u64,
+    pub percent: f64,
+}
+
+/// One aggregated bucket as it travels between machines: a day or an hour of one model's
+/// tokens, named by the provider it belongs to rather than by a local row id.
+///
+/// This is the whole vocabulary of the exported file. Nothing here can identify a project,
+/// a session, a path or an account — the numbers, the model name, and when.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceUsageRow {
+    pub provider: String,
+    /// The local date (`2026-08-24`) for a daily row, the local hour (`2026-08-24T09:00`)
+    /// for an hourly one. Which of the two it is comes from the list it arrived in.
+    pub bucket: String,
+    pub model: String,
+    pub service_tier: String,
+    pub input: u64,
+    pub cache_read: u64,
+    pub output: u64,
+    pub reasoning: u64,
+    pub total: u64,
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -680,6 +717,11 @@ pub struct DiagnosticsSnapshot {
     pub watcher: WatcherDiagnostics,
     pub acquisitions: Vec<AcquisitionDiagnostics>,
     pub retention: RetentionDiagnostics,
+    pub shared_folder: SharedFolderDiagnostics,
+    /// Every machine contributing to the totals, this one first. A machine that stopped
+    /// exporting still appears, with the time its aggregates were last read: totals that
+    /// quietly lost a contributor are worse than totals that say so.
+    pub devices: Vec<DeviceDiagnostics>,
     pub parser_revision: String,
     pub pricing_catalog_revision: String,
     pub app_version: String,
@@ -689,6 +731,33 @@ pub struct DiagnosticsSnapshot {
     /// executable lives, what Claude Code's hooks point at — that a bug report about "0.1.0"
     /// is not answerable without it.
     pub build_kind: String,
+}
+
+/// What the shared usage folder last did. `off` is the state with no folder chosen, which
+/// is not a failure and must not be reported as one.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFolderDiagnostics {
+    pub status: String,
+    pub last_completed_at: Option<String>,
+    pub error: Option<String>,
+}
+
+impl Default for SharedFolderDiagnostics {
+    fn default() -> Self {
+        Self { status: "off".to_string(), last_completed_at: None, error: None }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceDiagnostics {
+    pub id: String,
+    pub display_name: String,
+    pub local: bool,
+    /// When this device's aggregates were last read in. `None` for the local device, whose
+    /// rows are written by the parser rather than imported.
+    pub last_import_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

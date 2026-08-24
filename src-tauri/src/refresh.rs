@@ -72,6 +72,11 @@ async fn refresh_history_for(state: &Arc<AppState>, providers: &[ProviderKind]) 
             .await;
         apply_history(state, provider, &started_at, providers::read_history(provider).await).await;
     }
+    // The parse has just replaced this machine's rows. Publishing them and reading in what
+    // the other machines published belongs to the same refresh, so the snapshot below
+    // counts every machine rather than this one and yesterday's news from the rest.
+    let shared_folder = crate::sync::run(state).await;
+    *state.shared_folder_diagnostics.write().await = shared_folder;
 }
 
 /// A session-file burst may change both history and live quota. Keep the two reads behind

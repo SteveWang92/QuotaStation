@@ -11,11 +11,12 @@ use sqlx::{
 };
 
 use crate::domain::{
-    AcquisitionDiagnostics, CCUSAGE_REVISION, DailyUsagePoint, Freshness, HOURLY_HISTORY_DAYS,
-    HistorySnapshot, HourlyUsagePoint, LimitKind, LimitResetEvent, LimitWindow, LiveSnapshot,
-    ModelUsage, ModelUsageRow, PRICING_CATALOG_REVISION, ProviderSnapshot, QuotaHistoryPoint,
-    QuotaHistorySnapshot, QuotaHistoryWindow, QuotaLevel, ResetClassification,
-    RetentionDiagnostics, TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot, WindowSource,
+    AcquisitionDiagnostics, CCUSAGE_REVISION, DailyUsagePoint, DeviceUsage, DeviceUsageRow,
+    Freshness, HOURLY_HISTORY_DAYS, HistorySnapshot, HourlyUsagePoint, LimitKind, LimitResetEvent,
+    LimitWindow, LiveSnapshot, ModelUsage, ModelUsageRow, PRICING_CATALOG_REVISION,
+    ProviderSnapshot, QuotaHistoryPoint, QuotaHistorySnapshot, QuotaHistoryWindow, QuotaLevel,
+    ResetClassification, RetentionDiagnostics, TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot,
+    WindowSource,
 };
 use crate::providers::ProviderKind;
 use crate::resets::{ResetTracker, WindowObservation, detect};
@@ -25,6 +26,12 @@ use crate::sanitize::sanitize_error;
 /// tier dimension of `daily_usage` records that the row spans tiers rather than guessing
 /// one. A per-tier writer must use the tier it observed, never this value.
 const AGGREGATE_SERVICE_TIER: &str = "mixed";
+
+/// The device every row this machine parsed is stored under. A machine reports itself to
+/// other machines by the identifier in its settings file, but stores its own work under
+/// this fixed name: the rows outlive any identifier, and a migration that had to know one
+/// could not read the settings file to find it.
+pub const LOCAL_DEVICE: &str = "local";
 
 /// The rollout scan skips files older than its previous run, with this much overlap so a
 /// window that reset across the boundary still has an earlier reading to compare against.
@@ -54,6 +61,28 @@ const RESET_PREVIOUS_ANCHOR: &str = "( \
 /// hours of idleness later; a window rebuilt early stops when the restart anchored the new
 /// one. Reading the earlier of the two keeps that idle gap out of the closed window.
 const RESET_WINDOW_END: &str = "MIN(limit_resets.previous_resets_at, limit_resets.anchored_at)";
+
+/// A device as the database holds it. The local one is always present; the others arrive
+/// with the first file read out of the shared folder.
+#[derive(Debug, Clone)]
+pub struct DeviceRecord {
+    pub id: String,
+    pub display_name: String,
+    pub last_import_at: Option<String>,
+    /// The modification time of the file this device's rows were read from, which is what
+    /// decides whether the next refresh has to read it again.
+    pub source_modified_at: Option<i64>,
+}
+
+/// One remote device's exported aggregates, ready to replace what is stored for it.
+pub struct DeviceImport<'a> {
+    pub id: &'a str,
+    pub display_name: &'a str,
+    pub parser_revision: &'a str,
+    pub source_modified_at: i64,
+    pub daily: &'a [DeviceUsageRow],
+    pub hourly: &'a [DeviceUsageRow],
+}
 
 fn kind_column(kind: LimitKind) -> &'static str {
     match kind {
@@ -484,12 +513,18 @@ impl Storage {
                 .fetch_one(&mut *tx)
                 .await?;
         if previous_timezone.as_deref().is_some_and(|previous| previous != aggregation_timezone) {
+            // Every device's rows go, not just this machine's: an imported row is keyed by
+            // the local hour it was aggregated in, and this machine has just changed which
+            // hours those are. Forgetting where each device's file stood is what brings the
+            // others back — the next refresh reads every one of them again and re-checks it
+            // against the zone now in force.
             for table in ["daily_usage", "hourly_usage"] {
                 sqlx::query(&format!("DELETE FROM {table} WHERE provider_instance_id = ?"))
                     .bind(provider_id)
                     .execute(&mut *tx)
                     .await?;
             }
+            sqlx::query("UPDATE devices SET source_modified_at = NULL").execute(&mut *tx).await?;
         }
         sqlx::query(
             "UPDATE provider_instances SET parser_revision = ?, aggregation_timezone = ?, \
@@ -502,33 +537,54 @@ impl Storage {
         .bind(provider_id)
         .execute(&mut *tx)
         .await?;
-        // Replace only the days the current parse covers. Sessions Codex has already
-        // rotated away are absent from a parse, and their stored days must survive.
+        // Replace only the days the current parse covers, and only this machine's rows in
+        // them: a parse of these logs says nothing about what another machine did that day.
+        // Sessions Codex has already rotated away are absent from a parse, and their stored
+        // days must survive.
         for day in &history.days {
             sqlx::query(
-                "DELETE FROM daily_usage WHERE provider_instance_id = ? AND usage_date = ?",
+                "DELETE FROM daily_usage WHERE provider_instance_id = ? AND device = ? \
+                 AND usage_date = ?",
             )
             .bind(provider_id)
+            .bind(LOCAL_DEVICE)
             .bind(&day.date)
             .execute(&mut *tx)
             .await?;
             for row in &day.model_rows {
-                self.insert_daily_model(&mut tx, provider_id, &day.date, row, observed_at).await?;
+                Self::insert_daily_model(
+                    &mut tx,
+                    provider_id,
+                    LOCAL_DEVICE,
+                    &day.date,
+                    row,
+                    observed_at,
+                )
+                .await?;
             }
         }
         // The hourly rows are replaced the same way, and only ever cover the recent window
         // the parser produces them for; retention removes the ones that fall out of it.
         for hour in &history.hours {
             sqlx::query(
-                "DELETE FROM hourly_usage WHERE provider_instance_id = ? AND hour_start = ?",
+                "DELETE FROM hourly_usage WHERE provider_instance_id = ? AND device = ? \
+                 AND hour_start = ?",
             )
             .bind(provider_id)
+            .bind(LOCAL_DEVICE)
             .bind(&hour.hour_start)
             .execute(&mut *tx)
             .await?;
             for row in &hour.model_rows {
-                self.insert_hourly_model(&mut tx, provider_id, &hour.hour_start, row, observed_at)
-                    .await?;
+                Self::insert_hourly_model(
+                    &mut tx,
+                    provider_id,
+                    LOCAL_DEVICE,
+                    &hour.hour_start,
+                    row,
+                    observed_at,
+                )
+                .await?;
             }
         }
         // The hours a recorded restart's window spans have just been rewritten, so the
@@ -539,20 +595,20 @@ impl Storage {
     }
 
     async fn insert_daily_model(
-        &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         provider_id: i64,
+        device: &str,
         date: &str,
         row: &ModelUsageRow,
         observed_at: &str,
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO daily_usage \
-             (provider_instance_id, usage_date, model, service_tier, input_tokens, cache_read_tokens, \
+             (provider_instance_id, device, usage_date, model, service_tier, input_tokens, cache_read_tokens, \
               output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(provider_id).bind(date).bind(&row.model).bind(AGGREGATE_SERVICE_TIER).bind(row.input as i64)
+        .bind(provider_id).bind(device).bind(date).bind(&row.model).bind(AGGREGATE_SERVICE_TIER).bind(row.input as i64)
         .bind(row.cache_read as i64).bind(row.output as i64).bind(row.reasoning as i64)
         .bind(row.total as i64).bind(row.cost_usd).bind(CCUSAGE_REVISION).bind(observed_at)
         .execute(&mut **tx).await?;
@@ -560,21 +616,196 @@ impl Storage {
     }
 
     async fn insert_hourly_model(
-        &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         provider_id: i64,
+        device: &str,
         hour_start: &str,
         row: &ModelUsageRow,
         observed_at: &str,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO hourly_usage              (provider_instance_id, hour_start, model, service_tier, input_tokens, cache_read_tokens,               output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO hourly_usage              (provider_instance_id, device, hour_start, model, service_tier, input_tokens, cache_read_tokens,               output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(provider_id).bind(hour_start).bind(&row.model).bind(AGGREGATE_SERVICE_TIER)
+        .bind(provider_id).bind(device).bind(hour_start).bind(&row.model).bind(AGGREGATE_SERVICE_TIER)
         .bind(row.input as i64).bind(row.cache_read as i64).bind(row.output as i64)
         .bind(row.reasoning as i64).bind(row.total as i64).bind(row.cost_usd)
         .bind(CCUSAGE_REVISION).bind(observed_at)
         .execute(&mut **tx).await?;
+        Ok(())
+    }
+
+    /// Names this machine in the device list, so a split reads "Workshop" rather than an
+    /// identifier. Called whenever the name could have changed, which is startup and a
+    /// settings save.
+    pub async fn record_local_device(&self, display_name: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO devices (id, display_name) VALUES (?, ?) \
+             ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name",
+        )
+        .bind(LOCAL_DEVICE)
+        .bind(display_name)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Every device the totals are built from, this machine first.
+    pub async fn load_devices(&self) -> Result<Vec<DeviceRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, display_name, last_import_at, source_modified_at FROM devices \
+             ORDER BY id = ? DESC, display_name ASC",
+        )
+        .bind(LOCAL_DEVICE)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| DeviceRecord {
+                id: row.get("id"),
+                display_name: row.get("display_name"),
+                last_import_at: row.get("last_import_at"),
+                source_modified_at: row.get("source_modified_at"),
+            })
+            .collect())
+    }
+
+    /// This machine's own aggregates, as the shared folder carries them. Both resolutions
+    /// come back whole: the exported file replaces its predecessor rather than adding to
+    /// it, so a re-export repairs a file that was written wrong.
+    pub async fn load_local_export(&self) -> Result<(Vec<DeviceUsageRow>, Vec<DeviceUsageRow>)> {
+        Ok((
+            self.load_export_rows("daily_usage", "usage_date").await?,
+            self.load_export_rows("hourly_usage", "hour_start").await?,
+        ))
+    }
+
+    async fn load_export_rows(&self, table: &str, bucket: &str) -> Result<Vec<DeviceUsageRow>> {
+        let rows = sqlx::query(&format!(
+            "SELECT provider_instances.provider AS provider, {table}.{bucket} AS bucket, model, \
+             service_tier, input_tokens, cache_read_tokens, output_tokens, reasoning_tokens, \
+             total_tokens, estimated_cost_usd FROM {table} \
+             JOIN provider_instances ON provider_instances.id = {table}.provider_instance_id \
+             WHERE device = ? ORDER BY bucket ASC, model ASC"
+        ))
+        .bind(LOCAL_DEVICE)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| DeviceUsageRow {
+                provider: row.get("provider"),
+                bucket: row.get("bucket"),
+                model: row.get("model"),
+                service_tier: row.get("service_tier"),
+                input: row.get::<i64, _>("input_tokens") as u64,
+                cache_read: row.get::<i64, _>("cache_read_tokens") as u64,
+                output: row.get::<i64, _>("output_tokens") as u64,
+                reasoning: row.get::<i64, _>("reasoning_tokens") as u64,
+                total: row.get::<i64, _>("total_tokens") as u64,
+                cost_usd: row.get("estimated_cost_usd"),
+            })
+            .collect())
+    }
+
+    /// Replaces one remote device's rows with the set its exported file carries.
+    ///
+    /// Wholesale, because the file is that device's whole record: a day it no longer
+    /// reports is a day it no longer has, and merging would keep a figure its own machine
+    /// has already corrected. Rows naming a provider this build does not know are skipped
+    /// — the other machine may be a version ahead — and the restart totals are rebuilt,
+    /// since the hours a recorded window spans have just gained another machine's work.
+    pub async fn import_device(
+        &self,
+        device: &DeviceImport<'_>,
+        imported_at: &str,
+    ) -> Result<usize> {
+        let providers: BTreeMap<String, i64> =
+            sqlx::query("SELECT id, provider FROM provider_instances")
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(|row| (row.get("provider"), row.get("id")))
+                .collect();
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO devices (id, display_name, last_import_at, source_modified_at) \
+             VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET \
+               display_name = excluded.display_name, last_import_at = excluded.last_import_at, \
+               source_modified_at = excluded.source_modified_at",
+        )
+        .bind(device.id)
+        .bind(device.display_name)
+        .bind(imported_at)
+        .bind(device.source_modified_at)
+        .execute(&mut *tx)
+        .await?;
+        for table in ["daily_usage", "hourly_usage"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE device = ?"))
+                .bind(device.id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        let mut written = 0;
+        for (table, bucket, rows) in [
+            ("daily_usage", "usage_date", device.daily),
+            ("hourly_usage", "hour_start", device.hourly),
+        ] {
+            for row in rows {
+                let Some(&provider_id) = providers.get(&row.provider) else { continue };
+                Self::insert_imported_row(
+                    &mut tx,
+                    provider_id,
+                    device,
+                    table,
+                    bucket,
+                    row,
+                    imported_at,
+                )
+                .await?;
+                written += 1;
+            }
+        }
+        for &provider_id in providers.values() {
+            Self::refresh_reset_tokens(&mut tx, provider_id).await?;
+        }
+        tx.commit().await?;
+        Ok(written)
+    }
+
+    async fn insert_imported_row(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        provider_id: i64,
+        device: &DeviceImport<'_>,
+        table: &str,
+        bucket: &str,
+        row: &DeviceUsageRow,
+        imported_at: &str,
+    ) -> Result<()> {
+        sqlx::query(&format!(
+            "INSERT INTO {table} \
+             (provider_instance_id, device, {bucket}, model, service_tier, input_tokens, \
+              cache_read_tokens, output_tokens, reasoning_tokens, total_tokens, \
+              estimated_cost_usd, parser_revision, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ))
+        .bind(provider_id)
+        .bind(device.id)
+        .bind(&row.bucket)
+        .bind(&row.model)
+        .bind(&row.service_tier)
+        .bind(row.input as i64)
+        .bind(row.cache_read as i64)
+        .bind(row.output as i64)
+        .bind(row.reasoning as i64)
+        .bind(row.total as i64)
+        .bind(row.cost_usd)
+        // The revision that parsed these rows is the exporting machine's, not this one's.
+        .bind(device.parser_revision)
+        .bind(imported_at)
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 
@@ -892,6 +1123,9 @@ impl Storage {
             })
             .collect();
 
+        let devices = self
+            .load_device_split(provider_id, &start.to_string(), &end.to_string(), total.total)
+            .await?;
         Ok(UsageRangeSnapshot {
             start_date: start.to_string(),
             end_date: end.to_string(),
@@ -899,7 +1133,46 @@ impl Storage {
             usage: total,
             models,
             days,
+            devices,
         })
+    }
+
+    /// Which machines the range's tokens came from. Devices with nothing in the range are
+    /// left out: a machine that was switched off all week is not a nought-token row.
+    async fn load_device_split(
+        &self,
+        provider_id: Option<i64>,
+        start_date: &str,
+        end_date: &str,
+        total: u64,
+    ) -> Result<Vec<DeviceUsage>> {
+        let rows = sqlx::query(
+            "SELECT daily_usage.device AS device, devices.display_name AS display_name, \
+             SUM(total_tokens) AS tokens FROM daily_usage \
+             JOIN devices ON devices.id = daily_usage.device \
+             WHERE (? IS NULL OR provider_instance_id = ?) AND usage_date BETWEEN ? AND ? \
+             GROUP BY daily_usage.device HAVING tokens > 0 ORDER BY tokens DESC",
+        )
+        .bind(provider_id)
+        .bind(provider_id)
+        .bind(start_date)
+        .bind(end_date)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let tokens = row.get::<i64, _>("tokens") as u64;
+                let device_id: String = row.get("device");
+                DeviceUsage {
+                    local: device_id == LOCAL_DEVICE,
+                    device_id,
+                    display_name: row.get("display_name"),
+                    tokens,
+                    percent: if total == 0 { 0.0 } else { tokens as f64 / total as f64 * 100.0 },
+                }
+            })
+            .collect())
     }
 
     /// The same range at hourly resolution, for the short ranges that are drawn hour by
@@ -1316,6 +1589,7 @@ mod tests {
             storage.table_names().await.expect("read table names"),
             [
                 "daily_usage",
+                "devices",
                 "hourly_usage",
                 "limit_current",
                 "limit_resets",

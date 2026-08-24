@@ -11,6 +11,7 @@ mod session_watcher;
 mod settings;
 mod storage;
 mod summary;
+mod sync;
 mod taskbar;
 mod terminal;
 mod theme;
@@ -25,11 +26,29 @@ use std::{
 };
 
 use domain::{
-    DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot, UsageHoursSnapshot,
-    UsageRangeSnapshot, WatcherDiagnostics, WorkspaceSnapshot,
+    DeviceDiagnostics, DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot,
+    SharedFolderDiagnostics, UsageHoursSnapshot, UsageRangeSnapshot, WatcherDiagnostics,
+    WorkspaceSnapshot,
 };
 use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
+
+/// Gives this machine an identity in a shared usage folder if it has not got one yet.
+///
+/// Generated once and then kept for good: another machine stores this machine's aggregates
+/// under this identifier, so issuing a new one would orphan every row it has for us. The
+/// name beside it is only a label and defaults to what Windows calls the computer.
+fn ensure_device_identity(path: &std::path::Path, mut settings: AppSettings) -> AppSettings {
+    if settings.device_id.is_some() && settings.device_name.is_some() {
+        return settings;
+    }
+    settings.device_id.get_or_insert_with(settings::new_device_id);
+    settings.device_name.get_or_insert_with(settings::default_device_name);
+    if let Err(error) = settings::save(path, &settings) {
+        log::write(format!("this machine's device identity could not be recorded: {error}"));
+    }
+    settings
+}
 
 /// Runs whichever Claude Code hook this process was started as, and reports whether it ran
 /// one. Exposed so `main` can return before any window exists.
@@ -57,6 +76,8 @@ pub struct AppState {
     live_refresh_lock: Mutex<()>,
     history_refresh_lock: Mutex<()>,
     watcher_diagnostics: RwLock<WatcherDiagnostics>,
+    /// What the shared usage folder last did, written by the refresh that ran it.
+    shared_folder_diagnostics: RwLock<SharedFolderDiagnostics>,
     quick_panel_focus_lost_at: StdMutex<Option<Instant>>,
     quick_panel_toggled_at: StdMutex<Option<Instant>>,
     quick_panel_shown_at: StdMutex<Option<Instant>>,
@@ -277,7 +298,7 @@ fn get_app_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
 /// Records a change the settings dialog made. The status-line bridge reads the same file
 /// on its next run, so a preference takes effect without the application telling it.
 #[tauri::command]
-fn set_app_settings(
+async fn set_app_settings(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     settings: AppSettings,
@@ -286,7 +307,14 @@ fn set_app_settings(
     let taskbar_changed = previous.taskbar_widget_enabled != settings.taskbar_widget_enabled;
     let display_changed = previous.taskbar_widget_display != settings.taskbar_widget_display;
     let theme_changed = previous.theme != settings.theme;
+    let name_changed = previous.device_name != settings.device_name;
     let updated = state.update_settings(|current| *current = settings)?;
+    if name_changed {
+        let name = updated.device_name.clone().unwrap_or_else(settings::default_device_name);
+        state.storage.record_local_device(&name).await.map_err(|error| {
+            sanitize::sanitize_error(&error.to_string(), "This machine could not be renamed")
+        })?;
+    }
     if theme_changed {
         apply_theme(&app, updated.theme);
     }
@@ -504,10 +532,25 @@ async fn get_diagnostics(
         state.storage.load_retention_diagnostics().await.map_err(|error| {
             sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
         })?;
+    let devices = state
+        .storage
+        .load_devices()
+        .await
+        .map_err(|error| sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable"))?
+        .into_iter()
+        .map(|device| DeviceDiagnostics {
+            local: device.id == storage::LOCAL_DEVICE,
+            id: device.id,
+            display_name: device.display_name,
+            last_import_at: device.last_import_at,
+        })
+        .collect();
     Ok(DiagnosticsSnapshot {
         watcher: state.watcher_diagnostics.read().await.clone(),
         acquisitions,
         retention,
+        shared_folder: state.shared_folder_diagnostics.read().await.clone(),
+        devices,
         parser_revision: domain::CCUSAGE_REVISION.to_string(),
         pricing_catalog_revision: domain::PRICING_CATALOG_REVISION.to_string(),
         app_version: app.package_info().version.to_string(),
@@ -1021,7 +1064,9 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let database_path = app_data_dir.join("quotastation.db");
             let settings_path = app_data_dir.join("settings.json");
-            let settings = settings::load(&settings_path);
+            let settings = ensure_device_identity(&settings_path, settings::load(&settings_path));
+            let device_name =
+                settings.device_name.clone().unwrap_or_else(settings::default_device_name);
             let storage = tauri::async_runtime::block_on(Storage::open(&database_path))
                 .map_err(|error| error.to_string())?;
             if let Err(error) = tauri::async_runtime::block_on(storage.run_retention_if_due()) {
@@ -1043,6 +1088,7 @@ pub fn run() {
                 live_refresh_lock: Mutex::new(()),
                 history_refresh_lock: Mutex::new(()),
                 watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
+                shared_folder_diagnostics: RwLock::new(SharedFolderDiagnostics::default()),
                 quick_panel_focus_lost_at: StdMutex::new(None),
                 quick_panel_toggled_at: StdMutex::new(None),
                 quick_panel_shown_at: StdMutex::new(None),
@@ -1051,6 +1097,13 @@ pub fn run() {
                 settings_path,
             });
             state.detect_providers();
+            // What the device split calls this machine, so a split reads "Workshop" rather
+            // than an identifier — and follows the machine being renamed.
+            if let Err(error) =
+                tauri::async_runtime::block_on(state.storage.record_local_device(&device_name))
+            {
+                log::write(format!("this machine could not be named: {error:#}"));
+            }
             app.manage(state.clone());
             let _ = APP.set(app.handle().clone());
             build_tray(app)?;
