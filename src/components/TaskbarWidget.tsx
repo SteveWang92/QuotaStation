@@ -93,7 +93,7 @@ export function TaskbarWidget({ initialWorkspace }: { initialWorkspace: Workspac
     // Rust owns the slot width and reserves the existing two-provider capacity. Passing only
     // the normalized provider count lets future providers grow by a complete slot without
     // making the renderer responsible for native taskbar geometry.
-    void invoke("set_taskbar_widget_size", { providerCount: providers.length }).catch(() => {});
+    void invoke("set_taskbar_widget_size", { providerCount: providers.length });
   }, [providers.length]);
 
   return (

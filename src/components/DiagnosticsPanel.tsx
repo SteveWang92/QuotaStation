@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
+import { errorMessage } from "../errors";
 import { formatResetTimestamp, formatRevision, formatTimestamp } from "../format";
 import type { DiagnosticsSnapshot, LimitWindow, ProviderSnapshot } from "../types";
 
@@ -30,11 +31,12 @@ export function DiagnosticsPanel({
   // for milliseconds inside Claude Code. The log is where both of them report, so the panel
   // has to be able to point at it.
   const [logAvailable, setLogAvailable] = useState(false);
+  const [logError, setLogError] = useState<string | null>(null);
 
   useEffect(() => {
     void invoke<boolean>("get_log_available")
       .then(setLogAvailable)
-      .catch(() => setLogAvailable(false));
+      .catch((cause) => setLogError(errorMessage(cause)));
   }, []);
 
   return (
@@ -67,11 +69,13 @@ export function DiagnosticsPanel({
         </div>
         <div className="diagnostic-item">
           <span>Application interface</span>
-          <strong className={interfaceError ? "failed" : "succeeded"}>
-            {interfaceError ? "failed" : "connected"}
+          <strong className={interfaceError || logError ? "failed" : "succeeded"}>
+            {interfaceError || logError ? "failed" : "connected"}
           </strong>
           <small>Local command channel to the QuotaStation core</small>
-          {interfaceError ? <small className="diagnostic-error">{interfaceError}</small> : null}
+          {interfaceError || logError ? (
+            <small className="diagnostic-error">{interfaceError ?? logError}</small>
+          ) : null}
         </div>
         <div className="diagnostic-item">
           <span>Session watcher</span>

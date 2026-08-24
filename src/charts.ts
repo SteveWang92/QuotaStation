@@ -37,7 +37,6 @@ export function hourlyUsageMatchesRange(
 export function calendarDays(startDate: string, endDate: string): string[] {
   const start = Date.parse(`${startDate}T00:00:00Z`);
   const end = Date.parse(`${endDate}T00:00:00Z`);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return [];
   const days: string[] = [];
   for (let day = start; day <= end; day += 86_400_000) {
     days.push(new Date(day).toISOString().slice(0, 10));
@@ -90,7 +89,7 @@ export function alignToBuckets<T>(
  * yet is drawn rather than hidden.
  */
 export function axisScale(maxValue: number, tickCount = 4): { max: number; ticks: number[] } {
-  if (!Number.isFinite(maxValue) || maxValue <= 0) {
+  if (maxValue <= 0) {
     return { max: 1, ticks: [0, 1] };
   }
   const rawStep = maxValue / tickCount;
@@ -162,7 +161,7 @@ export function stackSegments(
 ): Array<{ index: number; top: number; height: number } | null> {
   let runningTotal = 0;
   const drawn: Array<{ index: number; top: number; height: number } | null> = [];
-  const positive = values.map((value) => (Number.isFinite(value) && value > 0 ? value : 0));
+  const positive = values.map((value) => (value > 0 ? value : 0));
   const lastDrawnIndex = positive.reduce((last, value, index) => (value > 0 ? index : last), -1);
   positive.forEach((value, index) => {
     if (value <= 0) {

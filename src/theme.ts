@@ -22,12 +22,7 @@ export function applyTheme(theme: ThemeSnapshot, isTaskbarWidget: boolean): void
  * it from an effect would leave the first paint in the wrong theme.
  */
 export function watchTheme(isTaskbarWidget: boolean): void {
-  void invoke<ThemeSnapshot>("get_theme")
-    .then((theme) => applyTheme(theme, isTaskbarWidget))
-    .catch(() => {
-      // The document already carries the dark default from the stylesheet, so a failed
-      // read costs the choice and never the readability.
-    });
+  void invoke<ThemeSnapshot>("get_theme").then((theme) => applyTheme(theme, isTaskbarWidget));
   void listen<ThemeSnapshot>("theme-changed", ({ payload }) => {
     applyTheme(payload, isTaskbarWidget);
   });

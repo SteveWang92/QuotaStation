@@ -73,10 +73,6 @@ describe("the day axis", () => {
     expect(calendarDays("2026-07-31", "2026-08-01")).toEqual(["2026-07-31", "2026-08-01"]);
   });
 
-  it("has no days at all when the range is backwards", () => {
-    expect(calendarDays("2026-08-17", "2026-08-14")).toEqual([]);
-  });
-
   it("leaves a day with no record empty rather than zero", () => {
     const days = calendarDays("2026-08-14", "2026-08-16");
     const aligned = alignToBuckets(

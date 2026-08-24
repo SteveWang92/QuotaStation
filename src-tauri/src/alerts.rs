@@ -158,7 +158,7 @@ fn quota_alert(provider: &ProviderSnapshot, window: &LimitWindow, loudness: Loud
         Loudness::Critical => format!("{} quota nearly gone", provider.display_name),
         _ => format!("{} quota running low", provider.display_name),
     };
-    let used = window.used_percent.unwrap_or_default();
+    let used = window.used_percent.unwrap();
     let body = match window.resets_at.and_then(local_moment) {
         Some(moment) => format!("{} {used:.0}% used · resets {moment}", window.label),
         None => format!("{} {used:.0}% used", window.label),

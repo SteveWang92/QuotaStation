@@ -11,7 +11,6 @@ use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
-    time::{Duration, timeout},
 };
 
 use crate::domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, QuotaLevel, WindowSource};
@@ -19,9 +18,7 @@ use crate::domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, QuotaLevel,
 const CODEX_EXECUTABLE_OVERRIDE: &str = "QUOTASTATION_CODEX_EXECUTABLE";
 
 pub async fn read_live() -> Result<LiveSnapshot> {
-    timeout(Duration::from_secs(12), read_live_inner())
-        .await
-        .context("Codex app-server timed out")?
+    read_live_inner().await
 }
 
 async fn read_live_inner() -> Result<LiveSnapshot> {
@@ -31,9 +28,7 @@ async fn read_live_inner() -> Result<LiveSnapshot> {
 
 async fn attempt_candidate(executable: PathBuf) -> Result<LiveSnapshot> {
     let mut child = spawn_app_server(&executable)?;
-    let result = timeout(Duration::from_secs(4), exchange(&mut child))
-        .await
-        .context("Codex app-server candidate timed out")?;
+    let result = exchange(&mut child).await;
     let _ = child.kill().await;
     result
 }
@@ -50,7 +45,7 @@ where
             Err(error) => last_error = Some(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| anyhow!("No usable Codex app-server executable was found")))
+    Err(last_error.unwrap())
 }
 
 fn spawn_app_server(executable: &Path) -> Result<Child> {

@@ -64,27 +64,26 @@ fn kind_column(kind: LimitKind) -> &'static str {
 
 /// One recorded restart, from a row carrying [`RESET_COLUMNS`]. The recent list and the
 /// range query select the same columns, so they read them the same way.
-fn reset_event(row: sqlx::sqlite::SqliteRow) -> Option<LimitResetEvent> {
-    let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
-    let window_duration_mins: i64 = row.try_get("window_duration_mins").ok()?;
-    let classification = match row.try_get::<String, _>("classification").ok()?.as_str() {
+fn reset_event(row: sqlx::sqlite::SqliteRow) -> Result<LimitResetEvent> {
+    let kind = parse_kind(&row.try_get::<String, _>("window_kind")?).unwrap();
+    let window_duration_mins: i64 = row.try_get("window_duration_mins")?;
+    let classification = match row.try_get::<String, _>("classification")?.as_str() {
         "unplanned" => ResetClassification::Unplanned,
-        _ => ResetClassification::Scheduled,
+        "scheduled" => ResetClassification::Scheduled,
+        _ => unreachable!("the classification CHECK constraint admits only known values"),
     };
-    Some(LimitResetEvent {
+    Ok(LimitResetEvent {
         window_kind: kind,
         window_label: kind.window_label(Some(window_duration_mins)),
         window_duration_mins,
-        anchored_at: row.try_get("anchored_at").ok()?,
-        new_resets_at: row.try_get("new_resets_at").ok()?,
-        previous_resets_at: row.try_get("previous_resets_at").ok()?,
-        used_percent_before: row.try_get("used_percent_before").ok()?,
+        anchored_at: row.try_get("anchored_at")?,
+        new_resets_at: row.try_get("new_resets_at")?,
+        previous_resets_at: row.try_get("previous_resets_at")?,
+        used_percent_before: row.try_get("used_percent_before")?,
         tokens_in_window: row
-            .try_get::<Option<i64>, _>("tokens_in_window")
-            .ok()
-            .flatten()
-            .and_then(|tokens| u64::try_from(tokens).ok()),
-        early_by_seconds: row.try_get("early_by_seconds").ok()?,
+            .try_get::<Option<i64>, _>("tokens_in_window")?
+            .map(|tokens| tokens as u64),
+        early_by_seconds: row.try_get("early_by_seconds")?,
         classification,
     })
 }
@@ -167,27 +166,26 @@ impl Storage {
         let previous = self.load_current_observations(provider_id, authoritative).await?;
         let measured = self.windows_with_an_allowance(provider_id).await?;
         let mut tx = self.pool.begin().await?;
-        if let Some(now) = epoch_seconds(observed_at) {
-            for limit in &live.limits {
-                if limit.source != authoritative {
-                    continue;
-                }
-                let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) =
-                    (limit.used_percent, limit.window_duration_mins, limit.resets_at)
-                else {
-                    continue;
-                };
-                let current = WindowObservation {
-                    observed_at: now,
-                    kind: limit.kind,
-                    used_percent,
-                    window_duration_mins,
-                    resets_at,
-                };
-                let Some(earlier) = previous.get(kind_column(limit.kind)) else { continue };
-                if let Some(event) = detect(*earlier, current) {
-                    Self::insert_reset(&mut tx, provider_id, &event, "live", observed_at).await?;
-                }
+        let now = epoch_seconds(observed_at).unwrap();
+        for limit in &live.limits {
+            if limit.source != authoritative {
+                continue;
+            }
+            let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) =
+                (limit.used_percent, limit.window_duration_mins, limit.resets_at)
+            else {
+                continue;
+            };
+            let current = WindowObservation {
+                observed_at: now,
+                kind: limit.kind,
+                used_percent,
+                window_duration_mins,
+                resets_at,
+            };
+            let Some(earlier) = previous.get(kind_column(limit.kind)) else { continue };
+            if let Some(event) = detect(*earlier, current) {
+                Self::insert_reset(&mut tx, provider_id, &event, "live", observed_at).await?;
             }
         }
         sqlx::query(
@@ -276,12 +274,8 @@ impl Storage {
         let mut observations = BTreeMap::new();
         for row in rows {
             let name: String = row.get("window_kind");
-            let (Some(kind), Some(observed_at)) = (
-                parse_kind(&name),
-                row.try_get::<String, _>("observed_at").ok().as_deref().and_then(epoch_seconds),
-            ) else {
-                continue;
-            };
+            let kind = parse_kind(&name).unwrap();
+            let observed_at = epoch_seconds(&row.try_get::<String, _>("observed_at")?).unwrap();
             let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) = (
                 row.try_get::<Option<f64>, _>("used_percent")?,
                 row.try_get::<Option<i64>, _>("window_duration_mins")?,
@@ -439,21 +433,24 @@ impl Storage {
         .bind(provider_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
-                Some(WindowObservation {
-                    observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
-                    kind,
-                    used_percent: row.try_get::<Option<f64>, _>("used_percent").ok()??,
-                    window_duration_mins: row
-                        .try_get::<Option<i64>, _>("window_duration_mins")
-                        .ok()??,
-                    resets_at: row.try_get::<Option<i64>, _>("resets_at").ok()??,
-                })
-            })
-            .collect())
+        let mut observations = Vec::new();
+        for row in rows {
+            let (Some(used_percent), Some(window_duration_mins), Some(resets_at)) = (
+                row.try_get::<Option<f64>, _>("used_percent")?,
+                row.try_get::<Option<i64>, _>("window_duration_mins")?,
+                row.try_get::<Option<i64>, _>("resets_at")?,
+            ) else {
+                continue;
+            };
+            observations.push(WindowObservation {
+                observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at")?).unwrap(),
+                kind: parse_kind(&row.try_get::<String, _>("window_kind")?).unwrap(),
+                used_percent,
+                window_duration_mins,
+                resets_at,
+            });
+        }
+        Ok(observations)
     }
 
     pub async fn load_recent_resets(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
@@ -466,7 +463,7 @@ impl Storage {
         .bind(RECENT_RESET_LIMIT)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().filter_map(reset_event).collect())
+        rows.into_iter().map(reset_event).collect()
     }
 
     pub async fn save_history(
@@ -777,27 +774,26 @@ impl Storage {
         ).bind(provider_id).fetch_all(&self.pool).await?;
         snapshot.limits = limits
             .into_iter()
-            .filter_map(|row| {
-                let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
+            .map(|row| {
+                let kind = parse_kind(&row.try_get::<String, _>("window_kind")?).unwrap();
                 // Each of these three is nullable, and SQLite hands a null column to a decode
                 // that did not ask for an option as a zero rather than as an error. Read them as
                 // options, or a window nothing has measured comes back reading 0% used and
                 // restarting at the epoch.
-                let window_duration_mins =
-                    row.try_get::<Option<i64>, _>("window_duration_mins").ok()?;
-                Some(LimitWindow {
+                let window_duration_mins = row.try_get::<Option<i64>, _>("window_duration_mins")?;
+                Ok(LimitWindow {
                     kind,
                     label: kind.window_label(window_duration_mins),
-                    used_percent: row.try_get::<Option<f64>, _>("used_percent").ok()?,
+                    used_percent: row.try_get::<Option<f64>, _>("used_percent")?,
                     window_duration_mins,
-                    resets_at: row.try_get::<Option<i64>, _>("resets_at").ok()?,
-                    source: WindowSource::parse(&row.try_get::<String, _>("source").ok()?)?,
-                    observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
+                    resets_at: row.try_get::<Option<i64>, _>("resets_at")?,
+                    source: WindowSource::parse(&row.try_get::<String, _>("source")?).unwrap(),
+                    observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at")?).unwrap(),
                     freshness: Freshness::Stale,
                     status_level: QuotaLevel::Healthy,
                 })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         snapshot.recent_resets = self.load_recent_resets(provider).await?;
         let date = jiff::Zoned::now().date().to_string();
@@ -1017,13 +1013,9 @@ impl Storage {
         let mut windows: BTreeMap<LimitKind, (Option<i64>, Vec<QuotaHistoryPoint>)> =
             BTreeMap::new();
         for row in rows {
-            let Some(kind) =
-                row.try_get::<String, _>("window_kind").ok().as_deref().and_then(parse_kind)
-            else {
-                continue;
-            };
+            let kind = parse_kind(&row.try_get::<String, _>("window_kind")?).unwrap();
             let window = windows.entry(kind).or_insert_with(|| (None, Vec::new()));
-            window.0 = window.0.max(row.try_get::<Option<i64>, _>("duration").unwrap_or(None));
+            window.0 = window.0.max(row.try_get::<Option<i64>, _>("duration")?);
             window.1.push(QuotaHistoryPoint {
                 date: row.get("day"),
                 peak_used_percent: row.get::<f64, _>("peak"),
@@ -1052,7 +1044,7 @@ impl Storage {
                     points,
                 })
                 .collect(),
-            resets: reset_rows.into_iter().filter_map(reset_event).collect(),
+            resets: reset_rows.into_iter().map(reset_event).collect::<Result<Vec<_>>>()?,
         })
     }
 

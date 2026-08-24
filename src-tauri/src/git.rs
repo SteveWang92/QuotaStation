@@ -11,12 +11,8 @@
 //! cache keeps the client from paying for a process on every render of a streaming turn.
 
 use std::{
-    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc,
-    thread,
-    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -32,9 +28,6 @@ const CACHE_TTL_SECS: i64 = 3;
 /// Repositories worth remembering between renders. Enough for every project open at once,
 /// small enough that the file is rewritten without thought.
 const CACHE_LIMIT: usize = 16;
-
-/// The status line is rendered synchronously by Claude Code, so Git may never hold it up.
-const STATUS_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Windows would otherwise flash a console window for the `git` child process.
 #[cfg(windows)]
@@ -129,41 +122,11 @@ fn read_status(root: &Path) -> Option<WorkTreeStatus> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let mut child = command.spawn().ok()?;
-    let Some(mut stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    };
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let output = stdout.read_to_end(&mut bytes).ok().map(|_| bytes);
-        let _ = sender.send(output);
-    });
-    let deadline = Instant::now() + STATUS_TIMEOUT;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {}
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-    let output = receiver.recv_timeout(Duration::from_millis(100)).ok()??;
-    if !status.success() {
+    let output = command.output().ok()?;
+    if !output.status.success() {
         return None;
     }
-    Some(parse_status(&String::from_utf8_lossy(&output)))
+    Some(parse_status(&String::from_utf8_lossy(&output.stdout)))
 }
 
 /// Reads the porcelain v2 report. Entry lines are counted rather than interpreted: what

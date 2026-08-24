@@ -36,7 +36,7 @@ fn read_live_blocking(plan_type: Option<String>) -> Result<LiveSnapshot> {
     let now_ms = jiff::Timestamp::now().as_millisecond();
     let mut timestamps: Vec<i64> =
         entries.iter().map(|entry| entry.timestamp.as_millis()).collect();
-    let observed_at = timestamps.iter().copied().max().unwrap_or(now_ms).div_euclid(1_000);
+    let observed_at = timestamps.iter().copied().max().unwrap().div_euclid(1_000);
     // ccusage exposes usage_limit_reset_time without the limit bucket that produced it.
     // Until that field's window semantics can be verified, assigning it to the five-hour
     // window would turn an ambiguous log value into a confident but potentially wrong timer.

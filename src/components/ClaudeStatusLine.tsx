@@ -16,7 +16,7 @@ import type { AppSettings, ClaudeStatusLineStatus, ProviderLabelStyle } from "..
  */
 export function ClaudeStatusLine() {
   const [status, setStatus] = useState<ClaudeStatusLineStatus | null>(null);
-  const settings = useAppSettings();
+  const { settings, error: settingsError } = useAppSettings();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -25,9 +25,7 @@ export function ClaudeStatusLine() {
   useEffect(() => {
     void invoke<ClaudeStatusLineStatus>("get_claude_status_line")
       .then(setStatus)
-      .catch(() => {
-        // The quota still comes from the session logs; this card is an offer, not a step.
-      });
+      .catch((cause) => setError(errorMessage(cause)));
   }, []);
 
   const setInstalled = useCallback(async (installed: boolean) => {
@@ -55,7 +53,13 @@ export function ClaudeStatusLine() {
     }
   }, []);
 
-  if (!status) return null;
+  if (!status) {
+    return error ? (
+      <section className="provider-consent" aria-label="Claude Code status line quota source">
+        <p className="provider-consent-error">{error}</p>
+      </section>
+    ) : null;
+  }
 
   return (
     <section className="provider-consent" aria-label="Claude Code status line quota source">
@@ -90,7 +94,9 @@ export function ClaudeStatusLine() {
             Remove it in Claude Code's settings first.
           </p>
         ) : null}
-        {error ? <p className="provider-consent-error">{error}</p> : null}
+        {error || settingsError ? (
+          <p className="provider-consent-error">{error ?? settingsError}</p>
+        ) : null}
         {status.installed && settings ? (
           <div className="consent-options">
             <label>
@@ -165,7 +171,7 @@ export function ClaudeFinishedNotifications() {
   useEffect(() => {
     void invoke<boolean>("get_claude_notifications")
       .then(setInstalled)
-      .catch(() => {});
+      .catch((cause) => setError(errorMessage(cause)));
   }, []);
 
   const change = useCallback(async (wanted: boolean) => {
@@ -182,7 +188,13 @@ export function ClaudeFinishedNotifications() {
     }
   }, []);
 
-  if (installed === null) return null;
+  if (installed === null) {
+    return error ? (
+      <section className="provider-consent" aria-label="Claude Code completion notifications">
+        <p className="provider-consent-error">{error}</p>
+      </section>
+    ) : null;
+  }
 
   return (
     <section className="provider-consent" aria-label="Claude Code completion notifications">

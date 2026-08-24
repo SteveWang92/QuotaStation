@@ -115,7 +115,7 @@ async fn apply_live(
     let completed_at = now();
     match result {
         Ok(live) => {
-            let save_error = state
+            let mut save_error = state
                 .storage
                 .save_live(provider, &live, &completed_at)
                 .await
@@ -123,14 +123,25 @@ async fn apply_live(
                 .map(storage_error);
             // Reading the restarts back after the save keeps one owner of the detection,
             // so a restart recognised by this very save is already part of the snapshot.
-            let recent_resets =
-                state.storage.load_recent_resets(provider).await.unwrap_or_default();
+            let recent_resets = if save_error.is_none() {
+                match state.storage.load_recent_resets(provider).await {
+                    Ok(resets) => Some(resets),
+                    Err(error) => {
+                        save_error = Some(storage_error(error));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             state
                 .with_snapshot(provider, |snapshot| {
                     snapshot.plan_type = live.plan_type;
                     snapshot.limits = live.limits;
                     snapshot.earned_reset_count = live.earned_reset_count;
-                    snapshot.recent_resets = recent_resets;
+                    if let Some(recent_resets) = recent_resets {
+                        snapshot.recent_resets = recent_resets;
+                    }
                     snapshot.live_error = save_error;
                     if snapshot.live_error.is_none() {
                         snapshot.last_live_success_at = Some(completed_at.clone());
@@ -144,7 +155,7 @@ async fn apply_live(
         }
     }
     let error = state.read_snapshot(provider, |snapshot| snapshot.live_error.clone()).await;
-    let _ = state
+    if let Err(error) = state
         .storage
         .record_refresh(
             provider,
@@ -153,7 +164,10 @@ async fn apply_live(
             &completed_at,
             error.as_deref(),
         )
-        .await;
+        .await
+    {
+        crate::log::write(format!("live refresh record failed: {error:#}"));
+    }
 }
 
 async fn apply_history(
@@ -198,7 +212,7 @@ async fn apply_history(
         }
     }
     let error = state.read_snapshot(provider, |snapshot| snapshot.history_error.clone()).await;
-    let _ = state
+    if let Err(error) = state
         .storage
         .record_refresh(
             provider,
@@ -207,7 +221,10 @@ async fn apply_history(
             &completed_at,
             error.as_deref(),
         )
-        .await;
+        .await
+    {
+        crate::log::write(format!("history refresh record failed: {error:#}"));
+    }
 }
 
 fn storage_error(error: anyhow::Error) -> String {

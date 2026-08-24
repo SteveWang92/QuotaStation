@@ -61,9 +61,7 @@ function useReportedHeight() {
       // the two would trade single pixels back and forth forever.
       if (height <= 0 || Math.abs(height - reported) < 2) return;
       reported = height;
-      void invoke("set_quick_panel_height", { height }).catch(() => {
-        // A panel that cannot resize is still a readable panel at its configured size.
-      });
+      void invoke("set_quick_panel_height", { height });
     };
     const observer = new ResizeObserver(report);
     observer.observe(element);

@@ -104,7 +104,6 @@ export function formatWindowBadge(durationMins: number | null, fallback: string)
  * for eleven, and an axis of exact figures is read as a wall of digits rather than a scale.
  */
 export function formatCompactNumber(value: number): string {
-  if (!Number.isFinite(value)) return "—";
   const magnitude = Math.abs(value);
   if (magnitude >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
   if (magnitude >= 1_000_000)
@@ -115,7 +114,6 @@ export function formatCompactNumber(value: number): string {
 
 /** Same idea for money: the axis says $4.2K, the figure beside it still says $4,231.09. */
 export function formatCompactCurrency(value: number): string {
-  if (!Number.isFinite(value)) return "—";
   if (Math.abs(value) >= 1_000) return `$${formatCompactNumber(value)}`;
   return `$${value.toFixed(Math.abs(value) >= 10 ? 0 : 2)}`;
 }
@@ -126,7 +124,7 @@ export function formatCompactCurrency(value: number): string {
  * differently from no change at all.
  */
 export function formatDelta(current: number, previous: number): string | null {
-  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous <= 0) return null;
+  if (previous <= 0) return null;
   const change = ((current - previous) / previous) * 100;
   if (Math.abs(change) < 0.05) return "0%";
   const rounded = Math.abs(change) >= 100 ? change.toFixed(0) : change.toFixed(1);
