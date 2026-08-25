@@ -7,7 +7,7 @@
  * same date range. The functions here produce that axis, the value scale under it, and the
  * geometry the marks are drawn from; nothing here knows about SVG.
  */
-import { toLocalDateString } from "./dateRanges";
+import { toLocalDateString, toLocalHourString } from "./dateRanges";
 import type { TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot } from "./types";
 
 const TOKEN_FIELDS: Array<keyof TokenUsage> = [
@@ -61,6 +61,23 @@ export function calendarHours(startDate: string, endDate: string, now = new Date
     for (let hour = 0; hour <= lastHour; hour += 1) {
       hours.push(`${day}T${String(hour).padStart(2, "0")}:00`);
     }
+  }
+  return hours;
+}
+
+/**
+ * Every local hour from `startHour` to `endHour` inclusive, as `YYYY-MM-DDTHH:00`.
+ *
+ * The rolling window is bounded by its two ends rather than by the calendar, so it neither
+ * starts at a midnight nor runs on to one; the days it touches are partial at both ends.
+ */
+export function windowHours(startHour: string, endHour: string): string[] {
+  const hours: string[] = [];
+  const cursor = new Date(`${startHour}:00`);
+  const end = new Date(`${endHour}:00`);
+  while (cursor <= end) {
+    hours.push(toLocalHourString(cursor));
+    cursor.setHours(cursor.getHours() + 1);
   }
   return hours;
 }

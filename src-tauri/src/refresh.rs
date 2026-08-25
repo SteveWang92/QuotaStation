@@ -138,6 +138,7 @@ async fn apply_live(
                     snapshot.plan_type = live.plan_type;
                     snapshot.limits = live.limits;
                     snapshot.earned_reset_count = live.earned_reset_count;
+                    snapshot.earned_reset_expires_at = live.earned_reset_expires_at;
                     snapshot.recent_resets = recent_resets;
                     snapshot.live_error = save_error;
                     if snapshot.live_error.is_none() {

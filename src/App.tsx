@@ -1,14 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { RefreshCw } from "lucide-react";
+import { ArrowLeft, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { hourlyUsageMatchesRange } from "./charts";
 import { ProviderSetup } from "./components/ProviderSetup";
 import { QuickPanel } from "./components/QuickPanel";
-import { QuotaSection } from "./components/QuotaSection";
-import { SettingsDialog } from "./components/SettingsDialog";
-import { StatusBar } from "./components/StatusBar";
+import { QuotaSection, resetNoticeKey } from "./components/QuotaSection";
+import { SettingsPage } from "./components/SettingsPage";
 import { TaskbarWidget } from "./components/TaskbarWidget";
 import { UsageSummary } from "./components/UsageSummary";
 import {
@@ -24,10 +23,12 @@ import { statusColor, watchTheme } from "./theme";
 import type {
   DiagnosticsSnapshot,
   HistoryProvider,
+  ProviderKey,
   ProviderSnapshot,
   QuotaHistorySnapshot,
   UsageHoursSnapshot,
   UsageRangeSnapshot,
+  UsageWindowSnapshot,
   WorkspaceSnapshot,
 } from "./types";
 import { useSnapshot } from "./useSnapshot";
@@ -84,6 +85,81 @@ function readErrors(provider: ProviderSnapshot): string[] {
   ].filter((message): message is string => message !== null);
 }
 
+/**
+ * One answer for the history section, however the range was expressed: the totals, the
+ * period before them, and the hourly detail where there is any.
+ */
+interface RangeRead {
+  range: UsageRangeSnapshot;
+  previous: UsageRangeSnapshot;
+  hours: UsageHoursSnapshot | null;
+}
+
+/** The hour bounds of a rolling window, or `null` for a range expressed in whole days. */
+function hourBounds(period: {
+  startHour?: string;
+  endHour?: string;
+}): { startHour: string; endHour: string } | null {
+  return period.startHour === undefined || period.endHour === undefined
+    ? null
+    : { startHour: period.startHour, endHour: period.endHour };
+}
+
+async function readCalendarRange(
+  provider: ProviderKey | null,
+  device: string | null,
+  range: DateRangeSelection,
+  earlier: { startDate: string; endDate: string },
+): Promise<RangeRead> {
+  const [next, previous, hourly] = await Promise.all([
+    invoke<UsageRangeSnapshot>("get_usage_range", {
+      provider,
+      device,
+      startDate: range.startDate,
+      endDate: range.endDate,
+    }),
+    invoke<UsageRangeSnapshot>("get_usage_range", {
+      provider,
+      device,
+      startDate: earlier.startDate,
+      endDate: earlier.endDate,
+    }),
+    // A longer range has more hours than the chart has pixels, and the core keeps
+    // hourly rows only for the recent window anyway.
+    isHourlyRange(range.startDate, range.endDate)
+      ? invoke<UsageHoursSnapshot>("get_usage_hours", {
+          provider,
+          device,
+          startDate: range.startDate,
+          endDate: range.endDate,
+        })
+      : Promise.resolve(null),
+  ]);
+  // Hourly rows only start existing after each provider's first refresh on this build.
+  // Until every provider covers the whole range, keep the complete daily shape instead of
+  // drawing a plausible but partial hourly chart.
+  const hours = hourly !== null && hourlyUsageMatchesRange(hourly, next) ? hourly : null;
+  return { range: next, previous, hours };
+}
+
+/**
+ * The rolling window is one read rather than three: its totals are summed from the same
+ * hourly rows the chart draws, because the two calendar days it touches are both partial
+ * and neither the day rows nor the device split could be taken from them.
+ */
+async function readRollingWindow(
+  provider: ProviderKey | null,
+  device: string | null,
+  window: { startHour: string; endHour: string },
+  earlier: { startHour: string; endHour: string },
+): Promise<RangeRead> {
+  const [next, previous] = await Promise.all([
+    invoke<UsageWindowSnapshot>("get_usage_window", { provider, device, ...window }),
+    invoke<UsageWindowSnapshot>("get_usage_window", { provider, device, ...earlier }),
+  ]);
+  return { range: next.range, previous: previous.range, hours: next.hours };
+}
+
 function Dashboard() {
   const [usageRange, setUsageRange] = useState<UsageRangeSnapshot>(EMPTY_USAGE_RANGE);
   // The comparison and the quota history are read for the same slice as the totals, so a
@@ -99,7 +175,10 @@ function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Settings is a page rather than an overlay: it is read and worked through — a source
+  // set up, then checked, then the restart history read — and a dialog over the dashboard
+  // both hides what it is being compared against and has nowhere to put a long list.
+  const [showSettings, setShowSettings] = useState(false);
   const activeRangeRef = useRef(INITIAL_RANGE);
   // The usage history shows one provider at a time, or all of them counted together,
   // while the quota sections above always show each provider on its own. It opens on the
@@ -123,23 +202,17 @@ function Dashboard() {
       const earlier = previousPeriod(resolvedRange);
       // The combined view names no provider, which the core reads as every provider at once.
       const provider = rangeProvider === "all" ? null : rangeProvider;
+      const window = hourBounds(resolvedRange);
+      const earlierWindow = hourBounds(earlier);
       try {
-        const [next, previous, quota, hourly] = await Promise.all([
-          invoke<UsageRangeSnapshot>("get_usage_range", {
-            provider,
-            device,
-            startDate: resolvedRange.startDate,
-            endDate: resolvedRange.endDate,
-          }),
-          invoke<UsageRangeSnapshot>("get_usage_range", {
-            provider,
-            device,
-            startDate: earlier.startDate,
-            endDate: earlier.endDate,
-          }),
+        const [usage, quota] = await Promise.all([
+          window !== null && earlierWindow !== null
+            ? readRollingWindow(provider, device, window, earlierWindow)
+            : readCalendarRange(provider, device, resolvedRange, earlier),
           // Quota is not summable: one provider's weekly window says nothing about
           // another's, so the combined view leaves that chart out rather than adding up
-          // percentages of different allowances.
+          // percentages of different allowances. It is measured once a poll and summarised
+          // by the day, so a rolling window reads the days it touches like any other range.
           provider === null
             ? Promise.resolve(null)
             : invoke<QuotaHistorySnapshot>("get_quota_history", {
@@ -147,24 +220,11 @@ function Dashboard() {
                 startDate: resolvedRange.startDate,
                 endDate: resolvedRange.endDate,
               }),
-          // A longer range has more hours than the chart has pixels, and the core keeps
-          // hourly rows only for the recent window anyway.
-          isHourlyRange(resolvedRange.startDate, resolvedRange.endDate)
-            ? invoke<UsageHoursSnapshot>("get_usage_hours", {
-                provider,
-                device,
-                startDate: resolvedRange.startDate,
-                endDate: resolvedRange.endDate,
-              })
-            : Promise.resolve(null),
         ]);
         if (requestId === rangeRequestId.current) {
-          setUsageRange(next);
-          setPreviousRange(previous);
-          // Hourly rows only start existing after each provider's first refresh on this
-          // build. Until every provider covers the whole range, keep the complete daily
-          // shape instead of drawing a plausible but partial hourly chart.
-          setUsageHours(hourly !== null && hourlyUsageMatchesRange(hourly, next) ? hourly : null);
+          setUsageRange(usage.range);
+          setPreviousRange(usage.previous);
+          setUsageHours(usage.hours);
           setQuotaHistory(quota);
           setActiveRange(resolvedRange);
         }
@@ -287,6 +347,12 @@ function Dashboard() {
   const interfaceError = snapshotError ?? commandError;
   // The panel is behind a control now, so anything wrong inside it has to be visible from
   // outside it; otherwise a failed acquisition path is only found by looking for it.
+  // Every quota window on display right now, in the vocabulary the dismissed early-restart
+  // notes are recorded in. Rewriting the record against these is what stops it growing:
+  // a note for a window nobody is looking at any more can never be shown again either way.
+  const liveWindowKeys = workspace.providers.flatMap((provider) =>
+    provider.limits.map((limit) => resetNoticeKey(provider.provider, limit.kind, limit.resetsAt)),
+  );
   const diagnosticsAttention =
     interfaceError !== null ||
     diagnostics.watcher.status !== "active" ||
@@ -294,79 +360,103 @@ function Dashboard() {
     diagnostics.sharedFolder.status === "failed";
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${showSettings ? " settings-open" : ""}`}>
       <header className="app-header">
         {/* Each provider names itself on its own panel below, so the header does not list
             them a second time. */}
         <div className="identity">
-          <h1>QuotaStation</h1>
+          <h1>{showSettings ? "Settings" : "QuotaStation"}</h1>
         </div>
         <div className="header-actions">
           <button type="button" onClick={() => void refresh()} disabled={refreshing}>
             <RefreshCw aria-hidden="true" className={refreshing ? "spinning" : ""} />
             {refreshing ? "Refreshing" : "Refresh"}
           </button>
+          {/* The settings page has no control of its own to come back from, so the one
+              that opened it is the one that closes it. Anything wrong inside it has to be
+              visible from out here, or a failed acquisition path is only found by looking
+              for it. */}
+          <button
+            type="button"
+            className={diagnosticsAttention && !showSettings ? "attention" : ""}
+            onClick={() => setShowSettings((open) => !open)}
+          >
+            {showSettings ? (
+              <>
+                <ArrowLeft aria-hidden="true" /> Dashboard
+              </>
+            ) : (
+              <>
+                <SlidersHorizontal aria-hidden="true" /> Settings
+              </>
+            )}
+          </button>
         </div>
       </header>
-      {loaded && workspace.providers.length === 0 ? <ProviderSetup /> : null}
-      <div className={`provider-grid${workspace.providers.length <= 1 ? " single" : ""}`}>
-        {workspace.providers.map((provider) => (
-          <section key={provider.provider} className="provider-panel">
-            <header className="provider-panel-header">
-              <h2>{provider.displayName}</h2>
-              <span style={{ color: statusColor(provider.compactStatus) }}>
-                {provider.compactStatus.label}
-              </span>
-            </header>
-            {/* A reading held back as stale is only actionable with the reason beside it.
-                The core redacts these before they leave it, so they are safe to draw. */}
-            {readErrors(provider).map((message) => (
-              <p className="provider-panel-error" key={message}>
-                {message}
-              </p>
-            ))}
-            {provider.remoteUsageOnly ? (
-              <p className="provider-quota-note">
-                Usage is synced from another device. Quota can only be read on that device.
-              </p>
-            ) : (
-              <QuotaSection
-                provider={provider.displayName}
-                limits={provider.limits}
-                earnedResetCount={provider.earnedResetCount}
-                resets={provider.recentResets}
-              />
-            )}
-          </section>
-        ))}
-      </div>
-      {historyProvider ? (
-        <UsageSummary
-          snapshot={historyProvider}
+      {showSettings ? (
+        <SettingsPage
+          showClaude={showClaudeSettings}
+          diagnostics={diagnostics}
           providers={workspace.providers}
-          activeProvider={selectedProvider}
-          onSelectProvider={selectProvider}
-          activeDevice={selectedDevice}
-          onSelectDevice={selectDevice}
-          range={usageRange}
-          hours={usageHours}
-          previousRange={previousRange}
-          quotaHistory={quotaHistory}
-          selection={activeRange}
-          loading={rangeLoading}
-          error={rangeError}
-          onSelectRange={selectRange}
+          interfaceError={interfaceError}
         />
-      ) : null}
-      <StatusBar attention={diagnosticsAttention} onOpenSettings={() => setSettingsOpen(true)} />
-      <SettingsDialog
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        showClaude={showClaudeSettings}
-        diagnostics={diagnostics}
-        providers={workspace.providers}
-        interfaceError={interfaceError}
-      />
+      ) : (
+        <>
+          {loaded && workspace.providers.length === 0 ? <ProviderSetup /> : null}
+          <div className={`provider-grid${workspace.providers.length <= 1 ? " single" : ""}`}>
+            {workspace.providers.map((provider) => (
+              <section key={provider.provider} className="provider-panel">
+                <header className="provider-panel-header">
+                  <h2>{provider.displayName}</h2>
+                  <span style={{ color: statusColor(provider.compactStatus) }}>
+                    {provider.compactStatus.label}
+                  </span>
+                </header>
+                {/* A reading held back as stale is only actionable with the reason beside it.
+                The core redacts these before they leave it, so they are safe to draw. */}
+                {readErrors(provider).map((message) => (
+                  <p className="provider-panel-error" key={message}>
+                    {message}
+                  </p>
+                ))}
+                {provider.remoteUsageOnly ? (
+                  <p className="provider-quota-note">
+                    Usage is synced from another device. Quota can only be read on that device.
+                  </p>
+                ) : (
+                  <QuotaSection
+                    provider={provider.provider}
+                    providerName={provider.displayName}
+                    limits={provider.limits}
+                    earnedResetCount={provider.earnedResetCount}
+                    earnedResetExpiresAt={provider.earnedResetExpiresAt}
+                    resets={provider.recentResets}
+                    liveWindowKeys={liveWindowKeys}
+                  />
+                )}
+              </section>
+            ))}
+          </div>
+          {historyProvider ? (
+            <UsageSummary
+              snapshot={historyProvider}
+              providers={workspace.providers}
+              activeProvider={selectedProvider}
+              onSelectProvider={selectProvider}
+              activeDevice={selectedDevice}
+              onSelectDevice={selectDevice}
+              range={usageRange}
+              hours={usageHours}
+              previousRange={previousRange}
+              quotaHistory={quotaHistory}
+              selection={activeRange}
+              loading={rangeLoading}
+              error={rangeError}
+              onSelectRange={selectRange}
+            />
+          ) : null}
+        </>
+      )}
     </main>
   );
 }

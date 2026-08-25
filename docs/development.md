@@ -197,12 +197,12 @@ running the application locally:
   changes for two seconds, and a full reconciliation every fifteen minutes recovers missed
   filesystem notifications. A complete refresh publishes one finished workspace snapshot;
   its history event then updates an open range without exposing intermediate data.
-- The Claude Code status-line bridge is installed from the settings dialog, which registers
+- The Claude Code status-line bridge is installed from the settings page, which registers
   `quotastation.exe --claude-statusline` as that command. Readings then arrive from terminal
   sessions only; the settings card says so when every running session is desktop-hosted.
-- The settings dialog's Diagnostics section reads normalized refresh records and in-memory
-  watcher health. The status bar's control is marked whenever an acquisition path, the
-  watcher, or the command channel has failed, so nothing wrong hides behind a closed dialog.
+- The settings page's Diagnostics section reads normalized refresh records and in-memory
+  watcher health. The header control that opens it is marked whenever an acquisition path, the
+  watcher, or the command channel has failed, so nothing wrong hides behind an unopened page.
 - Diagnostics show the seven-character source commit beside the application version. The
   Rust build watches the active Git ref, so rebuilding after a commit refreshes that value.
 

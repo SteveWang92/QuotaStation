@@ -27,8 +27,8 @@ use std::{
 
 use domain::{
     DeviceDiagnostics, DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot,
-    SharedFolderDiagnostics, UsageHoursSnapshot, UsageRangeSnapshot, WatcherDiagnostics,
-    WorkspaceSnapshot,
+    SharedFolderDiagnostics, UsageHoursSnapshot, UsageRangeSnapshot, UsageWindowSnapshot,
+    WatcherDiagnostics, WorkspaceSnapshot,
 };
 use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
@@ -132,6 +132,7 @@ impl AppState {
             snapshot.remote_usage_only = true;
             snapshot.limits.clear();
             snapshot.earned_reset_count = None;
+            snapshot.earned_reset_expires_at = None;
             snapshot.recent_resets.clear();
             snapshot.live_error = None;
             snapshot.resolve_derived_state();
@@ -183,6 +184,7 @@ impl AppState {
                 if snapshot.remote_usage_only {
                     snapshot.limits.clear();
                     snapshot.earned_reset_count = None;
+                    snapshot.earned_reset_expires_at = None;
                     snapshot.recent_resets.clear();
                     snapshot.live_error = None;
                 }
@@ -230,6 +232,53 @@ async fn get_usage_hours(
         .load_usage_hours(provider, device.as_deref(), &start_date, &end_date)
         .await
         .map_err(|error| error.to_string())
+}
+
+/// A rolling window of hours — the last twenty-four of them — with its totals summed
+/// from exactly those hours rather than from the two partial days they fall in.
+#[tauri::command]
+async fn get_usage_window(
+    provider: Option<ProviderKind>,
+    device: Option<String>,
+    start_hour: String,
+    end_hour: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<UsageWindowSnapshot, String> {
+    state
+        .storage
+        .load_usage_window(provider, device.as_deref(), &start_hour, &end_hour)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Every restart QuotaStation has recorded, per provider. The dashboard annotates the
+/// window running now; this is the list the settings page shows in full.
+#[tauri::command]
+async fn get_reset_history(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<ProviderResetHistory>, String> {
+    let mut history = Vec::new();
+    for provider in state.enabled_providers() {
+        history.push(ProviderResetHistory {
+            provider,
+            display_name: provider.display_name().to_string(),
+            resets: state
+                .storage
+                .load_reset_history(provider)
+                .await
+                .map_err(|error| error.to_string())?,
+        });
+    }
+    Ok(history)
+}
+
+/// One provider's whole restart history, named so the settings page can head the list.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderResetHistory {
+    provider: ProviderKind,
+    display_name: String,
+    resets: Vec<domain::LimitResetEvent>,
 }
 
 #[tauri::command]
@@ -1023,6 +1072,32 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     Ok(manager.is_enabled().unwrap_or(enabled))
 }
 
+/// Whether a typed shared-folder path already names a folder.
+///
+/// The path is hand-entered, so it is a trust boundary: it may name a file, a folder that
+/// does not exist yet, or nothing reachable at all. The settings page asks before it saves
+/// so it can offer to create a missing folder rather than storing a path that will fail
+/// quietly on every export afterwards.
+#[tauri::command]
+fn shared_folder_exists(path: String) -> Result<bool, String> {
+    let path = std::path::Path::new(path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("Enter a folder path.".to_string());
+    }
+    if path.is_file() {
+        return Err("That path is a file, not a folder.".to_string());
+    }
+    Ok(path.is_dir())
+}
+
+/// Creates the folder the user confirmed, parents included.
+#[tauri::command]
+fn create_shared_folder(path: String) -> Result<(), String> {
+    std::fs::create_dir_all(path.trim()).map_err(|error| {
+        sanitize::sanitize_error(&error.to_string(), "The folder could not be created")
+    })
+}
+
 /// Puts a shortcut on the desktop. The location is the user's own desktop, so the path is
 /// neither reported back nor worth reporting.
 #[tauri::command]
@@ -1231,7 +1306,9 @@ pub fn run() {
             get_snapshot,
             get_usage_range,
             get_usage_hours,
+            get_usage_window,
             get_quota_history,
+            get_reset_history,
             refresh_now,
             get_diagnostics,
             get_log_available,
@@ -1249,6 +1326,8 @@ pub fn run() {
             set_app_settings,
             get_autostart,
             set_autostart,
+            shared_folder_exists,
+            create_shared_folder,
             create_desktop_shortcut
         ])
         .on_window_event(|window, event| {

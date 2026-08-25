@@ -228,6 +228,9 @@ button { font: inherit; }
 .header-actions button:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
 .header-actions button:disabled { opacity: 0.58; cursor: wait; }
 .header-actions svg { width: 18px; height: 18px; stroke-width: 1.8; }
+/* Something is wrong behind the settings page, and the page is the only place it can be
+   read. The control that opens it is where that has to be visible from. */
+.header-actions button.attention { border-color: color-mix(in srgb, var(--danger) 60%, var(--line-strong)); color: var(--danger-text); }
 
 .quota-section { border: 1px solid var(--line-panel); border-radius: 5px; overflow: hidden; background: var(--surface-veil); }
 /* Sized to fit inside one half of the two-column provider grid, which is the narrowest the
@@ -257,25 +260,37 @@ button { font: inherit; }
 .quota-reset { min-height: 70px; padding-left: 16px; border-left: 1px solid var(--line-divider); display: flex; flex-direction: column; justify-content: center; }
 .quota-reset strong { margin-top: 7px; color: var(--accent); font-size: 18px; font-variant-numeric: tabular-nums; }
 .quota-reset time { margin-top: 6px; color: var(--text-dim); font-size: 11px; font-variant-numeric: tabular-nums; }
-.quota-origin { grid-column: 1 / -1; margin: 0; padding-left: 11px; border-left: 2px solid var(--warning); color: var(--warning); font-size: 12px; line-height: 1.4; }
-.reset-history { border-top: 1px solid var(--line); font-size: 12px; }
-.reset-history summary { padding: 11px 28px; color: var(--muted); cursor: pointer; font-weight: 630; list-style-position: inside; }
-.reset-history summary span { margin-left: 8px; font-weight: 400; }
+.quota-origin { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 12px; margin: 0; padding-left: 11px; border-left: 2px solid var(--warning); color: var(--warning); font-size: 12px; line-height: 1.4; }
+.quota-origin span { min-width: 0; }
+.quota-origin button { height: 24px; flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); border-radius: 4px; color: var(--warning); background: transparent; cursor: pointer; font: inherit; font-size: 11px; font-weight: 620; }
+.quota-origin button:hover { background: color-mix(in srgb, var(--warning) 12%, transparent); }
+.quota-origin button svg { width: 13px; height: 13px; }
 /* The columns are measured once for the whole list rather than once per row, which is the
    only way the verdict can be sized to its own longest phrase and still begin on the same
    vertical line in every row. The rows carry their own border, so they stay grid items and
    borrow the columns through `subgrid` instead of dissolving into the list. */
-.reset-history ul { display: grid; grid-template-columns: minmax(0, 128px) minmax(0, 1fr) 72px 62px max-content; column-gap: 12px; margin: 0; padding: 0 28px 14px; list-style: none; }
-.reset-history li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line-soft); }
-.reset-history li time { color: var(--text-dim); font-variant-numeric: tabular-nums; }
-.reset-history li span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.reset-history li strong { font-weight: 620; font-variant-numeric: tabular-nums; text-align: right; }
+.reset-history h4 { display: flex; align-items: baseline; gap: 10px; margin: 0 0 6px; font-size: 13px; font-weight: 650; }
+.reset-history h4 span { color: var(--muted); font-size: 11px; font-weight: 400; }
+.reset-history + .reset-history { margin-top: 16px; }
+.reset-history ul, .latest-resets { display: grid; grid-template-columns: minmax(0, 168px) minmax(0, 1fr) 72px 62px max-content; column-gap: 12px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.reset-history li, .latest-resets li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line-soft); }
+.reset-history li time, .latest-resets li time { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.reset-history li span, .latest-resets li span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reset-history li strong, .latest-resets li strong { font-weight: 620; font-variant-numeric: tabular-nums; text-align: right; }
 /* The share ends on one line and the verdict begins on another, so the gap between them is
    the same on every row rather than closing and opening as the two phrases change length. */
-.reset-history li em { color: var(--muted); font-style: normal; text-align: left; white-space: nowrap; }
-.reset-history li.unplanned em { color: var(--warning); font-weight: 620; }
+.reset-history li em, .latest-resets li em { color: var(--muted); font-style: normal; text-align: left; white-space: nowrap; }
+.reset-history li.unplanned em, .latest-resets li.unplanned em { color: var(--warning); font-weight: 620; }
+/* On the dashboard the list is the last thing in the panel and reads as a footer to it, so
+   it takes the panel's own inset rather than the settings page's flush edge. The label
+   comes first there: one row per window says which window it is, not when it happened. */
+.latest-resets { padding: 4px 28px 12px; grid-template-columns: minmax(0, 1fr) minmax(0, 168px) 72px 62px max-content; }
+.latest-resets li > *:first-child { color: var(--text-dim); }
 .reset-inventory { height: 42px; display: flex; align-items: center; gap: 30px; padding: 0 28px; font-size: 14px; }
 .reset-inventory strong { color: var(--accent); font-size: 16px; }
+.reset-expiry { display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: 12px; }
+.reset-expiry strong { color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; }
+.reset-expiry time { color: var(--text-dim); font-size: 11px; font-variant-numeric: tabular-nums; }
 .quota-empty { min-height: 150px; padding: 34px; display: flex; flex-direction: column; justify-content: center; border-bottom: 1px solid var(--line); }
 .quota-empty h2 { margin: 0 0 8px; font-size: 20px; }
 .quota-empty p, .empty-copy { margin: 0; color: var(--muted); font-size: 13px; }
@@ -334,6 +349,10 @@ button { font: inherit; }
 .folder-picker button { height: 34px; flex: none; padding: 0 11px; border: 1px solid var(--line-field); border-radius: 4px; color: var(--text-dim); background: var(--field); cursor: pointer; font-size: 11px; font-weight: 620; }
 .folder-picker button:hover { border-color: var(--line-hover); background: var(--hover); }
 .folder-picker button:disabled { opacity: 0.55; cursor: wait; }
+.folder-missing { display: flex; align-items: center; gap: 8px; color: var(--warning); font-size: 11px; font-weight: 400; }
+.folder-missing button { height: 26px; padding: 0 10px; border: 1px solid var(--line-field); border-radius: 4px; color: var(--text); background: var(--field); cursor: pointer; font: inherit; font-size: 11px; font-weight: 620; }
+.folder-missing button:hover:not(:disabled) { border-color: var(--line-hover); background: var(--hover); }
+.folder-missing button:disabled { opacity: 0.55; cursor: wait; }
 
 .confirm-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 32px; background: var(--overlay-strong); }
 .confirm-dialog { width: min(520px, 100%); padding: 20px 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 24px 60px var(--shadow); }
@@ -476,27 +495,21 @@ button { font: inherit; }
 .daily-table-row.open { background: var(--hover-strong); box-shadow: inset 2px 0 0 var(--series-1); }
 .daily-table-row:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 
-/* One control, so no panel around it: a bordered strip spanning the window would be a
-   container drawn for a single button. */
-.status-bar { margin-top: auto; display: flex; justify-content: flex-end; }
-.settings-toggle { height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--line-quiet); border-radius: 4px; color: var(--text-dim); background: transparent; cursor: pointer; font-size: 12px; }
-.settings-toggle:hover { border-color: var(--line-hover); background: var(--hover); }
-.settings-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-.settings-toggle svg { width: 15px; height: 15px; }
-.settings-toggle.attention { border-color: color-mix(in srgb, var(--danger) 60%, var(--line)); color: var(--danger-text); }
-
-.settings-overlay { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 32px; background: var(--overlay); backdrop-filter: blur(2px); }
-/* Settings and diagnostics are read together, so the dialog is one scrolling page and
-   takes a fixed height: the two sections should not resize the dialog under the pointer
-   as their contents change. */
-.settings-dialog { width: min(880px, 100%); height: min(900px, 100%); display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 24px 60px var(--shadow); }
-.settings-dialog:focus { outline: none; }
-.settings-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px 12px 18px; border-bottom: 1px solid var(--line-soft); }
-.settings-header h2 { margin: 0; font-size: 15px; font-weight: 650; }
-.settings-close { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; }
-.settings-close:hover { border-color: var(--line); color: var(--text); background: var(--hover); }
-.settings-close svg { width: 17px; height: 17px; }
-.settings-body { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 20px; padding: 16px 18px 18px; overflow-y: auto; }
+/* Settings is a page rather than an overlay: the nav down the left is a way to jump
+   between sections of one scroller, never a set of tabs that hide each other. */
+/* The page owns the viewport height so its body is the scroller: a window that grew with
+   the sections instead would scroll the header and the nav away with them. */
+.app-shell.settings-open { height: 100vh; overflow: hidden; }
+.settings-page { min-height: 0; flex: 1; display: grid; grid-template-columns: 172px minmax(0, 1fr); gap: 22px; }
+.settings-nav { display: flex; flex-direction: column; gap: 2px; align-self: start; }
+.settings-nav button { height: 32px; display: flex; align-items: center; padding: 0 11px; border: 0; border-left: 2px solid transparent; border-radius: 0 4px 4px 0; color: var(--muted); background: transparent; cursor: pointer; font-size: 12px; font-weight: 620; text-align: left; }
+.settings-nav button:hover { color: var(--text); background: var(--hover); }
+.settings-nav button.active { border-left-color: var(--accent); color: var(--text); background: var(--hover-strong); }
+.settings-nav button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.settings-body { min-height: 0; display: flex; flex-direction: column; gap: 26px; padding-right: 6px; overflow-y: auto; scroll-behavior: smooth; }
+/* The heading is what the nav scrolls to, so it carries the padding that keeps it clear of
+   the scroller's top edge rather than sitting flush against it. */
+.settings-body > section { scroll-margin-top: 4px; }
 .settings-section-heading { margin: 0 0 10px; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: 0.09em; text-transform: uppercase; }
 .settings-empty { margin: 0; max-width: 78ch; color: var(--muted); font-size: 12px; line-height: 1.5; }
 

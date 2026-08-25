@@ -1,6 +1,6 @@
 import { CalendarDays, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import { alignToBuckets, calendarDays, calendarHours } from "../charts";
+import { alignToBuckets, calendarDays, calendarHours, windowHours } from "../charts";
 import {
   createCustomRange,
   createPresetRange,
@@ -45,6 +45,9 @@ interface UsagePoint {
 
 const PRESETS: Array<{ value: Exclude<RangePreset, "custom">; label: string }> = [
   { value: "today", label: "Today" },
+  // A rolling window is a different question from a calendar day: at nine in the morning
+  // "today" is nine hours and this is a full day of work, most of it yesterday's.
+  { value: "24h", label: "24h" },
   { value: "3d", label: "3d" },
   { value: "7d", label: "7d" },
   { value: "30d", label: "30d" },
@@ -126,10 +129,14 @@ export function UsageSummary({
     () => calendarDays(range.startDate, range.endDate),
     [range.startDate, range.endDate],
   );
-  const buckets = useMemo(
-    () => (hourly ? calendarHours(range.startDate, range.endDate) : days),
-    [hourly, range.startDate, range.endDate, days],
-  );
+  // A rolling window is bounded by its own two ends; a calendar range runs from midnight
+  // to the hour in progress.
+  const buckets = useMemo(() => {
+    if (!hourly) return days;
+    return selection.startHour !== undefined && selection.endHour !== undefined
+      ? windowHours(selection.startHour, selection.endHour)
+      : calendarHours(range.startDate, range.endDate);
+  }, [hourly, selection.startHour, selection.endHour, range.startDate, range.endDate, days]);
   const aligned: Array<UsagePoint | undefined> = useMemo(
     () =>
       hours === null

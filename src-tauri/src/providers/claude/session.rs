@@ -58,6 +58,7 @@ fn read_live_blocking(plan_type: Option<String>) -> Result<LiveSnapshot> {
         }],
         // Claude grants no reset inventory of the kind Codex publishes.
         earned_reset_count: None,
+        earned_reset_expires_at: None,
     })
 }
 

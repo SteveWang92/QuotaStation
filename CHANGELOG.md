@@ -11,7 +11,16 @@ on `main`, with the matching section below as its notes.
 
 - The reset history says how many tokens were spent inside each window that reset.
 - Usage from multiple machines can be combined, inspected by device, and filtered across the history dashboard.
-- The shared usage folder can be chosen with the native Windows folder picker.
+- The shared usage folder can be chosen with the native Windows folder picker, or typed as a path that QuotaStation offers to create.
+- A "Last 24 hours" range that reads the rolling day rather than the calendar one.
+- Codex reports when the first of its earned resets expires.
+- The settings page lists every quota-window restart ever recorded.
+
+### Changed
+
+- Settings is a page opened from beside Refresh rather than a dialog over the dashboard.
+- The provider panels show the last restart of each window instead of the whole history.
+- An early-restart note can be acknowledged, and comes back at the next restart.
 
 ### Fixed
 

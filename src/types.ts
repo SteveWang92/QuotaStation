@@ -83,6 +83,11 @@ export interface ProviderSnapshot {
   planType: string | null;
   limits: LimitWindow[];
   earnedResetCount: number | null;
+  /**
+   * When the soonest of those earned resets stops being redeemable, or `null` where the
+   * provider publishes only how many there are.
+   */
+  earnedResetExpiresAt: number | null;
   recentResets: LimitResetEvent[];
   today: TokenUsage;
   apiEquivalentCostUsd: number | null;
@@ -145,6 +150,25 @@ export interface HourlyUsagePoint {
   usage: TokenUsage;
   apiEquivalentCostUsd: number | null;
   models: ModelUsage[];
+}
+
+/**
+ * A rolling window of hours: the totals and the hours they were summed from.
+ *
+ * A calendar range is answered from the stored days; a window of the last so many hours
+ * cannot be, because the days at its two ends are partial. Both halves come from the same
+ * hourly rows, so every figure on the surface describes the same hours.
+ */
+export interface UsageWindowSnapshot {
+  range: UsageRangeSnapshot;
+  hours: UsageHoursSnapshot;
+}
+
+/** One provider's whole recorded restart history, newest first. */
+export interface ProviderResetHistory {
+  provider: ProviderKey;
+  displayName: string;
+  resets: LimitResetEvent[];
 }
 
 /** A range read hour by hour. Only the hours with usage are carried. */
@@ -262,6 +286,12 @@ export interface AppSettings {
   deviceId: string | null;
   /** This machine's name in device splits and diagnostics. */
   deviceName: string | null;
+  /**
+   * The `provider:windowKind:newResetsAt` keys of the early-restart notes already read.
+   * Keying on the expiry the note explains is what brings the note back at the next
+   * restart and never brings back the one already dismissed.
+   */
+  dismissedResetNotices: string[];
   /** Folder whose aggregate-only usage files are exchanged with other devices. */
   sharedUsageFolder: string | null;
 }

@@ -20,9 +20,11 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
       </header>
       <QuotaSection
         compact
-        provider={snapshot.displayName}
+        provider={snapshot.provider}
+        providerName={snapshot.displayName}
         limits={snapshot.limits}
         earnedResetCount={snapshot.earnedResetCount}
+        earnedResetExpiresAt={snapshot.earnedResetExpiresAt}
         resets={snapshot.recentResets}
       />
       <section className="quick-usage" aria-label={`${snapshot.displayName} usage today`}>

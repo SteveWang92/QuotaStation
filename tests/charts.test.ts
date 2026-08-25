@@ -10,6 +10,7 @@ import {
   labelStride,
   linePath,
   stackSegments,
+  windowHours,
 } from "../src/charts";
 
 describe("hourly range completeness", () => {
@@ -182,5 +183,17 @@ describe("lines", () => {
     expect(labelStride(7, 700)).toBe(1);
     expect(labelStride(90, 700)).toBeGreaterThan(1);
     expect(labelStride(1, 700)).toBe(1);
+  });
+});
+
+describe("rolling window buckets", () => {
+  it("runs from one hour to the other inclusive, across the midnight between them", () => {
+    const hours = windowHours("2026-08-11T22:00", "2026-08-12T01:00");
+    expect(hours).toEqual([
+      "2026-08-11T22:00",
+      "2026-08-11T23:00",
+      "2026-08-12T00:00",
+      "2026-08-12T01:00",
+    ]);
   });
 });

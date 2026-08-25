@@ -16,7 +16,7 @@ use crate::domain::{
     LimitWindow, LiveSnapshot, ModelUsage, ModelUsageRow, PRICING_CATALOG_REVISION,
     ProviderSnapshot, QuotaHistoryPoint, QuotaHistorySnapshot, QuotaHistoryWindow, QuotaLevel,
     ResetClassification, RetentionDiagnostics, TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot,
-    WindowSource,
+    UsageWindowSnapshot, WindowSource,
 };
 use crate::providers::ProviderKind;
 use crate::resets::{ResetTracker, WindowObservation, detect};
@@ -82,6 +82,57 @@ pub struct DeviceImport<'a> {
     pub source_modified_at: i64,
     pub daily: &'a [DeviceUsageRow],
     pub hourly: &'a [DeviceUsageRow],
+}
+
+/// Which of the two usage tables a device split is being read from, and the column its
+/// buckets are keyed by. A calendar range reads the daily rows; a rolling window of hours
+/// can only be answered by the hourly ones, because the days at its ends are partial.
+#[derive(Debug, Clone, Copy)]
+enum BucketTable {
+    Daily,
+    Hourly,
+}
+
+impl BucketTable {
+    fn parts(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Daily => ("daily_usage", "usage_date"),
+            Self::Hourly => ("hourly_usage", "hour_start"),
+        }
+    }
+}
+
+/// One bucket of usage being accumulated — a day or an hour — as its rows arrive one
+/// model at a time.
+#[derive(Default)]
+struct Bucket {
+    usage: TokenUsage,
+    cost: f64,
+    models: BTreeMap<String, u64>,
+}
+
+impl Bucket {
+    fn add(&mut self, usage: &TokenUsage, cost: f64, model: &str) {
+        add_usage(&mut self.usage, usage);
+        self.cost += cost;
+        *self.models.entry(model.to_string()).or_default() += usage.total;
+    }
+
+    /// The bucket as a surface reads it: a cost only where something was spent, and the
+    /// models ranked by their share of this bucket alone.
+    fn finish(self) -> (TokenUsage, Option<f64>, Vec<ModelUsage>) {
+        let cost = (self.usage.total > 0).then_some(self.cost);
+        let models = rank_models(self.models, self.usage.total);
+        (self.usage, cost, models)
+    }
+}
+
+fn add_usage(total: &mut TokenUsage, usage: &TokenUsage) {
+    total.input += usage.input;
+    total.cache_read += usage.cache_read;
+    total.output += usage.output;
+    total.reasoning += usage.reasoning;
+    total.total += usage.total;
 }
 
 fn kind_column(kind: LimitKind) -> &'static str {
@@ -221,10 +272,11 @@ impl Storage {
         }
         sqlx::query(
             "UPDATE provider_instances SET plan_type = ?, earned_reset_count = ?, \
-             last_live_success_at = ?, updated_at = ? WHERE id = ?",
+             earned_reset_expires_at = ?, last_live_success_at = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&live.plan_type)
         .bind(live.earned_reset_count.map(|value| value as i64))
+        .bind(live.earned_reset_expires_at)
         .bind(observed_at)
         .bind(observed_at)
         .bind(provider_id)
@@ -483,6 +535,23 @@ impl Storage {
                 })
             })
             .collect())
+    }
+
+    /// Every restart recorded for a provider, newest first.
+    ///
+    /// Nothing prunes `limit_resets`, so this really is the whole history — which is why
+    /// only the settings page asks for it and the dashboard takes
+    /// [`load_recent_resets`](Self::load_recent_resets) instead.
+    pub async fn load_reset_history(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
+        let provider_id = self.provider_id(provider).await?;
+        let rows = sqlx::query(&format!(
+            "SELECT {RESET_COLUMNS} FROM limit_resets \
+             WHERE provider_instance_id = ? ORDER BY anchored_at DESC"
+        ))
+        .bind(provider_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().filter_map(reset_event).collect())
     }
 
     pub async fn load_recent_resets(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
@@ -987,7 +1056,8 @@ impl Storage {
     pub async fn load_snapshot(&self, provider: ProviderKind) -> Result<ProviderSnapshot> {
         let provider_id = self.provider_id(provider).await?;
         let instance = sqlx::query(
-            "SELECT plan_type, earned_reset_count, last_live_success_at, last_history_success_at \
+            "SELECT plan_type, earned_reset_count, earned_reset_expires_at, \
+             last_live_success_at, last_history_success_at \
              FROM provider_instances WHERE id = ?",
         )
         .bind(provider_id)
@@ -997,6 +1067,7 @@ impl Storage {
         snapshot.plan_type = instance.try_get("plan_type")?;
         snapshot.earned_reset_count =
             instance.try_get::<Option<i64>, _>("earned_reset_count")?.map(|v| v as u64);
+        snapshot.earned_reset_expires_at = instance.try_get("earned_reset_expires_at")?;
         let live_success: Option<String> = instance.try_get("last_live_success_at")?;
         let history_success: Option<String> = instance.try_get("last_history_success_at")?;
         snapshot.last_live_success_at = live_success;
@@ -1147,10 +1218,22 @@ impl Storage {
         let split_total = if device.is_none() {
             total.total
         } else {
-            self.load_usage_total(provider_id, &start.to_string(), &end.to_string()).await?
+            self.load_usage_total(
+                provider_id,
+                BucketTable::Daily,
+                &start.to_string(),
+                &end.to_string(),
+            )
+            .await?
         };
         let devices = self
-            .load_device_split(provider_id, &start.to_string(), &end.to_string(), split_total)
+            .load_device_split(
+                provider_id,
+                BucketTable::Daily,
+                &start.to_string(),
+                &end.to_string(),
+                split_total,
+            )
             .await?;
         Ok(UsageRangeSnapshot {
             start_date: start.to_string(),
@@ -1166,17 +1249,19 @@ impl Storage {
     async fn load_usage_total(
         &self,
         provider_id: Option<i64>,
-        start_date: &str,
-        end_date: &str,
+        bucket: BucketTable,
+        start: &str,
+        end: &str,
     ) -> Result<u64> {
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(total_tokens), 0) FROM daily_usage \
-             WHERE (? IS NULL OR provider_instance_id = ?) AND usage_date BETWEEN ? AND ?",
-        )
+        let (table, column) = bucket.parts();
+        let total: i64 = sqlx::query_scalar(&format!(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM {table} \
+             WHERE (? IS NULL OR provider_instance_id = ?) AND {column} BETWEEN ? AND ?"
+        ))
         .bind(provider_id)
         .bind(provider_id)
-        .bind(start_date)
-        .bind(end_date)
+        .bind(start)
+        .bind(end)
         .fetch_one(&self.pool)
         .await?;
         Ok(total as u64)
@@ -1187,21 +1272,23 @@ impl Storage {
     async fn load_device_split(
         &self,
         provider_id: Option<i64>,
-        start_date: &str,
-        end_date: &str,
+        bucket: BucketTable,
+        start: &str,
+        end: &str,
         total: u64,
     ) -> Result<Vec<DeviceUsage>> {
-        let rows = sqlx::query(
-            "SELECT daily_usage.device AS device, devices.display_name AS display_name, \
-             SUM(total_tokens) AS tokens FROM daily_usage \
-             JOIN devices ON devices.id = daily_usage.device \
-             WHERE (? IS NULL OR provider_instance_id = ?) AND usage_date BETWEEN ? AND ? \
-             GROUP BY daily_usage.device HAVING tokens > 0 ORDER BY tokens DESC",
-        )
+        let (table, column) = bucket.parts();
+        let rows = sqlx::query(&format!(
+            "SELECT {table}.device AS device, devices.display_name AS display_name, \
+             SUM(total_tokens) AS tokens FROM {table} \
+             JOIN devices ON devices.id = {table}.device \
+             WHERE (? IS NULL OR provider_instance_id = ?) AND {column} BETWEEN ? AND ? \
+             GROUP BY {table}.device HAVING tokens > 0 ORDER BY tokens DESC"
+        ))
         .bind(provider_id)
         .bind(provider_id)
-        .bind(start_date)
-        .bind(end_date)
+        .bind(start)
+        .bind(end)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
@@ -1290,6 +1377,109 @@ impl Storage {
                     usage,
                 })
                 .collect(),
+        })
+    }
+
+    /// A rolling window of hours, answered as the totals and the hours behind them.
+    ///
+    /// A calendar range is read from `daily_usage`, which cannot express "the last
+    /// twenty-four hours": both days such a window touches are partial. Everything here
+    /// is summed from `hourly_usage` instead — the headline totals, the day rows, the
+    /// model mix and the device split — so no figure on the surface describes different
+    /// hours than the chart beside it. `hourly_usage` is kept for
+    /// [`HOURLY_HISTORY_DAYS`](crate::domain::HOURLY_HISTORY_DAYS) days, which is how far
+    /// back a window may reach.
+    pub async fn load_usage_window(
+        &self,
+        provider: Option<ProviderKind>,
+        device: Option<&str>,
+        start_hour: &str,
+        end_hour: &str,
+    ) -> Result<UsageWindowSnapshot> {
+        anyhow::ensure!(start_hour <= end_hour, "start hour must not be after end hour");
+        let provider_id = match provider {
+            Some(kind) => Some(self.provider_id(kind).await?),
+            None => None,
+        };
+        let rows = sqlx::query(
+            "SELECT hour_start, model, SUM(input_tokens) AS input_tokens, \
+             SUM(cache_read_tokens) AS cache_read_tokens, SUM(output_tokens) AS output_tokens, \
+             SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens, \
+             SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd \
+             FROM hourly_usage WHERE (? IS NULL OR provider_instance_id = ?) \
+             AND (? IS NULL OR device = ?) AND hour_start BETWEEN ? AND ? \
+             GROUP BY hour_start, model ORDER BY hour_start ASC, total_tokens DESC",
+        )
+        .bind(provider_id)
+        .bind(provider_id)
+        .bind(device)
+        .bind(device)
+        .bind(start_hour)
+        .bind(end_hour)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut total = TokenUsage::default();
+        let mut total_cost = 0.0;
+        let mut model_totals: BTreeMap<String, u64> = BTreeMap::new();
+        let mut hour_totals: BTreeMap<String, Bucket> = BTreeMap::new();
+        let mut day_totals: BTreeMap<String, Bucket> = BTreeMap::new();
+        for row in rows {
+            let hour_start: String = row.get("hour_start");
+            let model: String = row.get("model");
+            let usage = TokenUsage {
+                input: row.get::<i64, _>("input_tokens") as u64,
+                cache_read: row.get::<i64, _>("cache_read_tokens") as u64,
+                output: row.get::<i64, _>("output_tokens") as u64,
+                reasoning: row.get::<i64, _>("reasoning_tokens") as u64,
+                total: row.get::<i64, _>("total_tokens") as u64,
+            };
+            let cost = row.get::<f64, _>("estimated_cost_usd");
+            add_usage(&mut total, &usage);
+            total_cost += cost;
+            *model_totals.entry(model.clone()).or_default() += usage.total;
+            // The hour key opens with the local date it belongs to, which is the day row
+            // this hour is counted into: a partial day is still that day.
+            day_totals.entry(hour_start[..10].to_string()).or_default().add(&usage, cost, &model);
+            hour_totals.entry(hour_start).or_default().add(&usage, cost, &model);
+        }
+
+        let split_total = if device.is_none() {
+            total.total
+        } else {
+            self.load_usage_total(provider_id, BucketTable::Hourly, start_hour, end_hour).await?
+        };
+        let devices = self
+            .load_device_split(provider_id, BucketTable::Hourly, start_hour, end_hour, split_total)
+            .await?;
+        let (start_date, end_date) = (start_hour[..10].to_string(), end_hour[..10].to_string());
+        Ok(UsageWindowSnapshot {
+            range: UsageRangeSnapshot {
+                start_date: start_date.clone(),
+                end_date: end_date.clone(),
+                api_equivalent_cost_usd: (total.total > 0).then_some(total_cost),
+                models: rank_models(model_totals, total.total),
+                days: day_totals
+                    .into_iter()
+                    .map(|(date, bucket)| {
+                        let (usage, api_equivalent_cost_usd, models) = bucket.finish();
+                        DailyUsagePoint { date, usage, api_equivalent_cost_usd, models }
+                    })
+                    .collect(),
+                usage: total,
+                devices,
+            },
+            hours: UsageHoursSnapshot {
+                start_date,
+                end_date,
+                hours: hour_totals
+                    .into_iter()
+                    .map(|(hour_start, bucket)| {
+                        let (usage, api_equivalent_cost_usd, models) = bucket.finish();
+                        HourlyUsagePoint { hour_start, usage, api_equivalent_cost_usd, models }
+                    })
+                    .collect(),
+            },
         })
     }
 
@@ -1592,6 +1782,51 @@ mod tests {
         );
         assert_eq!(hours.hours[0].usage.total, 300);
         assert_eq!(hours.hours[1].models[0].model, "gpt-5-codex");
+    }
+
+    #[tokio::test]
+    async fn a_rolling_window_counts_only_the_hours_inside_it() {
+        let (storage, _database) = open_storage().await;
+        let history = HistorySnapshot {
+            days: vec![
+                day("2026-08-19", "gpt-5-codex", 100),
+                day("2026-08-20", "gpt-5-codex", 700),
+            ],
+            hours: vec![
+                // Before the window opens: on the 19th, but earlier than 14:00.
+                hour("2026-08-19T09:00", "gpt-5-codex", 100),
+                hour("2026-08-19T18:00", "gpt-5-codex", 300),
+                hour("2026-08-20T10:00", "gpt-5-codex", 400),
+            ],
+        };
+        storage
+            .save_history(CODEX, &history, "Australia/Sydney", "2026-08-20T15:00:00Z")
+            .await
+            .expect("save history");
+
+        let window = storage
+            .load_usage_window(Some(CODEX), None, "2026-08-19T14:00", "2026-08-20T13:00")
+            .await
+            .expect("read the rolling window");
+        assert_eq!(
+            window.range.usage.total, 700,
+            "the hour before the window opened is outside it"
+        );
+        assert_eq!(
+            window.hours.hours.iter().map(|point| point.hour_start.as_str()).collect::<Vec<_>>(),
+            ["2026-08-19T18:00", "2026-08-20T10:00"]
+        );
+        // Both days the window touches are partial, and each day row carries only the hours
+        // of it that fell inside.
+        assert_eq!(
+            window
+                .range
+                .days
+                .iter()
+                .map(|point| (point.date.as_str(), point.usage.total))
+                .collect::<Vec<_>>(),
+            [("2026-08-19", 300), ("2026-08-20", 400)]
+        );
     }
 
     #[tokio::test]
@@ -2002,6 +2237,7 @@ mod tests {
         let live = LiveSnapshot {
             plan_type: Some("plus".to_string()),
             earned_reset_count: Some(2),
+            earned_reset_expires_at: None,
             limits: vec![LimitWindow {
                 kind: LimitKind::Primary,
                 label: LimitKind::Primary.window_label(Some(300)),
@@ -2034,6 +2270,7 @@ mod tests {
         LiveSnapshot {
             plan_type: Some("plus".to_string()),
             earned_reset_count: Some(0),
+            earned_reset_expires_at: None,
             limits: vec![LimitWindow {
                 kind: LimitKind::Primary,
                 label: LimitKind::Primary.window_label(Some(WEEK_MINUTES)),

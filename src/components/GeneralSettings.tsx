@@ -22,6 +22,11 @@ export function GeneralSettings() {
   const [displays, setDisplays] = useState<TaskbarDisplay[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [sharingError, setSharingError] = useState<string | null>(null);
+  // The folder can be typed as well as browsed for, so it is edited locally and only saved
+  // once the path has been checked — a folder that does not exist yet is an offer to create
+  // it rather than a setting that quietly fails on every export afterwards.
+  const [folderDraft, setFolderDraft] = useState<string | null>(null);
+  const [missingFolder, setMissingFolder] = useState<string | null>(null);
 
   useEffect(() => {
     void invoke<boolean>("get_autostart").then(setAutostart);
@@ -88,6 +93,12 @@ export function GeneralSettings() {
     }
   }, []);
 
+  const applySharedFolder = useCallback(async (folder: string) => {
+    setFolderDraft(null);
+    setMissingFolder(null);
+    await saveAppSettings({ sharedUsageFolder: folder });
+  }, []);
+
   const chooseSharedFolder = useCallback(async () => {
     setBusy(true);
     setSharingError(null);
@@ -98,13 +109,51 @@ export function GeneralSettings() {
         title: "Choose shared usage folder",
         defaultPath: settings?.sharedUsageFolder ?? (await documentDir()),
       });
-      if (selected !== null) await saveAppSettings({ sharedUsageFolder: selected });
+      // The picker only returns folders that exist, so there is nothing to offer creating.
+      if (selected !== null) await applySharedFolder(selected);
     } catch (cause) {
       setSharingError(errorMessage(cause));
     } finally {
       setBusy(false);
     }
-  }, [settings?.sharedUsageFolder]);
+  }, [settings?.sharedUsageFolder, applySharedFolder]);
+
+  /** Applies a typed path, offering to create the folder when it is not there yet. */
+  const submitSharedFolder = useCallback(async () => {
+    const folder = (folderDraft ?? "").trim();
+    setMissingFolder(null);
+    if (folder === (settings?.sharedUsageFolder ?? "")) {
+      setFolderDraft(null);
+      return;
+    }
+    setBusy(true);
+    setSharingError(null);
+    try {
+      if (await invoke<boolean>("shared_folder_exists", { path: folder })) {
+        await applySharedFolder(folder);
+      } else {
+        setMissingFolder(folder);
+      }
+    } catch (cause) {
+      setSharingError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, [folderDraft, settings?.sharedUsageFolder, applySharedFolder]);
+
+  const createSharedFolder = useCallback(async () => {
+    if (missingFolder === null) return;
+    setBusy(true);
+    setSharingError(null);
+    try {
+      await invoke("create_shared_folder", { path: missingFolder });
+      await applySharedFolder(missingFolder);
+    } catch (cause) {
+      setSharingError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, [missingFolder, applySharedFolder]);
 
   const createShortcut = useCallback(async () => {
     setBusy(true);
@@ -198,28 +247,62 @@ export function GeneralSettings() {
               <span className="folder-picker">
                 <input
                   type="text"
-                  value={settings?.sharedUsageFolder ?? ""}
-                  placeholder="Not enabled"
-                  readOnly
+                  value={folderDraft ?? settings?.sharedUsageFolder ?? ""}
+                  placeholder="Type a path, or browse for one"
                   disabled={settings === null}
+                  onChange={(event) => setFolderDraft(event.target.value)}
+                  onBlur={() => {
+                    if (folderDraft !== null) void submitSharedFolder();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                    if (event.key === "Escape") {
+                      setFolderDraft(null);
+                      setMissingFolder(null);
+                    }
+                  }}
                 />
                 <button
                   type="button"
                   disabled={busy || settings === null}
                   onClick={() => void chooseSharedFolder()}
                 >
-                  Choose folder
+                  Browse
                 </button>
                 {settings?.sharedUsageFolder ? (
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => void changeSharing({ sharedUsageFolder: null })}
+                    onClick={() => {
+                      setFolderDraft(null);
+                      setMissingFolder(null);
+                      void changeSharing({ sharedUsageFolder: null });
+                    }}
                   >
                     Disable
                   </button>
                 ) : null}
               </span>
+              {/* Creating a folder writes outside QuotaStation's own data, so it is offered
+                  rather than done: a typo would otherwise silently create the wrong one. */}
+              {missingFolder === null ? null : (
+                <span className="folder-missing">
+                  That folder does not exist yet.
+                  <button type="button" disabled={busy} onClick={() => void createSharedFolder()}>
+                    Create it
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setFolderDraft(null);
+                      setMissingFolder(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </span>
+              )}
             </label>
             <label>
               This machine's display name

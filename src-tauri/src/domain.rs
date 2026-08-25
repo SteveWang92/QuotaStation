@@ -239,6 +239,9 @@ pub struct ProviderSnapshot {
     pub plan_type: Option<String>,
     pub limits: Vec<LimitWindow>,
     pub earned_reset_count: Option<u64>,
+    /// When the soonest of those credits expires. A count with no expiry beside it is the
+    /// ordinary case for a provider that publishes only the total.
+    pub earned_reset_expires_at: Option<i64>,
     /// Most recent restarts first, so a surface can both annotate the window currently
     /// running and list the ones before it.
     pub recent_resets: Vec<LimitResetEvent>,
@@ -267,6 +270,7 @@ impl ProviderSnapshot {
             plan_type: None,
             limits: Vec::new(),
             earned_reset_count: None,
+            earned_reset_expires_at: None,
             recent_resets: Vec::new(),
             today: TokenUsage::default(),
             api_equivalent_cost_usd: None,
@@ -661,6 +665,18 @@ pub struct UsageRangeSnapshot {
     pub devices: Vec<DeviceUsage>,
 }
 
+/// A rolling window of hours, answered as both the totals and the hours behind them.
+///
+/// A calendar range is two dates and the day rows under it; a window of the last so many
+/// hours is not, because the days at its two ends are partial. Both halves are summed from
+/// the same hourly rows so nothing on the surface disagrees with anything else on it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageWindowSnapshot {
+    pub range: UsageRangeSnapshot,
+    pub hours: UsageHoursSnapshot,
+}
+
 /// One machine's share of a range.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -787,4 +803,5 @@ pub struct LiveSnapshot {
     pub plan_type: Option<String>,
     pub limits: Vec<LimitWindow>,
     pub earned_reset_count: Option<u64>,
+    pub earned_reset_expires_at: Option<i64>,
 }

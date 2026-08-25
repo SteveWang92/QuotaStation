@@ -1,3 +1,6 @@
+import { Check } from "lucide-react";
+import { useCallback } from "react";
+import { saveAppSettings, useAppSettings } from "../appSettings";
 import {
   formatCompactNumber,
   formatCountdown,
@@ -5,15 +8,38 @@ import {
   formatResetTimestamp,
 } from "../format";
 import { quotaColor } from "../theme";
-import type { LimitResetEvent, LimitWindow } from "../types";
+import type { LimitResetEvent, LimitWindow, ProviderKey } from "../types";
 
 interface QuotaSectionProps {
+  /** Which provider these windows belong to, which is half of a dismissed note's key. */
+  provider: ProviderKey;
   /** Display name of the provider these windows belong to, for labels and empty copy. */
-  provider: string;
+  providerName: string;
   limits: LimitWindow[];
   earnedResetCount: number | null;
+  earnedResetExpiresAt: number | null;
   resets: LimitResetEvent[];
+  /**
+   * The notice keys of every window on display right now, so dismissing one can rewrite
+   * the record against them rather than appending to it forever. Surfaces that show no
+   * dismiss control — the quick panel — leave this out.
+   */
+  liveWindowKeys?: string[];
   compact?: boolean;
+}
+
+/**
+ * How one early-restart note is recorded once it has been read.
+ *
+ * The note explains the expiry the window is showing, so keying it on that expiry is what
+ * brings the note back at the next restart and never brings back the one already read.
+ */
+export function resetNoticeKey(
+  provider: ProviderKey,
+  windowKind: LimitWindow["kind"],
+  resetsAt: number | null,
+): string {
+  return `${provider}:${windowKind}:${resetsAt ?? "unknown"}`;
 }
 
 /**
@@ -32,7 +58,16 @@ function originOf(limit: LimitWindow, resets: LimitResetEvent[]): LimitResetEven
   );
 }
 
-function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEvent }) {
+function QuotaRow({
+  limit,
+  origin,
+  onDismissOrigin,
+}: {
+  limit: LimitWindow;
+  origin?: LimitResetEvent;
+  /** Absent where the surface has no room to acknowledge the note, such as the quick panel. */
+  onDismissOrigin?: () => void;
+}) {
   const used = limit.usedPercent;
   return (
     // Each window is coloured by its own reading: the provider's status is the loudest of
@@ -43,7 +78,7 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
     >
       {/* The label already names the duration, and which source produced the reading is a
           diagnostic rather than something to read at a glance, so it lives in the settings
-          dialog beside the acquisition paths it belongs to. */}
+          page beside the acquisition paths it belongs to. */}
       <div className="quota-label">
         <h2>{limit.label}</h2>
       </div>
@@ -71,85 +106,118 @@ function QuotaRow({ limit, origin }: { limit: LimitWindow; origin?: LimitResetEv
       </div>
       {origin ? (
         <p className="quota-origin">
-          Possibly restarted early on {formatResetTimestamp(origin.anchoredAt)} — estimated{" "}
-          {formatEarlyBy(origin.earlyBySeconds)}, after a {origin.usedPercentBefore.toFixed(0)}%
-          usage reading.
+          <span>
+            Possibly restarted early on {formatResetTimestamp(origin.anchoredAt)} — estimated{" "}
+            {formatEarlyBy(origin.earlyBySeconds)}, after a {origin.usedPercentBefore.toFixed(0)}%
+            usage reading.
+          </span>
+          {/* The note stands for as long as this window does, which is days. Acknowledging
+              it is the only way it ever goes away, and the next restart brings it back. */}
+          {onDismissOrigin ? (
+            <button type="button" onClick={onDismissOrigin}>
+              <Check aria-hidden="true" /> Got it
+            </button>
+          ) : null}
         </p>
       ) : null}
     </div>
   );
 }
 
-function ResetHistory({ resets }: { resets: LimitResetEvent[] }) {
-  const possibleEarly = resets.filter((event) => event.classification === "unplanned").length;
+/**
+ * The last restart recorded of each window, which is the one that explains the window
+ * running now. Everything before it is history rather than status, and the settings page
+ * lists that in full.
+ */
+function latestPerWindow(resets: LimitResetEvent[]): LimitResetEvent[] {
+  const seen = new Set<LimitResetEvent["windowKind"]>();
+  return resets.filter((event) => {
+    if (seen.has(event.windowKind)) return false;
+    seen.add(event.windowKind);
+    return true;
+  });
+}
+
+function LatestResets({ resets }: { resets: LimitResetEvent[] }) {
   return (
-    <details className="reset-history">
-      {/* Opening and closing the panel is two clicks in quick succession, which the browser
-          also reads as a double click and answers by selecting the word under the pointer.
-          Only the repeat is cancelled, so dragging across the line still selects it. */}
-      <summary
-        onMouseDown={(event) => {
-          if (event.detail > 1) event.preventDefault();
-        }}
-      >
-        Reset history{" "}
-        <span>
-          {resets.length} recorded, {possibleEarly} possibly early
-        </span>
-      </summary>
-      <ul>
-        {resets.map((event) => (
-          <li key={`${event.windowKind}-${event.newResetsAt}`} className={event.classification}>
-            <time dateTime={new Date(event.anchoredAt * 1000).toISOString()}>
-              {formatResetTimestamp(event.anchoredAt)}
-            </time>
-            <span>{event.windowLabel}</span>
-            <strong>{event.usedPercentBefore.toFixed(0)}% used</strong>
-            {/* Usage is stored by the hour, so a window's total is exact in the middle and
-                approximate at its two ends; the tilde is what says so at a glance. */}
-            <strong
-              title={
-                event.tokensInWindow === null
-                  ? "No hourly usage was recorded for this window"
-                  : "Summed from the hours that began inside this window"
-              }
-            >
-              {event.tokensInWindow === null
-                ? "—"
-                : `~${formatCompactNumber(event.tokensInWindow)}`}
-            </strong>
-            <em>
-              {event.classification === "unplanned"
-                ? `possibly ${formatEarlyBy(event.earlyBySeconds)}`
-                : "appears on schedule"}
-            </em>
-          </li>
-        ))}
-      </ul>
-    </details>
+    <ul className="latest-resets">
+      {resets.map((event) => (
+        <li key={event.windowKind} className={event.classification}>
+          <span>{event.windowLabel} last restarted</span>
+          <time dateTime={new Date(event.anchoredAt * 1000).toISOString()}>
+            {formatResetTimestamp(event.anchoredAt)}
+          </time>
+          <strong>{event.usedPercentBefore.toFixed(0)}% used</strong>
+          {/* Usage is stored by the hour, so a window's total is exact in the middle and
+              approximate at its two ends; the tilde is what says so at a glance. */}
+          <strong
+            title={
+              event.tokensInWindow === null
+                ? "No hourly usage was recorded for this window"
+                : "Summed from the hours that began inside this window"
+            }
+          >
+            {event.tokensInWindow === null ? "—" : `~${formatCompactNumber(event.tokensInWindow)}`}
+          </strong>
+          <em>
+            {event.classification === "unplanned"
+              ? `possibly ${formatEarlyBy(event.earlyBySeconds)}`
+              : "appears on schedule"}
+          </em>
+        </li>
+      ))}
+    </ul>
   );
 }
 
 export function QuotaSection({
   provider,
+  providerName,
   limits,
   earnedResetCount,
+  earnedResetExpiresAt,
   resets,
+  liveWindowKeys,
   compact = false,
 }: QuotaSectionProps) {
+  const settings = useAppSettings();
+  const dismissed = settings?.dismissedResetNotices ?? [];
+
+  const dismiss = useCallback(
+    async (key: string) => {
+      // Only the notes for windows still on display are carried forward, so the record
+      // stays as short as the number of windows rather than growing with every restart.
+      const kept = (liveWindowKeys ?? []).filter(
+        (live) => live !== key && dismissed.includes(live),
+      );
+      await saveAppSettings({ dismissedResetNotices: [...kept, key] });
+    },
+    [dismissed, liveWindowKeys],
+  );
+
+  const latest = latestPerWindow(resets);
   return (
     <section
       className={`quota-section${compact ? " compact" : ""}`}
-      aria-label={`${provider} quota windows`}
+      aria-label={`${providerName} quota windows`}
     >
       {limits.length > 0 ? (
-        limits.map((limit) => (
-          <QuotaRow key={limit.kind} limit={limit} origin={originOf(limit, resets)} />
-        ))
+        limits.map((limit) => {
+          const key = resetNoticeKey(provider, limit.kind, limit.resetsAt);
+          const origin = dismissed.includes(key) ? undefined : originOf(limit, resets);
+          return (
+            <QuotaRow
+              key={limit.kind}
+              limit={limit}
+              origin={origin}
+              onDismissOrigin={liveWindowKeys === undefined ? undefined : () => void dismiss(key)}
+            />
+          );
+        })
       ) : (
         <div className="quota-empty">
           <h2>Quota windows unavailable</h2>
-          <p>QuotaStation will keep retrying the {provider} quota source.</p>
+          <p>QuotaStation will keep retrying the {providerName} quota source.</p>
         </div>
       )}
       {/* Only a provider that grants reset credits has an inventory to report; for the
@@ -158,9 +226,19 @@ export function QuotaSection({
         <div className="reset-inventory">
           <span>Earned resets</span>
           <strong>{earnedResetCount}</strong>
+          {/* A credit that never expires publishes no deadline, and a provider that sends
+              only the count publishes none either. Both are silence rather than "never". */}
+          {earnedResetExpiresAt === null || earnedResetCount === 0 ? null : (
+            <span className="reset-expiry">
+              First expires in <strong>{formatCountdown(earnedResetExpiresAt)}</strong>
+              <time dateTime={new Date(earnedResetExpiresAt * 1000).toISOString()}>
+                {formatResetTimestamp(earnedResetExpiresAt)}
+              </time>
+            </span>
+          )}
         </div>
       )}
-      {!compact && resets.length > 0 ? <ResetHistory resets={resets} /> : null}
+      {!compact && latest.length > 0 ? <LatestResets resets={latest} /> : null}
     </section>
   );
 }
