@@ -54,7 +54,7 @@ function originOf(limit: LimitWindow, resets: LimitResetEvent[]): LimitResetEven
     (event) =>
       event.classification === "unplanned" &&
       event.newResetsAt === limit.resetsAt &&
-      event.windowKind === limit.kind,
+      event.windowDurationMins === limit.windowDurationMins,
   );
 }
 
@@ -128,12 +128,16 @@ function QuotaRow({
  * The last restart recorded of each window, which is the one that explains the window
  * running now. Everything before it is history rather than status, and the settings page
  * lists that in full.
+ *
+ * A window is told apart by how long it runs, not by the slot it arrived in: Codex moves
+ * its windows between `primary` and `secondary`, and grouping by slot puts a weekly
+ * restart from before such a move on the row that now belongs to the five-hour window.
  */
 function latestPerWindow(resets: LimitResetEvent[]): LimitResetEvent[] {
-  const seen = new Set<LimitResetEvent["windowKind"]>();
+  const seen = new Set<number>();
   return resets.filter((event) => {
-    if (seen.has(event.windowKind)) return false;
-    seen.add(event.windowKind);
+    if (seen.has(event.windowDurationMins)) return false;
+    seen.add(event.windowDurationMins);
     return true;
   });
 }
@@ -142,7 +146,7 @@ function LatestResets({ resets }: { resets: LimitResetEvent[] }) {
   return (
     <ul className="latest-resets">
       {resets.map((event) => (
-        <li key={event.windowKind} className={event.classification}>
+        <li key={event.windowDurationMins} className={event.classification}>
           <span>{event.windowLabel} last restarted</span>
           <time dateTime={new Date(event.anchoredAt * 1000).toISOString()}>
             {formatResetTimestamp(event.anchoredAt)}

@@ -42,15 +42,15 @@ pub struct WindowObservation {
 /// has to hold: usage collapsed, the expiry jumped forward, and the new window is
 /// anchored inside the gap between the two readings. The percentage range check also
 /// rejects a non-finite reading, since no comparison against NaN succeeds.
+///
+/// The two readings must already describe the same window; callers pair them by duration,
+/// which is what a window is, rather than by the slot Codex published it in.
 pub fn detect(previous: WindowObservation, current: WindowObservation) -> Option<LimitResetEvent> {
     if current.observed_at < previous.observed_at
         || !(0.0..=100.0).contains(&previous.used_percent)
         || !(0.0..=100.0).contains(&current.used_percent)
         || !(1..=MAX_WINDOW_DURATION_MINS).contains(&current.window_duration_mins)
     {
-        return None;
-    }
-    if previous.window_duration_mins != current.window_duration_mins {
         return None;
     }
     if previous.used_percent - current.used_percent < MIN_USED_PERCENT_DROP {
@@ -90,21 +90,22 @@ pub fn detect(previous: WindowObservation, current: WindowObservation) -> Option
 }
 
 /// Runs [`detect`] over a time-ordered stream of observations, keeping the previous
-/// reading of each window kind. Codex has renamed its windows before — `primary` carried
-/// the five-hour window and now carries the weekly one — so a change of duration only
-/// reseeds the comparison instead of reporting a reset.
+/// reading of each window.
+///
+/// A window is identified by how long it runs, not by the slot it arrives in. Codex has
+/// moved its windows between `primary` and `secondary` more than once — on 2026-08-25 the
+/// weekly window moved out of `primary` and the five-hour window moved in — and pairing by
+/// slot silently threw away the reading each restart had to be recognised against. A
+/// duration that has never been seen simply starts a comparison of its own.
 #[derive(Default)]
 pub struct ResetTracker {
-    previous: BTreeMap<&'static str, WindowObservation>,
+    previous: BTreeMap<i64, WindowObservation>,
 }
 
 impl ResetTracker {
     pub fn push(&mut self, observation: WindowObservation) -> Option<LimitResetEvent> {
-        let key = match observation.kind {
-            LimitKind::Primary => "primary",
-            LimitKind::Secondary => "secondary",
-        };
-        let event = self.previous.get(key).and_then(|previous| detect(*previous, observation));
+        let key = observation.window_duration_mins;
+        let event = self.previous.get(&key).and_then(|previous| detect(*previous, observation));
         self.previous.insert(key, observation);
         event
     }
@@ -194,13 +195,35 @@ mod tests {
     }
 
     #[test]
-    fn a_change_of_window_duration_only_reseeds_the_comparison() {
+    fn a_window_duration_never_seen_before_only_seeds_a_comparison() {
         let mut tracker = ResetTracker::default();
         assert!(tracker.push(observation(1_000_000, 60.0, 1_000_000 + 86_400)).is_none());
-        let renamed = WindowObservation {
+        let five_hour = WindowObservation {
             window_duration_mins: 300,
             ..observation(1_010_000, 0.0, 1_010_000 + 18_000)
         };
-        assert!(tracker.push(renamed).is_none(), "the window Codex now reports is a different one");
+        assert!(tracker.push(five_hour).is_none(), "a different window has nothing to compare to");
+    }
+
+    #[test]
+    fn a_window_that_moved_to_the_other_slot_is_still_the_same_window() {
+        // What Codex did on 2026-08-25: the weekly window left `primary`, the five-hour
+        // window took its place, and everything restarted at zero.
+        let mut tracker = ResetTracker::default();
+        assert!(tracker.push(observation(1_000_000, 61.0, 1_000_000 + 4 * 86_400)).is_none());
+        let five_hour = WindowObservation {
+            kind: LimitKind::Primary,
+            window_duration_mins: 300,
+            ..observation(1_010_000, 0.0, 1_010_000 + 18_000)
+        };
+        assert!(tracker.push(five_hour).is_none());
+        let weekly = WindowObservation {
+            kind: LimitKind::Secondary,
+            ..observation(1_010_000, 0.0, 1_010_000 + WEEK_SECONDS)
+        };
+        let event = tracker.push(weekly).expect("the weekly window restarted, wherever it arrived");
+        assert_eq!(event.window_kind, LimitKind::Secondary);
+        assert_eq!(event.used_percent_before, 61.0);
+        assert_eq!(event.classification, ResetClassification::Unplanned);
     }
 }

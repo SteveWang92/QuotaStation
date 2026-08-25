@@ -38,18 +38,23 @@ export function ResetHistoryPanel() {
   return (
     <>
       {recorded.map((provider) => (
-        <section className="reset-history" key={provider.provider}>
-          <h4>
+        // Years of restarts for two providers is far too tall to scroll past on the way to
+        // the diagnostics below, so each provider opens only when it is being read.
+        <details className="reset-history" key={provider.provider}>
+          <summary>
             {provider.displayName}
             <span>
               {provider.resets.length} recorded,{" "}
               {provider.resets.filter((event) => event.classification === "unplanned").length}{" "}
               possibly early
             </span>
-          </h4>
+          </summary>
           <ul>
             {provider.resets.map((event) => (
-              <li key={`${event.windowKind}-${event.newResetsAt}`} className={event.classification}>
+              <li
+                key={`${event.windowDurationMins}-${event.newResetsAt}`}
+                className={event.classification}
+              >
                 <time dateTime={new Date(event.anchoredAt * 1000).toISOString()}>
                   {formatResetTimestamp(event.anchoredAt)}
                 </time>
@@ -76,7 +81,7 @@ export function ResetHistoryPanel() {
               </li>
             ))}
           </ul>
-        </section>
+        </details>
       ))}
     </>
   );

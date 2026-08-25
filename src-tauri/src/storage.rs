@@ -264,7 +264,10 @@ impl Storage {
                     window_duration_mins,
                     resets_at,
                 };
-                let Some(earlier) = previous.get(kind_column(limit.kind)) else { continue };
+                // Paired by duration rather than by slot: Codex moves a window between
+                // `primary` and `secondary`, and the reading a restart is recognised
+                // against belongs to the window, not to the name it arrived under.
+                let Some(earlier) = previous.get(&window_duration_mins) else { continue };
                 if let Some(event) = detect(*earlier, current) {
                     Self::insert_reset(&mut tx, provider_id, &event, "live", observed_at).await?;
                 }
@@ -345,7 +348,7 @@ impl Storage {
         &self,
         provider_id: i64,
         source: WindowSource,
-    ) -> Result<BTreeMap<String, WindowObservation>> {
+    ) -> Result<BTreeMap<i64, WindowObservation>> {
         let rows = sqlx::query(
             "SELECT window_kind, used_percent, window_duration_mins, resets_at, observed_at \
              FROM limit_current WHERE provider_instance_id = ? AND source = ?",
@@ -371,7 +374,7 @@ impl Storage {
                 continue;
             };
             observations.insert(
-                name,
+                window_duration_mins,
                 WindowObservation {
                     observed_at,
                     kind,

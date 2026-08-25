@@ -208,7 +208,7 @@ button { font: inherit; }
 }
 .identity { display: flex; align-items: center; gap: 16px; }
 .identity h1 { margin: 0; font-size: 30px; letter-spacing: -1.25px; font-weight: 720; }
-.header-actions { display: flex; align-items: center; color: var(--muted); font-size: 13px; }
+.header-actions { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
 .header-actions button {
   height: 44px;
   display: inline-flex;
@@ -248,6 +248,10 @@ button { font: inherit; }
   border-bottom: 1px solid var(--line);
 }
 .quota-row > * { min-width: 0; }
+/* The row's rule separates it from whatever the panel puts underneath. With nothing under
+   it the rule is the panel's own bottom edge drawn twice, and the restart list already
+   draws a rule above its first entry, so in both cases the row must not draw one. */
+.quota-section > :last-child, .quota-row:has(+ .latest-resets) { border-bottom: 0; }
 .quota-label h2, .history-section h2 { margin: 0; font-size: 18px; letter-spacing: -0.25px; font-weight: 660; }
 .quota-track, .mini-track { height: 10px; overflow: hidden; background: var(--track); border-radius: 3px; }
 .quota-track span, .mini-track i { display: block; height: 100%; background: var(--accent); border-radius: inherit; transition: width 320ms ease; }
@@ -269,9 +273,13 @@ button { font: inherit; }
    only way the verdict can be sized to its own longest phrase and still begin on the same
    vertical line in every row. The rows carry their own border, so they stay grid items and
    borrow the columns through `subgrid` instead of dissolving into the list. */
-.reset-history h4 { display: flex; align-items: baseline; gap: 10px; margin: 0 0 6px; font-size: 13px; font-weight: 650; }
-.reset-history h4 span { color: var(--muted); font-size: 11px; font-weight: 400; }
-.reset-history + .reset-history { margin-top: 16px; }
+.reset-history summary { display: flex; align-items: baseline; gap: 10px; padding: 5px 0; color: var(--text); cursor: pointer; font-size: 13px; font-weight: 650; }
+.reset-history summary::marker { color: var(--muted); }
+.reset-history summary:hover { color: var(--accent); }
+.reset-history summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.reset-history summary span { color: var(--muted); font-size: 11px; font-weight: 400; }
+.reset-history[open] summary { margin-bottom: 4px; }
+.reset-history + .reset-history { border-top: 1px solid var(--line-soft); }
 .reset-history ul, .latest-resets { display: grid; grid-template-columns: minmax(0, 168px) minmax(0, 1fr) 72px 62px max-content; column-gap: 12px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
 .reset-history li, .latest-resets li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line-soft); }
 .reset-history li time, .latest-resets li time { color: var(--text-dim); font-variant-numeric: tabular-nums; }
