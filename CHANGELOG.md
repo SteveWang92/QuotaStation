@@ -13,6 +13,10 @@ on `main`, with the matching section below as its notes.
 - Usage from multiple machines can be combined, inspected by device, and filtered across the history dashboard.
 - The shared usage folder can be chosen with the native Windows folder picker.
 
+### Fixed
+
+- Conflict copies left in the shared usage folder by a sync tool no longer report the folder as failing.
+
 ## [0.4.0] - 2026-08-23
 
 ### Added

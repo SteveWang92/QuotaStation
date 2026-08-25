@@ -157,6 +157,15 @@ async fn import_others(state: &Arc<AppState>, folder: &Path, device_id: &str) ->
         else {
             continue;
         };
+        // A device identifier is hexadecimal, so anything else between the prefix and the
+        // suffix belongs to the sync client rather than to a machine: Proton Drive and
+        // Dropbox both name their conflict copies by decorating the original file name.
+        // Such a copy is a duplicate of a file already read, and reporting it as an
+        // unreadable device would leave the shared-folder status failing until someone
+        // deleted a file the sync client is entitled to create.
+        if !file_device.chars().all(|character| character.is_ascii_hexdigit()) {
+            continue;
+        }
         if file_device == device_id {
             continue;
         }

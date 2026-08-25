@@ -27,6 +27,19 @@ QuotaStation server, no primary machine, and no shared file that two devices bot
 QuotaStation itself has no merge conflict to resolve. A file aggregated in a different time
 zone is refused rather than added to buckets that describe different local hours.
 
+## Files the sync tool adds
+
+A sync client sometimes writes a second copy of a file it was uploading when the file
+changed again, naming it after the original with a marker such as `# Edit conflict … #`
+added. QuotaStation ignores every name that is not exactly `usage-<device id>.json`, so such
+a copy changes no total and reports no error. It is a stale duplicate of a file QuotaStation
+rewrites in full on every refresh, and deleting it is safe at any time; nothing else in the
+folder ever needs to be edited or merged by hand.
+
+Give each machine its own installation rather than copying QuotaStation's application data
+across. The device identity is written on first start, and two machines carrying the same
+identity would overwrite one file instead of publishing two.
+
 ## Configure QuotaStation
 
 On every machine:
