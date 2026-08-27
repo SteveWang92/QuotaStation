@@ -228,8 +228,10 @@ export function QuotaSection({
           others the row would say "Unknown" forever. */}
       {earnedResetCount === null ? null : (
         <div className="reset-inventory">
-          <span>Earned resets</span>
-          <strong>{earnedResetCount}</strong>
+          <div className="reset-count">
+            <span>Earned resets</span>
+            <strong>{earnedResetCount}</strong>
+          </div>
           {/* A credit that never expires publishes no deadline, and a provider that sends
               only the count publishes none either. Both are silence rather than "never". */}
           {earnedResetExpiresAt === null || earnedResetCount === 0 ? null : (

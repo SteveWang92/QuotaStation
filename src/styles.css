@@ -294,7 +294,9 @@ button { font: inherit; }
    comes first there: one row per window says which window it is, not when it happened. */
 .latest-resets { padding: 4px 28px 12px; grid-template-columns: minmax(0, 1fr) minmax(0, 168px) 72px 62px max-content; }
 .latest-resets li > *:first-child { color: var(--text-dim); }
-.reset-inventory { height: 42px; display: flex; align-items: center; gap: 30px; padding: 0 28px; font-size: 14px; }
+.reset-inventory { display: grid; gap: 4px; padding: 8px 28px; font-size: 14px; }
+.reset-count { display: flex; align-items: baseline; gap: 30px; }
+.reset-count span, .reset-count strong, .reset-expiry > * { white-space: nowrap; }
 .reset-inventory strong { color: var(--accent); font-size: 16px; }
 .reset-expiry { display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: 12px; }
 .reset-expiry strong { color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; }

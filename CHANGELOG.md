@@ -18,6 +18,7 @@ on `main`, with the matching section below as its notes.
 
 ### Changed
 
+- Earned reset details now use two compact rows so the countdown and exact expiry remain readable.
 - Settings is a page opened from beside Refresh rather than a dialog over the dashboard.
 - The provider panels show the last restart of each window instead of the whole history.
 - An early-restart note can be acknowledged, and comes back at the next restart.
