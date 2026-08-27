@@ -236,7 +236,8 @@ export function QuotaSection({
               only the count publishes none either. Both are silence rather than "never". */}
           {earnedResetExpiresAt === null || earnedResetCount === 0 ? null : (
             <span className="reset-expiry">
-              First expires in <strong>{formatCountdown(earnedResetExpiresAt)}</strong>
+              <span className="reset-expiry-label">First expires in</span>
+              <strong>{formatCountdown(earnedResetExpiresAt)}</strong>
               <time dateTime={new Date(earnedResetExpiresAt * 1000).toISOString()}>
                 {formatResetTimestamp(earnedResetExpiresAt)}
               </time>

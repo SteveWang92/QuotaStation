@@ -294,9 +294,8 @@ button { font: inherit; }
    comes first there: one row per window says which window it is, not when it happened. */
 .latest-resets { padding: 4px 28px 12px; grid-template-columns: minmax(0, 1fr) minmax(0, 168px) 72px 62px max-content; }
 .latest-resets li > *:first-child { color: var(--text-dim); }
-.reset-inventory { display: grid; gap: 4px; padding: 8px 28px; font-size: 14px; }
-.reset-count { display: flex; align-items: baseline; gap: 30px; }
-.reset-count span, .reset-count strong, .reset-expiry > * { white-space: nowrap; }
+.reset-inventory { height: 42px; display: flex; align-items: center; gap: 30px; padding: 0 28px; font-size: 14px; }
+.reset-count { display: contents; }
 .reset-inventory strong { color: var(--accent); font-size: 16px; }
 .reset-expiry { display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: 12px; }
 .reset-expiry strong { color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; }
@@ -398,8 +397,8 @@ button { font: inherit; }
 .summary-strip > div:first-child { border-left: 0; }
 .summary-strip span { color: var(--muted); font-size: 11px; font-weight: 630; letter-spacing: 0.06em; text-transform: uppercase; }
 .summary-strip strong { font-size: 22px; font-variant-numeric: tabular-nums; }
-.history-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(260px, 0.85fr) minmax(290px, 1fr); gap: 14px; }
-.history-grid.multi-device { grid-template-columns: minmax(0, 1.55fr) repeat(3, minmax(220px, 0.82fr)); }
+.history-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.history-grid.multi-device { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .history-card { min-height: 226px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-glass); }
 .card-heading { min-height: 40px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 .card-heading h3 { margin: 0 0 5px; font-size: 15px; }
@@ -610,7 +609,11 @@ button { font: inherit; }
 .quota-section.compact .quota-reset strong { margin: 0; font-size: 13px; }
 .quota-section.compact .quota-reset time { margin: 0; overflow: hidden; color: var(--muted); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .quota-section.compact .quota-origin { padding-left: 8px; font-size: 10px; }
-.quota-section.compact .reset-inventory { height: 34px; justify-content: space-between; padding-inline: 15px; font-size: 11px; }
+.quota-section.compact .reset-inventory { height: auto; display: grid; gap: 4px; padding: 8px 15px; font-size: 11px; }
+.quota-section.compact .reset-count { display: flex; align-items: baseline; justify-content: space-between; }
+.quota-section.compact .reset-expiry { display: grid; grid-template-columns: max-content max-content max-content; align-items: baseline; justify-content: space-between; }
+.quota-section.compact .reset-expiry-label, .quota-section.compact .reset-expiry strong, .quota-section.compact .reset-expiry time { white-space: nowrap; }
+
 .quota-section.compact .reset-inventory strong { font-size: 13px; }
 .quota-section.compact .quota-empty { min-height: 100px; padding: 18px; }
 .quick-usage { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 5px; }

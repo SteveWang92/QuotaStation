@@ -25,6 +25,7 @@ on `main`, with the matching section below as its notes.
 
 ### Fixed
 
+- The quick panel no longer hides the expiry details of an earned reset.
 - Conflict copies left in the shared usage folder by a sync tool no longer report the folder as failing.
 - A Codex window that moves between the primary and secondary slot no longer hides the restart that came with it.
 
