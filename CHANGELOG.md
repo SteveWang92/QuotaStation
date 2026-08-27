@@ -9,6 +9,7 @@ on `main`, with the matching section below as its notes.
 
 ### Added
 
+- An All usage range that runs from the earliest recorded usage through today.
 - The reset history says how many tokens were spent inside each window that reset.
 - Usage from multiple machines can be combined, inspected by device, and filtered across the history dashboard.
 - The shared usage folder can be chosen with the native Windows folder picker, or typed as a path that QuotaStation offers to create.

@@ -51,6 +51,7 @@ const PRESETS: Array<{ value: Exclude<RangePreset, "custom">; label: string }> =
   { value: "3d", label: "3d" },
   { value: "7d", label: "7d" },
   { value: "30d", label: "30d" },
+  { value: "all", label: "All" },
 ];
 
 /**
@@ -76,7 +77,7 @@ interface UsageSummaryProps {
   range: UsageRangeSnapshot;
   /** The same range hour by hour, when it is short enough to be read that way. */
   hours: UsageHoursSnapshot | null;
-  /** The period of the same length immediately before this one, for the comparison. */
+  /** The period immediately before this one, or none when every recorded day is selected. */
   previousRange: UsageRangeSnapshot | null;
   quotaHistory: QuotaHistorySnapshot | null;
   selection: DateRangeSelection;
@@ -366,9 +367,8 @@ export function UsageSummary({
 
       <div className="history-content">
         {/* The model count is not a fourth headline figure: the model mix card below both
-            counts them and says what they were. Each figure carries how it moved against
-            the period of the same length before this one, so a total means something on
-            its own. */}
+            counts them and says what they were. Bounded ranges compare each figure with
+            the period before them; All has no history before its first recorded day. */}
         <div className="summary-strip">
           <StatTile
             label="Total tokens"

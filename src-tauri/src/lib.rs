@@ -218,6 +218,19 @@ async fn get_usage_range(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn get_usage_start_date(
+    provider: Option<ProviderKind>,
+    device: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<String>, String> {
+    state
+        .storage
+        .load_usage_start_date(provider, device.as_deref())
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// The same range hour by hour, for the short ranges the dashboard draws that way.
 #[tauri::command]
 async fn get_usage_hours(
@@ -1304,6 +1317,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
+            get_usage_start_date,
             get_usage_range,
             get_usage_hours,
             get_usage_window,

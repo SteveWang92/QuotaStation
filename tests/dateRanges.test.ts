@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  createAllRange,
   createCustomRange,
   createPresetRange,
   customRangeTooLong,
@@ -79,6 +80,20 @@ describe("preset ranges", () => {
       expect(calendarDaysBetween(range.startDate, range.endDate)).toBe(days - 1);
       expect(range.label).toBe(`Last ${days} days`);
     }
+  });
+
+  it("keeps an all-time range anchored to the first recorded day", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 12, 9, 40));
+    const range = createAllRange("2025-11-03");
+    expect(range.label).toBe("All time");
+    expect(range.startDate).toBe("2025-11-03");
+    expect(range.endDate).toBe("2026-08-12");
+
+    vi.setSystemTime(new Date(2026, 7, 13, 0, 1));
+    expect(resolveDateRange(range).startDate).toBe("2025-11-03");
+    expect(resolveDateRange(range).endDate).toBe("2026-08-13");
+    expect(hasRolledOver(range)).toBe(true);
   });
 });
 

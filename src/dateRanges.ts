@@ -1,6 +1,6 @@
 import { formatAxisHour, hourDate, LOCALE } from "./format";
 
-export type RangePreset = "24h" | "today" | "3d" | "7d" | "30d" | "custom";
+export type RangePreset = "24h" | "today" | "3d" | "7d" | "30d" | "all" | "custom";
 
 /** How many hours the rolling window covers, counting the hour in progress as one. */
 export const WINDOW_HOURS = 24;
@@ -68,6 +68,7 @@ function createWindowRange(): DateRangeSelection {
 
 export function createPresetRange(preset: Exclude<RangePreset, "custom">): DateRangeSelection {
   if (preset === "24h") return createWindowRange();
+  if (preset === "all") return createAllRange(todayString());
   const days = preset === "today" ? 1 : Number.parseInt(preset, 10);
   const end = new Date();
   const start = new Date(end);
@@ -77,6 +78,16 @@ export function createPresetRange(preset: Exclude<RangePreset, "custom">): DateR
     label: preset === "today" ? "Today" : `Last ${days} days`,
     startDate: toLocalDateString(start),
     endDate: toLocalDateString(end),
+  };
+}
+
+/** Every recorded usage day through today; the core supplies the first stored date. */
+export function createAllRange(startDate: string): DateRangeSelection {
+  return {
+    preset: "all",
+    label: "All time",
+    startDate,
+    endDate: todayString(),
   };
 }
 
@@ -110,7 +121,9 @@ export function isHourlyRange(startDate: string, endDate: string): boolean {
 
 /** Recomputes calendar presets at query time so a tray process can cross midnight safely. */
 export function resolveDateRange(selection: DateRangeSelection): DateRangeSelection {
-  return selection.preset === "custom" ? selection : createPresetRange(selection.preset);
+  if (selection.preset === "custom") return selection;
+  if (selection.preset === "all") return createAllRange(selection.startDate);
+  return createPresetRange(selection.preset);
 }
 
 /**

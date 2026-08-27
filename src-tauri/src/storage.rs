@@ -1132,6 +1132,28 @@ impl Storage {
             .collect())
     }
 
+    /// The first day carrying usage for the selected provider and device filters.
+    pub async fn load_usage_start_date(
+        &self,
+        provider: Option<ProviderKind>,
+        device: Option<&str>,
+    ) -> Result<Option<String>> {
+        let provider_id = match provider {
+            Some(kind) => Some(self.provider_id(kind).await?),
+            None => None,
+        };
+        Ok(sqlx::query_scalar(
+            "SELECT MIN(usage_date) FROM daily_usage \
+             WHERE (? IS NULL OR provider_instance_id = ?) AND (? IS NULL OR device = ?)",
+        )
+        .bind(provider_id)
+        .bind(provider_id)
+        .bind(device)
+        .bind(device)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     /// The usage in a date range, for one provider or for every provider at once.
     ///
     /// `None` is the combined view: the rows of every provider instance are counted
@@ -2064,6 +2086,51 @@ mod tests {
         assert_eq!(
             single.usage.total, 100,
             "asking for one provider still answers for that one alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_usage_start_date_follows_provider_and_device_filters() {
+        let (storage, _database) = open_storage().await;
+        storage
+            .save_history(
+                CODEX,
+                &HistorySnapshot { days: vec![day("2026-08-03", "gpt-5", 100)], hours: Vec::new() },
+                "Australia/Brisbane",
+                "2026-08-03T10:00:00Z",
+            )
+            .await
+            .expect("save local Codex history");
+        let daily = [device_row("claude", "2026-07-01", "claude-opus-5", 400)];
+        storage
+            .import_device(
+                &DeviceImport {
+                    id: "workshop",
+                    display_name: "Workshop",
+                    parser_revision: "test",
+                    source_modified_at: 1,
+                    daily: &daily,
+                    hourly: &[],
+                },
+                "2026-08-03T10:01:00Z",
+            )
+            .await
+            .expect("import remote Claude usage");
+
+        assert_eq!(
+            storage.load_usage_start_date(None, None).await.expect("load combined start"),
+            Some("2026-07-01".to_string())
+        );
+        assert_eq!(
+            storage.load_usage_start_date(Some(CODEX), None).await.expect("load Codex start"),
+            Some("2026-08-03".to_string())
+        );
+        assert_eq!(
+            storage
+                .load_usage_start_date(None, Some("workshop"))
+                .await
+                .expect("load workshop start"),
+            Some("2026-07-01".to_string())
         );
     }
 

@@ -11,12 +11,14 @@ import { SettingsPage } from "./components/SettingsPage";
 import { TaskbarWidget } from "./components/TaskbarWidget";
 import { UsageSummary } from "./components/UsageSummary";
 import {
+  createAllRange,
   createPresetRange,
   type DateRangeSelection,
   hasRolledOver,
   isHourlyRange,
   previousPeriod,
   resolveDateRange,
+  todayString,
 } from "./dateRanges";
 import { errorMessage } from "./errors";
 import { statusColor, watchTheme } from "./theme";
@@ -91,7 +93,7 @@ function readErrors(provider: ProviderSnapshot): string[] {
  */
 interface RangeRead {
   range: UsageRangeSnapshot;
-  previous: UsageRangeSnapshot;
+  previous: UsageRangeSnapshot | null;
   hours: UsageHoursSnapshot | null;
 }
 
@@ -109,7 +111,7 @@ async function readCalendarRange(
   provider: ProviderKey | null,
   device: string | null,
   range: DateRangeSelection,
-  earlier: { startDate: string; endDate: string },
+  earlier: { startDate: string; endDate: string } | null,
 ): Promise<RangeRead> {
   const [next, previous, hourly] = await Promise.all([
     invoke<UsageRangeSnapshot>("get_usage_range", {
@@ -118,12 +120,14 @@ async function readCalendarRange(
       startDate: range.startDate,
       endDate: range.endDate,
     }),
-    invoke<UsageRangeSnapshot>("get_usage_range", {
-      provider,
-      device,
-      startDate: earlier.startDate,
-      endDate: earlier.endDate,
-    }),
+    earlier === null
+      ? Promise.resolve(null)
+      : invoke<UsageRangeSnapshot>("get_usage_range", {
+          provider,
+          device,
+          startDate: earlier.startDate,
+          endDate: earlier.endDate,
+        }),
     // A longer range has more hours than the chart has pixels, and the core keeps
     // hourly rows only for the recent window anyway.
     isHourlyRange(range.startDate, range.endDate)
@@ -194,17 +198,26 @@ function Dashboard() {
 
   const loadUsageRange = useCallback(
     async (range: DateRangeSelection, rangeProvider: HistoryProvider, device: string | null) => {
-      const resolvedRange = resolveDateRange(range);
+      let resolvedRange = resolveDateRange(range);
       activeRangeRef.current = resolvedRange;
       const requestId = ++rangeRequestId.current;
       setRangeLoading(true);
       setRangeError(null);
-      const earlier = previousPeriod(resolvedRange);
       // The combined view names no provider, which the core reads as every provider at once.
       const provider = rangeProvider === "all" ? null : rangeProvider;
-      const window = hourBounds(resolvedRange);
-      const earlierWindow = hourBounds(earlier);
       try {
+        if (range.preset === "all") {
+          const firstUsageDate = await invoke<string | null>("get_usage_start_date", {
+            provider,
+            device,
+          });
+          if (requestId !== rangeRequestId.current) return;
+          resolvedRange = createAllRange(firstUsageDate ?? todayString());
+          activeRangeRef.current = resolvedRange;
+        }
+        const earlier = resolvedRange.preset === "all" ? null : previousPeriod(resolvedRange);
+        const window = hourBounds(resolvedRange);
+        const earlierWindow = earlier === null ? null : hourBounds(earlier);
         const [usage, quota] = await Promise.all([
           window !== null && earlierWindow !== null
             ? readRollingWindow(provider, device, window, earlierWindow)
