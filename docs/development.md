@@ -88,9 +88,10 @@ Run every renderer and core gate together before a release pull request with:
 npm run verify
 ```
 
-Both suites and both lint gates, plus the renderer build, run on a Windows runner for the
-`dev` to `main` release pull request and every push to `main`; see `.github/workflows/ci.yml`.
-Commits on `dev` rely on the same local gates before they are pushed.
+Both suites and both lint gates, plus the renderer build, run on a Windows runner for every
+pull request into `dev`, for the `dev` to `main` release pull request, and for every push to
+`main`; see `.github/workflows/ci.yml`. A commit pushed straight to `dev` is not covered, so
+run the gates above locally before pushing one.
 
 ### What each build command produces
 
@@ -135,6 +136,20 @@ application's history, quota, and provider settings.
 
 Use the minimum relevant check for a focused change. Documentation-only changes need only
 a review of the edited files.
+
+## Packaging and distribution
+
+`npm run build:installer` produces the per-user NSIS installer. A release does not need it
+built by hand: publishing a `vX.Y.Z` release runs `.github/workflows/release.yml`, which
+builds the installer from the published tag and attaches it to that release.
+
+The installer and the executable inside it are **unsigned**. A code-signing certificate is a
+recurring cost QuotaStation deliberately does not carry, so Windows SmartScreen warns the
+first people to download each new version until it has seen enough of them; the warning is
+dismissed through **More info** → **Run anyway**. Nothing in the build works around that
+warning, and no unsigned-warning workaround should be added: the honest answer is that the
+build is reproducible from this repository and its source is the tag the installer was built
+from.
 
 ## Application icon
 
