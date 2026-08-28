@@ -191,12 +191,14 @@ export function QuotaSection({
     async (key: string) => {
       // Only the notes for windows still on display are carried forward, so the record
       // stays as short as the number of windows rather than growing with every restart.
-      const kept = (liveWindowKeys ?? []).filter(
-        (live) => live !== key && dismissed.includes(live),
-      );
-      await saveAppSettings({ dismissedResetNotices: [...kept, key] });
+      await saveAppSettings((saved) => {
+        const kept = (liveWindowKeys ?? []).filter(
+          (live) => live !== key && saved.dismissedResetNotices.includes(live),
+        );
+        return { dismissedResetNotices: [...kept, key] };
+      });
     },
-    [dismissed, liveWindowKeys],
+    [liveWindowKeys],
   );
 
   const latest = latestPerWindow(resets);
