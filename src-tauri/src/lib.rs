@@ -327,6 +327,11 @@ fn open_dashboard(app: tauri::AppHandle) {
 
 /// Placement runs on a short loop so the widget follows taskbar changes. Repeating the
 /// same failure every tick would bury every other message, so only changes are reported.
+///
+/// Tauri owns webview windows on its event-loop thread. In particular, the widget renderer
+/// reports its size from an IPC worker and the placement timer runs on Tokio; touching the
+/// native window directly from either can make a release build panic instead of leaving the
+/// widget in its previous position.
 fn place_taskbar_widget(app: &tauri::AppHandle) {
     static LAST_ERROR: StdMutex<Option<String>> = StdMutex::new(None);
     let error = taskbar::place_widget(app).err();
@@ -339,29 +344,42 @@ fn place_taskbar_widget(app: &tauri::AppHandle) {
     }
 }
 
+fn schedule_taskbar_widget_placement(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || place_taskbar_widget(&handle)) {
+        log::write(format!("taskbar status placement could not reach the main thread: {error}"));
+    }
+}
+
 fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
     let state = app.state::<Arc<AppState>>();
     if let Err(error) = state.update_settings(|settings| settings.taskbar_widget_enabled = visible)
     {
         log::write(format!("failed to save application settings: {error}"));
     }
-    if visible {
-        // Placement comes first: it rebuilds the window when Explorer's taskbar took it
-        // with it, and showing a window that no longer exists is what ends the process.
-        place_taskbar_widget(app);
-        if let Some(widget) = app
+    let handle = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        if visible {
+            // Placement comes first: it rebuilds the window when Explorer's taskbar took it
+            // with it, and showing a window that no longer exists is what ends the process.
+            place_taskbar_widget(&handle);
+            if let Some(widget) = handle
+                .get_webview_window(&taskbar::widget_label())
+                .filter(|_| taskbar::widget_is_live(&handle))
+            {
+                let _ = widget.show();
+            }
+            // A low-level hook is called on the thread that installed it, so it has to be
+            // installed on the one running the message loop.
+            taskbar::watch_widget_clicks();
+        } else if let Some(widget) = handle
             .get_webview_window(&taskbar::widget_label())
-            .filter(|_| taskbar::widget_is_live(app))
+            .filter(|_| taskbar::widget_is_live(&handle))
         {
-            let _ = widget.show();
+            let _ = widget.hide();
         }
-        // A low-level hook is called on the thread that installed it, so it has to be
-        // installed on the one running the message loop.
-        let _ = app.run_on_main_thread(taskbar::watch_widget_clicks);
-    } else if let Some(widget) =
-        app.get_webview_window(&taskbar::widget_label()).filter(|_| taskbar::widget_is_live(app))
-    {
-        let _ = widget.hide();
+    }) {
+        log::write(format!("taskbar status visibility could not reach the main thread: {error}"));
     }
 }
 
@@ -386,7 +404,13 @@ fn set_taskbar_widget_size(app: tauri::AppHandle, provider_count: u32) -> Result
     if !app.state::<Arc<AppState>>().settings().taskbar_widget_enabled {
         return Ok(());
     }
-    taskbar::set_widget_size(&app, provider_count)
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        if let Err(error) = taskbar::set_widget_size(&handle, provider_count) {
+            log::write(format!("taskbar status resize: {error}"));
+        }
+    })
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -425,7 +449,7 @@ async fn set_app_settings(
     } else if display_changed && updated.taskbar_widget_enabled {
         // The placement loop would move it within two seconds; doing it here makes the
         // choice answer immediately, which is what a person changing it is watching for.
-        place_taskbar_widget(&app);
+        schedule_taskbar_widget_placement(&app);
     }
     if codex_layout_requested {
         codex_statusline::apply_layout().map_err(|error| {
@@ -1300,7 +1324,7 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     if taskbar_state.settings().taskbar_widget_enabled {
-                        place_taskbar_widget(&app_handle);
+                        schedule_taskbar_widget_placement(&app_handle);
                     }
                 }
             });
