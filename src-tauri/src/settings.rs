@@ -47,6 +47,12 @@ pub struct AppSettings {
     /// shows — the project, the request and the spend. Off leaves the model and the quota.
     #[serde(default = "enabled")]
     pub status_line_extra_details: bool,
+    /// Enables QuotaStation's Codex native-status-line controls. It never installs a command.
+    #[serde(default)]
+    pub codex_status_line_enabled: bool,
+    /// Allows those controls to write the selected native footer/title layout to Codex.
+    #[serde(default)]
+    pub codex_status_line_update_display: bool,
     /// Whether a quota window crossing the shared warning or critical share is announced.
     #[serde(default = "enabled")]
     pub notify_low_quota: bool,
@@ -109,6 +115,8 @@ impl Default for AppSettings {
             status_line_provider_labels: ProviderLabelStyle::default(),
             status_line_other_providers: enabled(),
             status_line_extra_details: enabled(),
+            codex_status_line_enabled: false,
+            codex_status_line_update_display: false,
             notify_low_quota: enabled(),
             notify_read_failures: enabled(),
             notify_quota_resets: enabled(),
@@ -246,6 +254,8 @@ mod tests {
             notify_low_quota: false,
             notify_read_failures: false,
             notify_quota_resets: false,
+            codex_status_line_enabled: false,
+            codex_status_line_update_display: false,
             device_id: Some("18f3c".to_string()),
             device_name: Some("Workshop".to_string()),
             dismissed_reset_notices: vec!["codex:primary:1781654400".to_string()],
@@ -280,6 +290,8 @@ mod tests {
             notify_low_quota: false,
             notify_read_failures: false,
             notify_quota_resets: false,
+            codex_status_line_enabled: false,
+            codex_status_line_update_display: false,
             device_id: Some("18f3c".to_string()),
             device_name: Some("Workshop".to_string()),
             dismissed_reset_notices: vec!["codex:primary:1781654400".to_string()],

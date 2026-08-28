@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState,
-    domain::{CCUSAGE_REVISION, DeviceUsageRow, SharedFolderDiagnostics},
+    domain::{CCUSAGE_REVISION, DeviceUsageRow, SharedFolderDiagnostics, SharedResetEvent},
     sanitize::sanitize_error,
     storage::DeviceImport,
 };
@@ -51,6 +51,9 @@ struct ExportFile {
     parser_revision: String,
     daily: Vec<DeviceUsageRow>,
     hourly: Vec<DeviceUsageRow>,
+    /// Optional so an upgraded machine still imports a pre-reset-sharing file.
+    #[serde(default)]
+    resets: Vec<SharedResetEvent>,
 }
 
 fn file_name(device_id: &str) -> String {
@@ -111,6 +114,7 @@ async fn export(
     // exporting into nowhere for as long as it took someone to notice.
     anyhow::ensure!(folder.is_dir(), "The shared usage folder was not found.");
     let (daily, hourly) = state.storage.load_local_export().await?;
+    let resets = state.storage.load_reset_export().await?;
     let content = serde_json::to_vec(&ExportFile {
         format_version: FORMAT_VERSION,
         device_id: device_id.to_string(),
@@ -119,6 +123,7 @@ async fn export(
         parser_revision: CCUSAGE_REVISION.to_string(),
         daily,
         hourly,
+        resets,
     })?;
 
     let path = folder.join(file_name(device_id));
@@ -238,6 +243,7 @@ async fn import_one(
                 source_modified_at: modified,
                 daily: &published.daily,
                 hourly: &published.hourly,
+                resets: &published.resets,
             },
             &jiff::Timestamp::now().to_string(),
         )

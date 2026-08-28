@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Added
+
+- Reset history now synchronizes through the shared usage folder and Codex status-line layout can be managed from Settings.
+
 ### Changed
 
 - Quota readings are kept for 90 days instead of 14, so the quota chart reaches further back at full detail.

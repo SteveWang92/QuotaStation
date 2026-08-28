@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
 import { ClaudeFinishedNotifications, ClaudeStatusLine } from "./ClaudeStatusLine";
+import { CodexStatusLine } from "./CodexStatusLine";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { GeneralSettings } from "./GeneralSettings";
 import { QuotaNotifications } from "./QuotaNotifications";
@@ -97,6 +98,7 @@ export function SettingsPage({
         </section>
         <section id="sources" aria-label="Quota sources">
           <h3 className="settings-section-heading">Quota sources</h3>
+          <CodexStatusLine />
           {showClaude ? (
             <ClaudeStatusLine />
           ) : (

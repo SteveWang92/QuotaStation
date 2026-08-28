@@ -1,5 +1,6 @@
 mod alerts;
 mod autostart;
+mod codex_statusline;
 mod domain;
 mod git;
 mod log;
@@ -406,6 +407,9 @@ async fn set_app_settings(
     let display_changed = previous.taskbar_widget_display != settings.taskbar_widget_display;
     let theme_changed = previous.theme != settings.theme;
     let name_changed = previous.device_name != settings.device_name;
+    let codex_layout_requested = settings.codex_status_line_enabled
+        && settings.codex_status_line_update_display
+        && (!previous.codex_status_line_enabled || !previous.codex_status_line_update_display);
     let updated = state.update_settings(|current| *current = settings)?;
     if name_changed {
         let name = updated.device_name.clone().unwrap_or_else(settings::default_device_name);
@@ -423,7 +427,19 @@ async fn set_app_settings(
         // choice answer immediately, which is what a person changing it is watching for.
         place_taskbar_widget(&app);
     }
+    if codex_layout_requested {
+        codex_statusline::apply_layout().map_err(|error| {
+            sanitize::sanitize_error(&error.to_string(), "Codex status line update failed")
+        })?;
+    }
     Ok(updated)
+}
+
+#[tauri::command]
+fn get_codex_status_line() -> Result<codex_statusline::StatusLineStatus, String> {
+    codex_statusline::status().map_err(|error| {
+        sanitize::sanitize_error(&error.to_string(), "Codex status line unavailable")
+    })
 }
 
 /// Whether the activity log can be revealed without exposing its path to the renderer.
@@ -1328,6 +1344,7 @@ pub fn run() {
             get_log_available,
             reveal_log_file,
             get_claude_status_line,
+            get_codex_status_line,
             set_claude_status_line,
             get_claude_notifications,
             set_claude_notifications,
