@@ -189,6 +189,21 @@ async fn import_others(state: &Arc<AppState>, folder: &Path, device_id: &str) ->
     failures
 }
 
+/// The length of a local day key (`2026-08-24`) and of a local hour key (`2026-08-24T09:00`).
+const DAY_KEY_LEN: usize = 10;
+const HOUR_KEY_LEN: usize = 16;
+
+/// Refuses a file whose bucket keys are not the fixed-width local keys this machine writes.
+fn check_buckets(rows: &[DeviceUsageRow], width: usize) -> Result<()> {
+    for row in rows {
+        anyhow::ensure!(
+            row.bucket.len() == width && row.bucket.is_char_boundary(DAY_KEY_LEN),
+            "carries an unreadable bucket key"
+        );
+    }
+    Ok(())
+}
+
 async fn import_one(
     state: &Arc<AppState>,
     path: &Path,
@@ -207,6 +222,11 @@ async fn import_one(
         "aggregated in {} rather than {timezone}",
         published.timezone
     );
+    // The bucket keys are stored as they arrive and later sliced to the date they open with.
+    // Everything else in the file is a number or a name the reader never cuts up, so this is
+    // the one field a file mangled in the shared folder could turn into a panic.
+    check_buckets(&published.daily, DAY_KEY_LEN)?;
+    check_buckets(&published.hourly, HOUR_KEY_LEN)?;
 
     state
         .storage
