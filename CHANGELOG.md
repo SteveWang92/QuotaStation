@@ -10,6 +10,7 @@ on `main`, with the matching section below as its notes.
 ### Added
 
 - Reset history now synchronizes through the shared usage folder.
+- Diagnostics can be exported as a redacted JSON file from the Downloads folder.
 
 ### Changed
 

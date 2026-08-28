@@ -1,5 +1,6 @@
 mod alerts;
 mod autostart;
+mod diagnostic_export;
 mod domain;
 mod git;
 mod log;
@@ -644,6 +645,13 @@ async fn get_diagnostics(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<DiagnosticsSnapshot, String> {
+    collect_diagnostics(&app, state.inner()).await
+}
+
+async fn collect_diagnostics(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<DiagnosticsSnapshot, String> {
     let mut acquisitions = Vec::new();
     for provider in AppState::local_providers() {
         acquisitions.extend(state.storage.load_acquisition_diagnostics(provider).await.map_err(
@@ -679,6 +687,36 @@ async fn get_diagnostics(
         build_commit: env!("QUOTASTATION_BUILD_COMMIT").to_string(),
         build_kind: build_kind(),
     })
+}
+
+/// Writes only the whitelisted diagnostic snapshot the user explicitly chose to export.
+#[tauri::command]
+async fn export_diagnostics(
+    app: tauri::AppHandle,
+    path: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let path = PathBuf::from(path);
+    if path.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("json")) {
+        return Err("Save the diagnostic export as a JSON file.".to_string());
+    }
+    let diagnostics = collect_diagnostics(&app, state.inner()).await?;
+    let mut providers = Vec::new();
+    for provider in state.enabled_providers() {
+        providers.push(state.read_snapshot(provider, Clone::clone).await);
+    }
+    diagnostic_export::DiagnosticExport::new(diagnostics, providers).write_to(&path)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Reveals the export the user just created without opening its contents.
+#[tauri::command]
+fn reveal_export_file(path: String) -> Result<(), String> {
+    std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{}", path))
+        .spawn()
+        .map_err(|_| "The exported file could not be shown in Explorer.".to_string())?;
+    Ok(())
 }
 
 /// Codex logs the server's rate-limit answer alongside its own token counts, which
@@ -1349,6 +1387,8 @@ pub fn run() {
             get_reset_history,
             refresh_now,
             get_diagnostics,
+            export_diagnostics,
+            reveal_export_file,
             get_log_available,
             reveal_log_file,
             get_claude_status_line,
