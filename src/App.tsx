@@ -458,6 +458,7 @@ function Dashboard() {
               onSelectProvider={selectProvider}
               activeDevice={selectedDevice}
               onSelectDevice={selectDevice}
+              knownDevices={diagnostics.devices}
               range={usageRange}
               hours={usageHours}
               previousRange={previousRange}

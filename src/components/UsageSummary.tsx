@@ -23,6 +23,8 @@ import {
 import { SERIES_LIMIT, SERIES_REST, SERIES_SLOTS } from "../series";
 import type {
   DailyUsagePoint,
+  DeviceDiagnostics,
+  DeviceUsage,
   HistoryProvider,
   ModelUsage,
   ProviderSnapshot,
@@ -74,6 +76,9 @@ interface UsageSummaryProps {
   onSelectProvider: (provider: HistoryProvider) => void;
   activeDevice: string | null;
   onSelectDevice: (device: string | null) => void;
+  /** Every device the database knows, which is what names one that contributed no tokens
+      to the range currently on screen. */
+  knownDevices: DeviceDiagnostics[];
   range: UsageRangeSnapshot;
   /** The same range hour by hour, when it is short enough to be read that way. */
   hours: UsageHoursSnapshot | null;
@@ -102,6 +107,7 @@ export function UsageSummary({
   onSelectProvider,
   activeDevice,
   onSelectDevice,
+  knownDevices,
   range,
   hours,
   previousRange,
@@ -121,6 +127,26 @@ export function UsageSummary({
   // its pricing catalogue, its quota windows — is left off rather than borrowed from
   // whichever provider happens to be first.
   const combined = activeProvider === "all";
+
+  // The split lists only the devices with tokens in this range, so a filtered device that
+  // contributed nothing to it would take its own control off the screen and leave the
+  // filter with no way back to All devices. It stays in the list at zero instead.
+  const deviceOptions = useMemo<DeviceUsage[]>(() => {
+    if (activeDevice === null || range.devices.some((d) => d.deviceId === activeDevice)) {
+      return range.devices;
+    }
+    const known = knownDevices.find((device) => device.id === activeDevice);
+    return [
+      ...range.devices,
+      {
+        deviceId: activeDevice,
+        displayName: known?.displayName ?? activeDevice,
+        local: known?.local ?? false,
+        tokens: 0,
+        percent: 0,
+      },
+    ];
+  }, [activeDevice, knownDevices, range.devices]);
 
   // A short range is read hour by hour: three columns describe three days without saying
   // anything about when the work in them happened. The core decides what it can answer
@@ -284,7 +310,7 @@ export function UsageSummary({
                 ))}
               </div>
             ) : null}
-            {range.devices.length > 1 ? (
+            {deviceOptions.length > 1 ? (
               <label className="device-filter">
                 <span>Device</span>
                 <select
@@ -296,7 +322,7 @@ export function UsageSummary({
                   }}
                 >
                   <option value="">All devices</option>
-                  {range.devices.map((device) => (
+                  {deviceOptions.map((device) => (
                     <option key={device.deviceId} value={device.deviceId}>
                       {device.local ? "This machine" : device.displayName}
                     </option>
