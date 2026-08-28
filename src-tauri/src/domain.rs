@@ -198,6 +198,11 @@ pub struct LimitResetEvent {
     pub new_resets_at: i64,
     pub previous_resets_at: i64,
     pub used_percent_before: f64,
+    /// Tokens recorded against the window this restart closed, or `None` when no hourly
+    /// row ever covered it. Stored on the event rather than summed on the way out, because
+    /// the hourly rows behind it are pruned long before the event is — see
+    /// `Storage::refresh_reset_tokens` for how it is built and when it stops moving.
+    pub tokens_in_window: Option<u64>,
     pub early_by_seconds: i64,
     pub classification: ResetClassification,
 }
@@ -227,9 +232,16 @@ pub struct ProviderSnapshot {
     pub display_name: String,
     /// The same name in the three characters a crowded row can spare.
     pub short_name: String,
+    /// This machine has no local client for the provider, but another device contributed
+    /// usage rows. Its history is complete enough to display; quota remains readable only
+    /// on the machine that runs the provider.
+    pub remote_usage_only: bool,
     pub plan_type: Option<String>,
     pub limits: Vec<LimitWindow>,
     pub earned_reset_count: Option<u64>,
+    /// When the soonest of those credits expires. A count with no expiry beside it is the
+    /// ordinary case for a provider that publishes only the total.
+    pub earned_reset_expires_at: Option<i64>,
     /// Most recent restarts first, so a surface can both annotate the window currently
     /// running and list the ones before it.
     pub recent_resets: Vec<LimitResetEvent>,
@@ -254,9 +266,11 @@ impl ProviderSnapshot {
             provider,
             display_name: provider.display_name().to_string(),
             short_name: provider.short_name().to_string(),
+            remote_usage_only: false,
             plan_type: None,
             limits: Vec::new(),
             earned_reset_count: None,
+            earned_reset_expires_at: None,
             recent_resets: Vec::new(),
             today: TokenUsage::default(),
             api_equivalent_cost_usd: None,
@@ -277,6 +291,15 @@ impl ProviderSnapshot {
     /// Quota freshness follows only from live acquisition and each window's own source
     /// timestamp. A successful history parse must never renew an older quota reading.
     pub fn resolve_derived_state(&mut self) {
+        if self.remote_usage_only {
+            self.freshness = Freshness::Fresh;
+            self.stale_age_seconds = None;
+            self.compact_status = CompactStatus {
+                level: CompactStatusLevel::Healthy,
+                label: "Usage from another device".to_string(),
+            };
+            return;
+        }
         let now = jiff::Timestamp::now().as_second();
         for limit in &mut self.limits {
             let age = now.saturating_sub(limit.observed_at);
@@ -636,6 +659,55 @@ pub struct UsageRangeSnapshot {
     pub api_equivalent_cost_usd: Option<f64>,
     pub models: Vec<ModelUsage>,
     pub days: Vec<DailyUsagePoint>,
+    /// Which machines the range's tokens were parsed on, largest first. One entry is the
+    /// ordinary case and says nothing worth drawing; the split matters once a second
+    /// machine's aggregates are being read in.
+    pub devices: Vec<DeviceUsage>,
+}
+
+/// A rolling window of hours, answered as both the totals and the hours behind them.
+///
+/// A calendar range is two dates and the day rows under it; a window of the last so many
+/// hours is not, because the days at its two ends are partial. Both halves are summed from
+/// the same hourly rows so nothing on the surface disagrees with anything else on it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageWindowSnapshot {
+    pub range: UsageRangeSnapshot,
+    pub hours: UsageHoursSnapshot,
+}
+
+/// One machine's share of a range.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceUsage {
+    pub device_id: String,
+    pub display_name: String,
+    pub local: bool,
+    pub tokens: u64,
+    pub percent: f64,
+}
+
+/// One aggregated bucket as it travels between machines: a day or an hour of one model's
+/// tokens, named by the provider it belongs to rather than by a local row id.
+///
+/// This is the whole vocabulary of the exported file. Nothing here can identify a project,
+/// a session, a path or an account — the numbers, the model name, and when.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceUsageRow {
+    pub provider: String,
+    /// The local date (`2026-08-24`) for a daily row, the local hour (`2026-08-24T09:00`)
+    /// for an hourly one. Which of the two it is comes from the list it arrived in.
+    pub bucket: String,
+    pub model: String,
+    pub service_tier: String,
+    pub input: u64,
+    pub cache_read: u64,
+    pub output: u64,
+    pub reasoning: u64,
+    pub total: u64,
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -675,6 +747,11 @@ pub struct DiagnosticsSnapshot {
     pub watcher: WatcherDiagnostics,
     pub acquisitions: Vec<AcquisitionDiagnostics>,
     pub retention: RetentionDiagnostics,
+    pub shared_folder: SharedFolderDiagnostics,
+    /// Every machine contributing to the totals, this one first. A machine that stopped
+    /// exporting still appears, with the time its aggregates were last read: totals that
+    /// quietly lost a contributor are worse than totals that say so.
+    pub devices: Vec<DeviceDiagnostics>,
     pub parser_revision: String,
     pub pricing_catalog_revision: String,
     pub app_version: String,
@@ -684,6 +761,33 @@ pub struct DiagnosticsSnapshot {
     /// executable lives, what Claude Code's hooks point at — that a bug report about "0.1.0"
     /// is not answerable without it.
     pub build_kind: String,
+}
+
+/// What the shared usage folder last did. `off` is the state with no folder chosen, which
+/// is not a failure and must not be reported as one.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFolderDiagnostics {
+    pub status: String,
+    pub last_completed_at: Option<String>,
+    pub error: Option<String>,
+}
+
+impl Default for SharedFolderDiagnostics {
+    fn default() -> Self {
+        Self { status: "off".to_string(), last_completed_at: None, error: None }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceDiagnostics {
+    pub id: String,
+    pub display_name: String,
+    pub local: bool,
+    /// When this device's aggregates were last read in. `None` for the local device, whose
+    /// rows are written by the parser rather than imported.
+    pub last_import_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -699,4 +803,5 @@ pub struct LiveSnapshot {
     pub plan_type: Option<String>,
     pub limits: Vec<LimitWindow>,
     pub earned_reset_count: Option<u64>,
+    pub earned_reset_expires_at: Option<i64>,
 }

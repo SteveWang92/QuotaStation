@@ -18,6 +18,10 @@ use crate::domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, QuotaLevel,
 
 const CODEX_EXECUTABLE_OVERRIDE: &str = "QUOTASTATION_CODEX_EXECUTABLE";
 
+/// The app-server is an external child process: it can start and then never answer, and a
+/// refresh that waits for it forever holds the live-refresh lock for the rest of the session.
+/// The outer bound covers the whole candidate walk, the inner one each candidate's exchange,
+/// so a stalled executable is abandoned and the next one still gets its turn.
 pub async fn read_live() -> Result<LiveSnapshot> {
     timeout(Duration::from_secs(12), read_live_inner())
         .await
@@ -31,11 +35,9 @@ async fn read_live_inner() -> Result<LiveSnapshot> {
 
 async fn attempt_candidate(executable: PathBuf) -> Result<LiveSnapshot> {
     let mut child = spawn_app_server(&executable)?;
-    let result = timeout(Duration::from_secs(4), exchange(&mut child))
-        .await
-        .context("Codex app-server candidate timed out")?;
+    let result = timeout(Duration::from_secs(4), exchange(&mut child)).await;
     let _ = child.kill().await;
-    result
+    result.context("Codex app-server candidate timed out")?
 }
 
 async fn first_success<T, F, Fut>(candidates: Vec<PathBuf>, mut attempt: F) -> Result<T>
@@ -50,7 +52,7 @@ where
             Err(error) => last_error = Some(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| anyhow!("No usable Codex app-server executable was found")))
+    Err(last_error.unwrap())
 }
 
 fn spawn_app_server(executable: &Path) -> Result<Child> {
@@ -247,8 +249,24 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
         earned_reset_count: rate_result
             .pointer("/rateLimitResetCredits/availableCount")
             .and_then(Value::as_u64),
+        earned_reset_expires_at: earliest_credit_expiry(&rate_result),
         // Codex publishes its own percentages, so nothing needs corroborating.
     })
+}
+
+/// When the first of the available reset credits stops being redeemable.
+///
+/// The detail rows are optional and the backend may cap them, so the count beside this is
+/// the authoritative total and this is only the soonest deadline among the rows it sent.
+/// A credit that never expires carries no `expiresAt` and contributes no deadline.
+fn earliest_credit_expiry(rate_result: &Value) -> Option<i64> {
+    rate_result
+        .pointer("/rateLimitResetCredits/credits")?
+        .as_array()?
+        .iter()
+        .filter(|credit| credit.get("status").and_then(Value::as_str) == Some("available"))
+        .filter_map(|credit| credit.get("expiresAt").and_then(Value::as_i64))
+        .min()
 }
 
 #[cfg(test)]
@@ -266,6 +284,7 @@ mod tests {
                 plan_type: Some("test".to_string()),
                 limits: Vec::new(),
                 earned_reset_count: None,
+                earned_reset_expires_at: None,
             })
         })
         .await
@@ -279,6 +298,28 @@ mod tests {
             [PathBuf::from("v9.0.0"), PathBuf::from("v24.2.0"), PathBuf::from("v24.18.1")];
         versions.sort_by_key(|path| std::cmp::Reverse(version_key(path)));
         assert_eq!(versions[0], Path::new("v24.18.1"));
+    }
+
+    #[test]
+    fn the_soonest_available_credit_is_the_one_that_expires() {
+        let credits = json!({
+            "rateLimitResetCredits": {
+                "availableCount": 2,
+                "credits": [
+                    { "status": "available", "expiresAt": 1_784_246_400_i64 },
+                    { "status": "available", "expiresAt": 1_781_654_400_i64 },
+                    { "status": "redeemed", "expiresAt": 1_000_000_i64 },
+                    { "status": "available", "expiresAt": null },
+                ],
+            },
+        });
+        assert_eq!(earliest_credit_expiry(&credits), Some(1_781_654_400));
+    }
+
+    #[test]
+    fn a_credit_count_with_no_detail_rows_reports_no_expiry() {
+        let summary = json!({ "rateLimitResetCredits": { "availableCount": 2 } });
+        assert_eq!(earliest_credit_expiry(&summary), None);
     }
 
     #[test]

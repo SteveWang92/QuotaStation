@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  createAllRange,
   createCustomRange,
   createPresetRange,
   customRangeTooLong,
   formatRangeHour,
   hasRolledOver,
   isHourlyRange,
+  previousPeriod,
   resolveDateRange,
   todayString,
 } from "../src/dateRanges";
@@ -30,6 +32,35 @@ describe("preset ranges", () => {
     expect(range.label).toBe("Today");
   });
 
+  it("reads the last 24 hours as a window, not as the calendar days it touches", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 12, 9, 40));
+    const range = createPresetRange("24h");
+    expect(range.startHour).toBe("2026-08-11T10:00");
+    expect(range.endHour).toBe("2026-08-12T09:00");
+    // Both calendar days it touches are partial, which is what makes it a different
+    // question from "today".
+    expect(range.startDate).toBe("2026-08-11");
+    expect(range.endDate).toBe("2026-08-12");
+  });
+
+  it("moves the 24-hour window every hour rather than every midnight", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 12, 9, 40));
+    const range = createPresetRange("24h");
+    vi.setSystemTime(new Date(2026, 7, 12, 10, 5));
+    expect(hasRolledOver(range)).toBe(true);
+    expect(resolveDateRange(range).endHour).toBe("2026-08-12T10:00");
+  });
+
+  it("compares a 24-hour window against the 24 hours before it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 12, 9, 40));
+    const earlier = previousPeriod(createPresetRange("24h"));
+    expect(earlier.startHour).toBe("2026-08-10T10:00");
+    expect(earlier.endHour).toBe("2026-08-11T09:00");
+  });
+
   it("recomputes a preset after the process crosses midnight", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 7, 11, 23, 59));
@@ -49,6 +80,20 @@ describe("preset ranges", () => {
       expect(calendarDaysBetween(range.startDate, range.endDate)).toBe(days - 1);
       expect(range.label).toBe(`Last ${days} days`);
     }
+  });
+
+  it("keeps an all-time range anchored to the first recorded day", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 12, 9, 40));
+    const range = createAllRange("2025-11-03");
+    expect(range.label).toBe("All time");
+    expect(range.startDate).toBe("2025-11-03");
+    expect(range.endDate).toBe("2026-08-12");
+
+    vi.setSystemTime(new Date(2026, 7, 13, 0, 1));
+    expect(resolveDateRange(range).startDate).toBe("2025-11-03");
+    expect(resolveDateRange(range).endDate).toBe("2026-08-13");
+    expect(hasRolledOver(range)).toBe(true);
   });
 });
 

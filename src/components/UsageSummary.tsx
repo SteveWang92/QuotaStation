@@ -1,6 +1,6 @@
 import { CalendarDays, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import { alignToBuckets, calendarDays, calendarHours } from "../charts";
+import { alignToBuckets, calendarDays, calendarHours, windowHours } from "../charts";
 import {
   createCustomRange,
   createPresetRange,
@@ -23,6 +23,8 @@ import {
 import { SERIES_LIMIT, SERIES_REST, SERIES_SLOTS } from "../series";
 import type {
   DailyUsagePoint,
+  DeviceDiagnostics,
+  DeviceUsage,
   HistoryProvider,
   ModelUsage,
   ProviderSnapshot,
@@ -45,9 +47,13 @@ interface UsagePoint {
 
 const PRESETS: Array<{ value: Exclude<RangePreset, "custom">; label: string }> = [
   { value: "today", label: "Today" },
+  // A rolling window is a different question from a calendar day: at nine in the morning
+  // "today" is nine hours and this is a full day of work, most of it yesterday's.
+  { value: "24h", label: "24h" },
   { value: "3d", label: "3d" },
   { value: "7d", label: "7d" },
   { value: "30d", label: "30d" },
+  { value: "all", label: "All" },
 ];
 
 /**
@@ -68,10 +74,15 @@ interface UsageSummaryProps {
   providers: ProviderSnapshot[];
   activeProvider: HistoryProvider;
   onSelectProvider: (provider: HistoryProvider) => void;
+  activeDevice: string | null;
+  onSelectDevice: (device: string | null) => void;
+  /** Every device the database knows, which is what names one that contributed no tokens
+      to the range currently on screen. */
+  knownDevices: DeviceDiagnostics[];
   range: UsageRangeSnapshot;
   /** The same range hour by hour, when it is short enough to be read that way. */
   hours: UsageHoursSnapshot | null;
-  /** The period of the same length immediately before this one, for the comparison. */
+  /** The period immediately before this one, or none when every recorded day is selected. */
   previousRange: UsageRangeSnapshot | null;
   quotaHistory: QuotaHistorySnapshot | null;
   selection: DateRangeSelection;
@@ -94,6 +105,9 @@ export function UsageSummary({
   providers,
   activeProvider,
   onSelectProvider,
+  activeDevice,
+  onSelectDevice,
+  knownDevices,
   range,
   hours,
   previousRange,
@@ -114,6 +128,26 @@ export function UsageSummary({
   // whichever provider happens to be first.
   const combined = activeProvider === "all";
 
+  // The split lists only the devices with tokens in this range, so a filtered device that
+  // contributed nothing to it would take its own control off the screen and leave the
+  // filter with no way back to All devices. It stays in the list at zero instead.
+  const deviceOptions = useMemo<DeviceUsage[]>(() => {
+    if (activeDevice === null || range.devices.some((d) => d.deviceId === activeDevice)) {
+      return range.devices;
+    }
+    const known = knownDevices.find((device) => device.id === activeDevice);
+    return [
+      ...range.devices,
+      {
+        deviceId: activeDevice,
+        displayName: known?.displayName ?? activeDevice,
+        local: known?.local ?? false,
+        tokens: 0,
+        percent: 0,
+      },
+    ];
+  }, [activeDevice, knownDevices, range.devices]);
+
   // A short range is read hour by hour: three columns describe three days without saying
   // anything about when the work in them happened. The core decides what it can answer
   // hourly, so an hourly reading arriving is what puts the charts in that resolution.
@@ -122,10 +156,14 @@ export function UsageSummary({
     () => calendarDays(range.startDate, range.endDate),
     [range.startDate, range.endDate],
   );
-  const buckets = useMemo(
-    () => (hourly ? calendarHours(range.startDate, range.endDate) : days),
-    [hourly, range.startDate, range.endDate, days],
-  );
+  // A rolling window is bounded by its own two ends; a calendar range runs from midnight
+  // to the hour in progress.
+  const buckets = useMemo(() => {
+    if (!hourly) return days;
+    return selection.startHour !== undefined && selection.endHour !== undefined
+      ? windowHours(selection.startHour, selection.endHour)
+      : calendarHours(range.startDate, range.endDate);
+  }, [hourly, selection.startHour, selection.endHour, range.startDate, range.endDate, days]);
   const aligned: Array<UsagePoint | undefined> = useMemo(
     () =>
       hours === null
@@ -237,37 +275,61 @@ export function UsageSummary({
           <span className="section-kicker">Usage history</span>
           <h2>{selection.label}</h2>
         </div>
-        {providers.length > 1 ? (
-          <div className="provider-tabs" role="tablist" aria-label="Usage history provider">
-            {/* Everything counted together comes first, because it is the whole of what
-                this machine spent and each provider below it is a part of that. */}
-            <button
-              type="button"
-              role="tab"
-              aria-selected={combined}
-              className={combined ? "active" : ""}
-              onClick={() => {
-                setOpenDay(null);
-                onSelectProvider("all");
-              }}
-            >
-              All
-            </button>
-            {providers.map((provider) => (
-              <button
-                type="button"
-                key={provider.provider}
-                role="tab"
-                aria-selected={provider.provider === activeProvider}
-                className={provider.provider === activeProvider ? "active" : ""}
-                onClick={() => {
-                  setOpenDay(null);
-                  onSelectProvider(provider.provider);
-                }}
-              >
-                {provider.displayName}
-              </button>
-            ))}
+        {providers.length > 1 || range.devices.length > 1 ? (
+          <div className="history-filters">
+            {providers.length > 1 ? (
+              <div className="provider-tabs" role="tablist" aria-label="Usage history provider">
+                {/* Everything counted together comes first, because it is the whole and
+                    each provider below it is one part of that total. */}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={combined}
+                  className={combined ? "active" : ""}
+                  onClick={() => {
+                    setOpenDay(null);
+                    onSelectProvider("all");
+                  }}
+                >
+                  All
+                </button>
+                {providers.map((provider) => (
+                  <button
+                    type="button"
+                    key={provider.provider}
+                    role="tab"
+                    aria-selected={provider.provider === activeProvider}
+                    className={provider.provider === activeProvider ? "active" : ""}
+                    onClick={() => {
+                      setOpenDay(null);
+                      onSelectProvider(provider.provider);
+                    }}
+                  >
+                    {provider.displayName}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {deviceOptions.length > 1 ? (
+              <label className="device-filter">
+                <span>Device</span>
+                <select
+                  value={activeDevice ?? ""}
+                  disabled={loading}
+                  onChange={(event) => {
+                    setOpenDay(null);
+                    onSelectDevice(event.target.value === "" ? null : event.target.value);
+                  }}
+                >
+                  <option value="">All devices</option>
+                  {deviceOptions.map((device) => (
+                    <option key={device.deviceId} value={device.deviceId}>
+                      {device.local ? "This machine" : device.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
           </div>
         ) : null}
         <div className="range-control" role="group" aria-label="Usage date range">
@@ -331,9 +393,8 @@ export function UsageSummary({
 
       <div className="history-content">
         {/* The model count is not a fourth headline figure: the model mix card below both
-            counts them and says what they were. Each figure carries how it moved against
-            the period of the same length before this one, so a total means something on
-            its own. */}
+            counts them and says what they were. Bounded ranges compare each figure with
+            the period before them; All has no history before its first recorded day. */}
         <div className="summary-strip">
           <StatTile
             label="Total tokens"
@@ -440,7 +501,7 @@ export function UsageSummary({
           </div>
         ) : null}
 
-        <div className="history-grid">
+        <div className={`history-grid${range.devices.length > 1 ? " multi-device" : ""}`}>
           <article className="history-card breakdown-card">
             <div className="card-heading">
               <div>
@@ -508,6 +569,32 @@ export function UsageSummary({
               )}
             </div>
           </article>
+
+          {range.devices.length > 1 ? (
+            <article className="history-card device-card">
+              <div className="card-heading">
+                <div>
+                  <h3>Devices</h3>
+                  <span>{range.devices.length} devices · by total tokens</span>
+                </div>
+              </div>
+              <div className="device-list">
+                {range.devices.map((device) => (
+                  <div className="device-row" key={device.deviceId}>
+                    <span title={device.displayName}>
+                      {device.displayName}
+                      {device.local ? <small>This machine</small> : null}
+                    </span>
+                    <strong>{formatNumber(device.tokens)}</strong>
+                    <span>{device.percent.toFixed(1)}%</span>
+                    <div className="device-track">
+                      <i style={{ width: `${device.percent}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </article>
+          ) : null}
 
           <article className="history-card token-card">
             <div className="card-heading">

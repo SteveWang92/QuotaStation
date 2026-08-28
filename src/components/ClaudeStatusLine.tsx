@@ -23,11 +23,7 @@ export function ClaudeStatusLine() {
   const [savingSettings, setSavingSettings] = useState(false);
 
   useEffect(() => {
-    void invoke<ClaudeStatusLineStatus>("get_claude_status_line")
-      .then(setStatus)
-      .catch(() => {
-        // The quota still comes from the session logs; this card is an offer, not a step.
-      });
+    void invoke<ClaudeStatusLineStatus>("get_claude_status_line").then(setStatus);
   }, []);
 
   const setInstalled = useCallback(async (installed: boolean) => {
@@ -163,9 +159,7 @@ export function ClaudeFinishedNotifications() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    void invoke<boolean>("get_claude_notifications")
-      .then(setInstalled)
-      .catch(() => {});
+    void invoke<boolean>("get_claude_notifications").then(setInstalled);
   }, []);
 
   const change = useCallback(async (wanted: boolean) => {

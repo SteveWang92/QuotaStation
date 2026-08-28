@@ -11,11 +11,12 @@ use sqlx::{
 };
 
 use crate::domain::{
-    AcquisitionDiagnostics, CCUSAGE_REVISION, DailyUsagePoint, Freshness, HOURLY_HISTORY_DAYS,
-    HistorySnapshot, HourlyUsagePoint, LimitKind, LimitResetEvent, LimitWindow, LiveSnapshot,
-    ModelUsage, ModelUsageRow, PRICING_CATALOG_REVISION, ProviderSnapshot, QuotaHistoryPoint,
-    QuotaHistorySnapshot, QuotaHistoryWindow, QuotaLevel, ResetClassification,
-    RetentionDiagnostics, TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot, WindowSource,
+    AcquisitionDiagnostics, CCUSAGE_REVISION, DailyUsagePoint, DeviceUsage, DeviceUsageRow,
+    Freshness, HOURLY_HISTORY_DAYS, HistorySnapshot, HourlyUsagePoint, LimitKind, LimitResetEvent,
+    LimitWindow, LiveSnapshot, ModelUsage, ModelUsageRow, PRICING_CATALOG_REVISION,
+    ProviderSnapshot, QuotaHistoryPoint, QuotaHistorySnapshot, QuotaHistoryWindow, QuotaLevel,
+    ResetClassification, RetentionDiagnostics, TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot,
+    UsageWindowSnapshot, WindowSource,
 };
 use crate::providers::ProviderKind;
 use crate::resets::{ResetTracker, WindowObservation, detect};
@@ -26,6 +27,12 @@ use crate::sanitize::sanitize_error;
 /// one. A per-tier writer must use the tier it observed, never this value.
 const AGGREGATE_SERVICE_TIER: &str = "mixed";
 
+/// The device every row this machine parsed is stored under. A machine reports itself to
+/// other machines by the identifier in its settings file, but stores its own work under
+/// this fixed name: the rows outlive any identifier, and a migration that had to know one
+/// could not read the settings file to find it.
+pub const LOCAL_DEVICE: &str = "local";
+
 /// The rollout scan skips files older than its previous run, with this much overlap so a
 /// window that reset across the boundary still has an earlier reading to compare against.
 const BACKFILL_OVERLAP_HOURS: i64 = 48;
@@ -34,6 +41,103 @@ const BACKFILL_OVERLAP_HOURS: i64 = 48;
 /// list the ones before it, neither of which needs the whole history.
 const RECENT_RESET_LIMIT: i64 = 8;
 
+/// The columns every query over `limit_resets` selects. The token total among them is
+/// stored rather than summed on the way out, so it outlives the hourly rows it was built
+/// from — see [`Storage::refresh_reset_tokens`].
+const RESET_COLUMNS: &str = "window_kind, window_duration_mins, anchored_at, new_resets_at, previous_resets_at, \
+    used_percent_before, tokens_in_window, early_by_seconds, classification";
+
+/// The restart before this one of the same window, which is where the window this one
+/// closed began. `NULL` for the first restart recorded of a window. A window is identified
+/// by its duration rather than its slot, because Codex moves one between primary and
+/// secondary: matching on the slot pairs a weekly restart with a five-hour one and shortens
+/// the window it closed to a few hours.
+const RESET_PREVIOUS_ANCHOR: &str = "( \
+      SELECT previous.anchored_at FROM limit_resets AS previous \
+      WHERE previous.provider_instance_id = limit_resets.provider_instance_id \
+      AND previous.window_duration_mins = limit_resets.window_duration_mins \
+      AND previous.anchored_at < limit_resets.anchored_at \
+      ORDER BY previous.anchored_at DESC LIMIT 1)";
+
+/// When the window a restart closed stopped counting. A window that expired unused stops
+/// at its published expiry and the next one is anchored at the next request, which can be
+/// hours of idleness later; a window rebuilt early stops when the restart anchored the new
+/// one. Reading the earlier of the two keeps that idle gap out of the closed window.
+const RESET_WINDOW_END: &str = "MIN(limit_resets.previous_resets_at, limit_resets.anchored_at)";
+
+/// A device as the database holds it. The local one is always present; the others arrive
+/// with the first file read out of the shared folder.
+#[derive(Debug, Clone)]
+pub struct DeviceRecord {
+    pub id: String,
+    pub display_name: String,
+    pub last_import_at: Option<String>,
+    /// The modification time of the file this device's rows were read from, which is what
+    /// decides whether the next refresh has to read it again.
+    pub source_modified_at: Option<i64>,
+}
+
+/// One remote device's exported aggregates, ready to replace what is stored for it.
+pub struct DeviceImport<'a> {
+    pub id: &'a str,
+    pub display_name: &'a str,
+    pub parser_revision: &'a str,
+    pub source_modified_at: i64,
+    pub daily: &'a [DeviceUsageRow],
+    pub hourly: &'a [DeviceUsageRow],
+}
+
+/// Which of the two usage tables a device split is being read from, and the column its
+/// buckets are keyed by. A calendar range reads the daily rows; a rolling window of hours
+/// can only be answered by the hourly ones, because the days at its ends are partial.
+#[derive(Debug, Clone, Copy)]
+enum BucketTable {
+    Daily,
+    Hourly,
+}
+
+impl BucketTable {
+    fn parts(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Daily => ("daily_usage", "usage_date"),
+            Self::Hourly => ("hourly_usage", "hour_start"),
+        }
+    }
+}
+
+/// One bucket of usage being accumulated — a day or an hour — as its rows arrive one
+/// model at a time.
+#[derive(Default)]
+struct Bucket {
+    usage: TokenUsage,
+    cost: f64,
+    models: BTreeMap<String, u64>,
+}
+
+impl Bucket {
+    fn add(&mut self, usage: &TokenUsage, cost: f64, model: &str) {
+        add_usage(&mut self.usage, usage);
+        self.cost += cost;
+        *self.models.entry(model.to_string()).or_default() += usage.total;
+    }
+
+    /// The bucket as a surface reads it: a cost only where something was spent, and the
+    /// models ranked by their share of this bucket alone.
+    fn finish(self) -> (TokenUsage, Option<f64>, Vec<ModelUsage>) {
+        let cost = (self.usage.total > 0).then_some(self.cost);
+        let models = rank_models(self.models, self.usage.total);
+        (self.usage, cost, models)
+    }
+}
+
+fn add_usage(total: &mut TokenUsage, usage: &TokenUsage) {
+    total.input += usage.input;
+    total.cache_read += usage.cache_read;
+    total.output += usage.output;
+    total.reasoning += usage.reasoning;
+    total.total += usage.total;
+}
+
 fn kind_column(kind: LimitKind) -> &'static str {
     match kind {
         LimitKind::Primary => "primary",
@@ -41,8 +145,8 @@ fn kind_column(kind: LimitKind) -> &'static str {
     }
 }
 
-/// One recorded restart, from a row carrying the eight columns `limit_resets` stores. The
-/// recent list and the range query select the same columns, so they read them the same way.
+/// One recorded restart, from a row carrying [`RESET_COLUMNS`]. The recent list and the
+/// range query select the same columns, so they read them the same way.
 fn reset_event(row: sqlx::sqlite::SqliteRow) -> Option<LimitResetEvent> {
     let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
     let window_duration_mins: i64 = row.try_get("window_duration_mins").ok()?;
@@ -58,6 +162,11 @@ fn reset_event(row: sqlx::sqlite::SqliteRow) -> Option<LimitResetEvent> {
         new_resets_at: row.try_get("new_resets_at").ok()?,
         previous_resets_at: row.try_get("previous_resets_at").ok()?,
         used_percent_before: row.try_get("used_percent_before").ok()?,
+        tokens_in_window: row
+            .try_get::<Option<i64>, _>("tokens_in_window")
+            .ok()
+            .flatten()
+            .and_then(|tokens| u64::try_from(tokens).ok()),
         early_by_seconds: row.try_get("early_by_seconds").ok()?,
         classification,
     })
@@ -158,7 +267,10 @@ impl Storage {
                     window_duration_mins,
                     resets_at,
                 };
-                let Some(earlier) = previous.get(kind_column(limit.kind)) else { continue };
+                // Paired by duration rather than by slot: Codex moves a window between
+                // `primary` and `secondary`, and the reading a restart is recognised
+                // against belongs to the window, not to the name it arrived under.
+                let Some(earlier) = previous.get(&window_duration_mins) else { continue };
                 if let Some(event) = detect(*earlier, current) {
                     Self::insert_reset(&mut tx, provider_id, &event, "live", observed_at).await?;
                 }
@@ -166,10 +278,11 @@ impl Storage {
         }
         sqlx::query(
             "UPDATE provider_instances SET plan_type = ?, earned_reset_count = ?, \
-             last_live_success_at = ?, updated_at = ? WHERE id = ?",
+             earned_reset_expires_at = ?, last_live_success_at = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&live.plan_type)
         .bind(live.earned_reset_count.map(|value| value as i64))
+        .bind(live.earned_reset_expires_at)
         .bind(observed_at)
         .bind(observed_at)
         .bind(provider_id)
@@ -216,6 +329,7 @@ impl Storage {
             )
             .execute(&mut *tx).await?;
         }
+        Self::refresh_reset_tokens(&mut tx, provider_id).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -237,7 +351,7 @@ impl Storage {
         &self,
         provider_id: i64,
         source: WindowSource,
-    ) -> Result<BTreeMap<String, WindowObservation>> {
+    ) -> Result<BTreeMap<i64, WindowObservation>> {
         let rows = sqlx::query(
             "SELECT window_kind, used_percent, window_duration_mins, resets_at, observed_at \
              FROM limit_current WHERE provider_instance_id = ? AND source = ?",
@@ -263,7 +377,7 @@ impl Storage {
                 continue;
             };
             observations.insert(
-                name,
+                window_duration_mins,
                 WindowObservation {
                     observed_at,
                     kind,
@@ -300,6 +414,50 @@ impl Storage {
         .bind(event.classification.as_str())
         .bind(source)
         .bind(detected_at)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Fills in the tokens each recorded restart carried, for the events whose hourly rows
+    /// are all still stored.
+    ///
+    /// The window a restart closed runs from [`RESET_PREVIOUS_ANCHOR`] — or, for the first
+    /// restart recorded of a window, the start its published expiry implies — to
+    /// [`RESET_WINDOW_END`], and is held to its own length so that a restart nothing
+    /// recorded between cannot credit one window with days of work. Hourly buckets are the
+    /// finest resolution kept, so a bucket is credited to whichever window was running when
+    /// it opened and the hour a restart falls in belongs to the window that starts there:
+    /// no bucket is counted twice, and the total is approximate at the two boundaries only.
+    ///
+    /// The events outlive those rows, so a total is rebuilt on every write for as long as
+    /// the hours behind it are complete and left alone once the oldest of them has been
+    /// pruned — which is what keeps a restart from a year ago reporting the figure it was
+    /// given at the time.
+    async fn refresh_reset_tokens(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        provider_id: i64,
+    ) -> Result<()> {
+        let window_start = format!(
+            "MAX(COALESCE({RESET_PREVIOUS_ANCHOR}, limit_resets.previous_resets_at - \
+             limit_resets.window_duration_mins * 60), {RESET_WINDOW_END} - \
+             limit_resets.window_duration_mins * 60)"
+        );
+        sqlx::query(&format!(
+            "UPDATE limit_resets SET tokens_in_window = ( \
+             SELECT SUM(total_tokens) FROM hourly_usage \
+             WHERE hourly_usage.provider_instance_id = limit_resets.provider_instance_id \
+             AND hour_start >= strftime('%Y-%m-%dT%H:00', {window_start}, 'unixepoch', \
+               'localtime') \
+             AND hour_start <= strftime('%Y-%m-%dT%H:00', limit_resets.previous_resets_at, \
+               'unixepoch', 'localtime') \
+             AND hour_start < strftime('%Y-%m-%dT%H:00', limit_resets.anchored_at, 'unixepoch', \
+               'localtime')) \
+             WHERE provider_instance_id = ? \
+             AND date({window_start}, 'unixepoch', 'localtime') \
+             >= date('now', 'localtime', '-{HOURLY_HISTORY_DAYS} days')"
+        ))
+        .bind(provider_id)
         .execute(&mut **tx)
         .await?;
         Ok(())
@@ -346,6 +504,7 @@ impl Storage {
         for event in &events {
             Self::insert_reset(&mut tx, provider_id, event, "backfill", scanned_at).await?;
         }
+        Self::refresh_reset_tokens(&mut tx, provider_id).await?;
         sqlx::query(
             "INSERT INTO retention_state (job_name, last_completed_at, last_status, last_error) \
              VALUES (?, ?, 'succeeded', NULL) ON CONFLICT(job_name) DO UPDATE SET \
@@ -384,13 +543,29 @@ impl Storage {
             .collect())
     }
 
+    /// Every restart recorded for a provider, newest first.
+    ///
+    /// Nothing prunes `limit_resets`, so this really is the whole history — which is why
+    /// only the settings page asks for it and the dashboard takes
+    /// [`load_recent_resets`](Self::load_recent_resets) instead.
+    pub async fn load_reset_history(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
+        let provider_id = self.provider_id(provider).await?;
+        let rows = sqlx::query(&format!(
+            "SELECT {RESET_COLUMNS} FROM limit_resets \
+             WHERE provider_instance_id = ? ORDER BY anchored_at DESC"
+        ))
+        .bind(provider_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().filter_map(reset_event).collect())
+    }
+
     pub async fn load_recent_resets(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
         let provider_id = self.provider_id(provider).await?;
-        let rows = sqlx::query(
-            "SELECT window_kind, window_duration_mins, anchored_at, new_resets_at, previous_resets_at, \
-             used_percent_before, early_by_seconds, classification FROM limit_resets \
-             WHERE provider_instance_id = ? ORDER BY anchored_at DESC LIMIT ?",
-        )
+        let rows = sqlx::query(&format!(
+            "SELECT {RESET_COLUMNS} FROM limit_resets \
+             WHERE provider_instance_id = ? ORDER BY anchored_at DESC LIMIT ?"
+        ))
         .bind(provider_id)
         .bind(RECENT_RESET_LIMIT)
         .fetch_all(&self.pool)
@@ -413,12 +588,18 @@ impl Storage {
                 .fetch_one(&mut *tx)
                 .await?;
         if previous_timezone.as_deref().is_some_and(|previous| previous != aggregation_timezone) {
+            // Every device's rows go, not just this machine's: an imported row is keyed by
+            // the local hour it was aggregated in, and this machine has just changed which
+            // hours those are. Forgetting where each device's file stood is what brings the
+            // others back — the next refresh reads every one of them again and re-checks it
+            // against the zone now in force.
             for table in ["daily_usage", "hourly_usage"] {
                 sqlx::query(&format!("DELETE FROM {table} WHERE provider_instance_id = ?"))
                     .bind(provider_id)
                     .execute(&mut *tx)
                     .await?;
             }
+            sqlx::query("UPDATE devices SET source_modified_at = NULL").execute(&mut *tx).await?;
         }
         sqlx::query(
             "UPDATE provider_instances SET parser_revision = ?, aggregation_timezone = ?, \
@@ -431,54 +612,78 @@ impl Storage {
         .bind(provider_id)
         .execute(&mut *tx)
         .await?;
-        // Replace only the days the current parse covers. Sessions Codex has already
-        // rotated away are absent from a parse, and their stored days must survive.
+        // Replace only the days the current parse covers, and only this machine's rows in
+        // them: a parse of these logs says nothing about what another machine did that day.
+        // Sessions Codex has already rotated away are absent from a parse, and their stored
+        // days must survive.
         for day in &history.days {
             sqlx::query(
-                "DELETE FROM daily_usage WHERE provider_instance_id = ? AND usage_date = ?",
+                "DELETE FROM daily_usage WHERE provider_instance_id = ? AND device = ? \
+                 AND usage_date = ?",
             )
             .bind(provider_id)
+            .bind(LOCAL_DEVICE)
             .bind(&day.date)
             .execute(&mut *tx)
             .await?;
             for row in &day.model_rows {
-                self.insert_daily_model(&mut tx, provider_id, &day.date, row, observed_at).await?;
+                Self::insert_daily_model(
+                    &mut tx,
+                    provider_id,
+                    LOCAL_DEVICE,
+                    &day.date,
+                    row,
+                    observed_at,
+                )
+                .await?;
             }
         }
         // The hourly rows are replaced the same way, and only ever cover the recent window
         // the parser produces them for; retention removes the ones that fall out of it.
         for hour in &history.hours {
             sqlx::query(
-                "DELETE FROM hourly_usage WHERE provider_instance_id = ? AND hour_start = ?",
+                "DELETE FROM hourly_usage WHERE provider_instance_id = ? AND device = ? \
+                 AND hour_start = ?",
             )
             .bind(provider_id)
+            .bind(LOCAL_DEVICE)
             .bind(&hour.hour_start)
             .execute(&mut *tx)
             .await?;
             for row in &hour.model_rows {
-                self.insert_hourly_model(&mut tx, provider_id, &hour.hour_start, row, observed_at)
-                    .await?;
+                Self::insert_hourly_model(
+                    &mut tx,
+                    provider_id,
+                    LOCAL_DEVICE,
+                    &hour.hour_start,
+                    row,
+                    observed_at,
+                )
+                .await?;
             }
         }
+        // The hours a recorded restart's window spans have just been rewritten, so the
+        // totals built from them are rebuilt here rather than left a parse behind.
+        Self::refresh_reset_tokens(&mut tx, provider_id).await?;
         tx.commit().await?;
         Ok(())
     }
 
     async fn insert_daily_model(
-        &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         provider_id: i64,
+        device: &str,
         date: &str,
         row: &ModelUsageRow,
         observed_at: &str,
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO daily_usage \
-             (provider_instance_id, usage_date, model, service_tier, input_tokens, cache_read_tokens, \
+             (provider_instance_id, device, usage_date, model, service_tier, input_tokens, cache_read_tokens, \
               output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(provider_id).bind(date).bind(&row.model).bind(AGGREGATE_SERVICE_TIER).bind(row.input as i64)
+        .bind(provider_id).bind(device).bind(date).bind(&row.model).bind(AGGREGATE_SERVICE_TIER).bind(row.input as i64)
         .bind(row.cache_read as i64).bind(row.output as i64).bind(row.reasoning as i64)
         .bind(row.total as i64).bind(row.cost_usd).bind(CCUSAGE_REVISION).bind(observed_at)
         .execute(&mut **tx).await?;
@@ -486,21 +691,196 @@ impl Storage {
     }
 
     async fn insert_hourly_model(
-        &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         provider_id: i64,
+        device: &str,
         hour_start: &str,
         row: &ModelUsageRow,
         observed_at: &str,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO hourly_usage              (provider_instance_id, hour_start, model, service_tier, input_tokens, cache_read_tokens,               output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO hourly_usage              (provider_instance_id, device, hour_start, model, service_tier, input_tokens, cache_read_tokens,               output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(provider_id).bind(hour_start).bind(&row.model).bind(AGGREGATE_SERVICE_TIER)
+        .bind(provider_id).bind(device).bind(hour_start).bind(&row.model).bind(AGGREGATE_SERVICE_TIER)
         .bind(row.input as i64).bind(row.cache_read as i64).bind(row.output as i64)
         .bind(row.reasoning as i64).bind(row.total as i64).bind(row.cost_usd)
         .bind(CCUSAGE_REVISION).bind(observed_at)
         .execute(&mut **tx).await?;
+        Ok(())
+    }
+
+    /// Names this machine in the device list, so a split reads "Workshop" rather than an
+    /// identifier. Called whenever the name could have changed, which is startup and a
+    /// settings save.
+    pub async fn record_local_device(&self, display_name: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO devices (id, display_name) VALUES (?, ?) \
+             ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name",
+        )
+        .bind(LOCAL_DEVICE)
+        .bind(display_name)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Every device the totals are built from, this machine first.
+    pub async fn load_devices(&self) -> Result<Vec<DeviceRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, display_name, last_import_at, source_modified_at FROM devices \
+             ORDER BY id = ? DESC, display_name ASC",
+        )
+        .bind(LOCAL_DEVICE)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| DeviceRecord {
+                id: row.get("id"),
+                display_name: row.get("display_name"),
+                last_import_at: row.get("last_import_at"),
+                source_modified_at: row.get("source_modified_at"),
+            })
+            .collect())
+    }
+
+    /// This machine's own aggregates, as the shared folder carries them. Both resolutions
+    /// come back whole: the exported file replaces its predecessor rather than adding to
+    /// it, so a re-export repairs a file that was written wrong.
+    pub async fn load_local_export(&self) -> Result<(Vec<DeviceUsageRow>, Vec<DeviceUsageRow>)> {
+        Ok((
+            self.load_export_rows("daily_usage", "usage_date").await?,
+            self.load_export_rows("hourly_usage", "hour_start").await?,
+        ))
+    }
+
+    async fn load_export_rows(&self, table: &str, bucket: &str) -> Result<Vec<DeviceUsageRow>> {
+        let rows = sqlx::query(&format!(
+            "SELECT provider_instances.provider AS provider, {table}.{bucket} AS bucket, model, \
+             service_tier, input_tokens, cache_read_tokens, output_tokens, reasoning_tokens, \
+             total_tokens, estimated_cost_usd FROM {table} \
+             JOIN provider_instances ON provider_instances.id = {table}.provider_instance_id \
+             WHERE device = ? ORDER BY bucket ASC, model ASC"
+        ))
+        .bind(LOCAL_DEVICE)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| DeviceUsageRow {
+                provider: row.get("provider"),
+                bucket: row.get("bucket"),
+                model: row.get("model"),
+                service_tier: row.get("service_tier"),
+                input: row.get::<i64, _>("input_tokens") as u64,
+                cache_read: row.get::<i64, _>("cache_read_tokens") as u64,
+                output: row.get::<i64, _>("output_tokens") as u64,
+                reasoning: row.get::<i64, _>("reasoning_tokens") as u64,
+                total: row.get::<i64, _>("total_tokens") as u64,
+                cost_usd: row.get("estimated_cost_usd"),
+            })
+            .collect())
+    }
+
+    /// Replaces one remote device's rows with the set its exported file carries.
+    ///
+    /// Wholesale, because the file is that device's whole record: a day it no longer
+    /// reports is a day it no longer has, and merging would keep a figure its own machine
+    /// has already corrected. Rows naming a provider this build does not know are skipped
+    /// — the other machine may be a version ahead — and the restart totals are rebuilt,
+    /// since the hours a recorded window spans have just gained another machine's work.
+    pub async fn import_device(
+        &self,
+        device: &DeviceImport<'_>,
+        imported_at: &str,
+    ) -> Result<usize> {
+        let providers: BTreeMap<String, i64> =
+            sqlx::query("SELECT id, provider FROM provider_instances")
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(|row| (row.get("provider"), row.get("id")))
+                .collect();
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO devices (id, display_name, last_import_at, source_modified_at) \
+             VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET \
+               display_name = excluded.display_name, last_import_at = excluded.last_import_at, \
+               source_modified_at = excluded.source_modified_at",
+        )
+        .bind(device.id)
+        .bind(device.display_name)
+        .bind(imported_at)
+        .bind(device.source_modified_at)
+        .execute(&mut *tx)
+        .await?;
+        for table in ["daily_usage", "hourly_usage"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE device = ?"))
+                .bind(device.id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        let mut written = 0;
+        for (table, bucket, rows) in [
+            ("daily_usage", "usage_date", device.daily),
+            ("hourly_usage", "hour_start", device.hourly),
+        ] {
+            for row in rows {
+                let Some(&provider_id) = providers.get(&row.provider) else { continue };
+                Self::insert_imported_row(
+                    &mut tx,
+                    provider_id,
+                    device,
+                    table,
+                    bucket,
+                    row,
+                    imported_at,
+                )
+                .await?;
+                written += 1;
+            }
+        }
+        for &provider_id in providers.values() {
+            Self::refresh_reset_tokens(&mut tx, provider_id).await?;
+        }
+        tx.commit().await?;
+        Ok(written)
+    }
+
+    async fn insert_imported_row(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        provider_id: i64,
+        device: &DeviceImport<'_>,
+        table: &str,
+        bucket: &str,
+        row: &DeviceUsageRow,
+        imported_at: &str,
+    ) -> Result<()> {
+        sqlx::query(&format!(
+            "INSERT INTO {table} \
+             (provider_instance_id, device, {bucket}, model, service_tier, input_tokens, \
+              cache_read_tokens, output_tokens, reasoning_tokens, total_tokens, \
+              estimated_cost_usd, parser_revision, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ))
+        .bind(provider_id)
+        .bind(device.id)
+        .bind(&row.bucket)
+        .bind(&row.model)
+        .bind(&row.service_tier)
+        .bind(row.input as i64)
+        .bind(row.cache_read as i64)
+        .bind(row.output as i64)
+        .bind(row.reasoning as i64)
+        .bind(row.total as i64)
+        .bind(row.cost_usd)
+        // The revision that parsed these rows is the exporting machine's, not this one's.
+        .bind(device.parser_revision)
+        .bind(imported_at)
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 
@@ -682,7 +1062,8 @@ impl Storage {
     pub async fn load_snapshot(&self, provider: ProviderKind) -> Result<ProviderSnapshot> {
         let provider_id = self.provider_id(provider).await?;
         let instance = sqlx::query(
-            "SELECT plan_type, earned_reset_count, last_live_success_at, last_history_success_at \
+            "SELECT plan_type, earned_reset_count, earned_reset_expires_at, \
+             last_live_success_at, last_history_success_at \
              FROM provider_instances WHERE id = ?",
         )
         .bind(provider_id)
@@ -692,6 +1073,7 @@ impl Storage {
         snapshot.plan_type = instance.try_get("plan_type")?;
         snapshot.earned_reset_count =
             instance.try_get::<Option<i64>, _>("earned_reset_count")?.map(|v| v as u64);
+        snapshot.earned_reset_expires_at = instance.try_get("earned_reset_expires_at")?;
         let live_success: Option<String> = instance.try_get("last_live_success_at")?;
         let history_success: Option<String> = instance.try_get("last_history_success_at")?;
         snapshot.last_live_success_at = live_success;
@@ -727,13 +1109,52 @@ impl Storage {
 
         snapshot.recent_resets = self.load_recent_resets(provider).await?;
         let date = jiff::Zoned::now().date().to_string();
-        let today = self.load_usage_range(Some(provider), &date, &date).await?;
+        let today = self.load_usage_range(Some(provider), None, &date, &date).await?;
         snapshot.today = today.usage;
         snapshot.models = today.models;
         snapshot.api_equivalent_cost_usd = today.api_equivalent_cost_usd;
         snapshot.resolve_derived_state();
         snapshot.pricing_catalog_revision = PRICING_CATALOG_REVISION.to_string();
         Ok(snapshot)
+    }
+
+    /// Providers that have usage rows on any device. Imported rows count exactly like
+    /// local ones here: this list drives which histories have a tab, not which clients this
+    /// machine can ask for live quota.
+    pub async fn load_usage_providers(&self) -> Result<Vec<ProviderKind>> {
+        let keys: Vec<String> = sqlx::query_scalar(
+            "SELECT provider FROM provider_instances WHERE id IN ( \
+             SELECT provider_instance_id FROM daily_usage UNION \
+             SELECT provider_instance_id FROM hourly_usage)",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(ProviderKind::ALL
+            .into_iter()
+            .filter(|provider| keys.iter().any(|key| key == provider.key()))
+            .collect())
+    }
+
+    /// The first day carrying usage for the selected provider and device filters.
+    pub async fn load_usage_start_date(
+        &self,
+        provider: Option<ProviderKind>,
+        device: Option<&str>,
+    ) -> Result<Option<String>> {
+        let provider_id = match provider {
+            Some(kind) => Some(self.provider_id(kind).await?),
+            None => None,
+        };
+        Ok(sqlx::query_scalar(
+            "SELECT MIN(usage_date) FROM daily_usage \
+             WHERE (? IS NULL OR provider_instance_id = ?) AND (? IS NULL OR device = ?)",
+        )
+        .bind(provider_id)
+        .bind(provider_id)
+        .bind(device)
+        .bind(device)
+        .fetch_one(&self.pool)
+        .await?)
     }
 
     /// The usage in a date range, for one provider or for every provider at once.
@@ -745,6 +1166,7 @@ impl Storage {
     pub async fn load_usage_range(
         &self,
         provider: Option<ProviderKind>,
+        device: Option<&str>,
         start_date: &str,
         end_date: &str,
     ) -> Result<UsageRangeSnapshot> {
@@ -762,11 +1184,14 @@ impl Storage {
              SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens, \
              SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd \
              FROM daily_usage WHERE (? IS NULL OR provider_instance_id = ?) \
+             AND (? IS NULL OR device = ?) \
              AND usage_date BETWEEN ? AND ? \
              GROUP BY usage_date, model ORDER BY usage_date ASC, total_tokens DESC",
         )
         .bind(provider_id)
         .bind(provider_id)
+        .bind(device)
+        .bind(device)
         .bind(start.to_string())
         .bind(end.to_string())
         .fetch_all(&self.pool)
@@ -818,6 +1243,26 @@ impl Storage {
             })
             .collect();
 
+        let split_total = if device.is_none() {
+            total.total
+        } else {
+            self.load_usage_total(
+                provider_id,
+                BucketTable::Daily,
+                &start.to_string(),
+                &end.to_string(),
+            )
+            .await?
+        };
+        let devices = self
+            .load_device_split(
+                provider_id,
+                BucketTable::Daily,
+                &start.to_string(),
+                &end.to_string(),
+                split_total,
+            )
+            .await?;
         Ok(UsageRangeSnapshot {
             start_date: start.to_string(),
             end_date: end.to_string(),
@@ -825,7 +1270,69 @@ impl Storage {
             usage: total,
             models,
             days,
+            devices,
         })
+    }
+
+    async fn load_usage_total(
+        &self,
+        provider_id: Option<i64>,
+        bucket: BucketTable,
+        start: &str,
+        end: &str,
+    ) -> Result<u64> {
+        let (table, column) = bucket.parts();
+        let total: i64 = sqlx::query_scalar(&format!(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM {table} \
+             WHERE (? IS NULL OR provider_instance_id = ?) AND {column} BETWEEN ? AND ?"
+        ))
+        .bind(provider_id)
+        .bind(provider_id)
+        .bind(start)
+        .bind(end)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(total as u64)
+    }
+
+    /// Which machines the range's tokens came from. Devices with nothing in the range are
+    /// left out: a machine that was switched off all week is not a nought-token row.
+    async fn load_device_split(
+        &self,
+        provider_id: Option<i64>,
+        bucket: BucketTable,
+        start: &str,
+        end: &str,
+        total: u64,
+    ) -> Result<Vec<DeviceUsage>> {
+        let (table, column) = bucket.parts();
+        let rows = sqlx::query(&format!(
+            "SELECT {table}.device AS device, devices.display_name AS display_name, \
+             SUM(total_tokens) AS tokens FROM {table} \
+             JOIN devices ON devices.id = {table}.device \
+             WHERE (? IS NULL OR provider_instance_id = ?) AND {column} BETWEEN ? AND ? \
+             GROUP BY {table}.device HAVING tokens > 0 ORDER BY tokens DESC"
+        ))
+        .bind(provider_id)
+        .bind(provider_id)
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let tokens = row.get::<i64, _>("tokens") as u64;
+                let device_id: String = row.get("device");
+                DeviceUsage {
+                    local: device_id == LOCAL_DEVICE,
+                    device_id,
+                    display_name: row.get("display_name"),
+                    tokens,
+                    percent: if total == 0 { 0.0 } else { tokens as f64 / total as f64 * 100.0 },
+                }
+            })
+            .collect())
     }
 
     /// The same range at hourly resolution, for the short ranges that are drawn hour by
@@ -838,6 +1345,7 @@ impl Storage {
     pub async fn load_usage_hours(
         &self,
         provider: Option<ProviderKind>,
+        device: Option<&str>,
         start_date: &str,
         end_date: &str,
     ) -> Result<UsageHoursSnapshot> {
@@ -850,10 +1358,12 @@ impl Storage {
             None => None,
         };
         let rows = sqlx::query(
-            "SELECT hour_start, model, SUM(input_tokens) AS input_tokens,              SUM(cache_read_tokens) AS cache_read_tokens, SUM(output_tokens) AS output_tokens,              SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens,              SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd              FROM hourly_usage WHERE (? IS NULL OR provider_instance_id = ?)              AND date(hour_start) BETWEEN ? AND ?              GROUP BY hour_start, model ORDER BY hour_start ASC, total_tokens DESC",
+            "SELECT hour_start, model, SUM(input_tokens) AS input_tokens,              SUM(cache_read_tokens) AS cache_read_tokens, SUM(output_tokens) AS output_tokens,              SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens,              SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd              FROM hourly_usage WHERE (? IS NULL OR provider_instance_id = ?)              AND (? IS NULL OR device = ?) AND date(hour_start) BETWEEN ? AND ?              GROUP BY hour_start, model ORDER BY hour_start ASC, total_tokens DESC",
         )
         .bind(provider_id)
         .bind(provider_id)
+        .bind(device)
+        .bind(device)
         .bind(start.to_string())
         .bind(end.to_string())
         .fetch_all(&self.pool)
@@ -895,6 +1405,109 @@ impl Storage {
                     usage,
                 })
                 .collect(),
+        })
+    }
+
+    /// A rolling window of hours, answered as the totals and the hours behind them.
+    ///
+    /// A calendar range is read from `daily_usage`, which cannot express "the last
+    /// twenty-four hours": both days such a window touches are partial. Everything here
+    /// is summed from `hourly_usage` instead — the headline totals, the day rows, the
+    /// model mix and the device split — so no figure on the surface describes different
+    /// hours than the chart beside it. `hourly_usage` is kept for
+    /// [`HOURLY_HISTORY_DAYS`](crate::domain::HOURLY_HISTORY_DAYS) days, which is how far
+    /// back a window may reach.
+    pub async fn load_usage_window(
+        &self,
+        provider: Option<ProviderKind>,
+        device: Option<&str>,
+        start_hour: &str,
+        end_hour: &str,
+    ) -> Result<UsageWindowSnapshot> {
+        anyhow::ensure!(start_hour <= end_hour, "start hour must not be after end hour");
+        let provider_id = match provider {
+            Some(kind) => Some(self.provider_id(kind).await?),
+            None => None,
+        };
+        let rows = sqlx::query(
+            "SELECT hour_start, model, SUM(input_tokens) AS input_tokens, \
+             SUM(cache_read_tokens) AS cache_read_tokens, SUM(output_tokens) AS output_tokens, \
+             SUM(reasoning_tokens) AS reasoning_tokens, SUM(total_tokens) AS total_tokens, \
+             SUM(COALESCE(estimated_cost_usd, 0)) AS estimated_cost_usd \
+             FROM hourly_usage WHERE (? IS NULL OR provider_instance_id = ?) \
+             AND (? IS NULL OR device = ?) AND hour_start BETWEEN ? AND ? \
+             GROUP BY hour_start, model ORDER BY hour_start ASC, total_tokens DESC",
+        )
+        .bind(provider_id)
+        .bind(provider_id)
+        .bind(device)
+        .bind(device)
+        .bind(start_hour)
+        .bind(end_hour)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut total = TokenUsage::default();
+        let mut total_cost = 0.0;
+        let mut model_totals: BTreeMap<String, u64> = BTreeMap::new();
+        let mut hour_totals: BTreeMap<String, Bucket> = BTreeMap::new();
+        let mut day_totals: BTreeMap<String, Bucket> = BTreeMap::new();
+        for row in rows {
+            let hour_start: String = row.get("hour_start");
+            let model: String = row.get("model");
+            let usage = TokenUsage {
+                input: row.get::<i64, _>("input_tokens") as u64,
+                cache_read: row.get::<i64, _>("cache_read_tokens") as u64,
+                output: row.get::<i64, _>("output_tokens") as u64,
+                reasoning: row.get::<i64, _>("reasoning_tokens") as u64,
+                total: row.get::<i64, _>("total_tokens") as u64,
+            };
+            let cost = row.get::<f64, _>("estimated_cost_usd");
+            add_usage(&mut total, &usage);
+            total_cost += cost;
+            *model_totals.entry(model.clone()).or_default() += usage.total;
+            // The hour key opens with the local date it belongs to, which is the day row
+            // this hour is counted into: a partial day is still that day.
+            day_totals.entry(hour_start[..10].to_string()).or_default().add(&usage, cost, &model);
+            hour_totals.entry(hour_start).or_default().add(&usage, cost, &model);
+        }
+
+        let split_total = if device.is_none() {
+            total.total
+        } else {
+            self.load_usage_total(provider_id, BucketTable::Hourly, start_hour, end_hour).await?
+        };
+        let devices = self
+            .load_device_split(provider_id, BucketTable::Hourly, start_hour, end_hour, split_total)
+            .await?;
+        let (start_date, end_date) = (start_hour[..10].to_string(), end_hour[..10].to_string());
+        Ok(UsageWindowSnapshot {
+            range: UsageRangeSnapshot {
+                start_date: start_date.clone(),
+                end_date: end_date.clone(),
+                api_equivalent_cost_usd: (total.total > 0).then_some(total_cost),
+                models: rank_models(model_totals, total.total),
+                days: day_totals
+                    .into_iter()
+                    .map(|(date, bucket)| {
+                        let (usage, api_equivalent_cost_usd, models) = bucket.finish();
+                        DailyUsagePoint { date, usage, api_equivalent_cost_usd, models }
+                    })
+                    .collect(),
+                usage: total,
+                devices,
+            },
+            hours: UsageHoursSnapshot {
+                start_date,
+                end_date,
+                hours: hour_totals
+                    .into_iter()
+                    .map(|(hour_start, bucket)| {
+                        let (usage, api_equivalent_cost_usd, models) = bucket.finish();
+                        HourlyUsagePoint { hour_start, usage, api_equivalent_cost_usd, models }
+                    })
+                    .collect(),
+            },
         })
     }
 
@@ -956,13 +1569,11 @@ impl Storage {
             });
         }
 
-        let reset_rows = sqlx::query(
-            "SELECT window_kind, window_duration_mins, anchored_at, new_resets_at, \
-             previous_resets_at, used_percent_before, early_by_seconds, classification \
-             FROM limit_resets WHERE provider_instance_id = ? \
+        let reset_rows = sqlx::query(&format!(
+            "SELECT {RESET_COLUMNS} FROM limit_resets WHERE provider_instance_id = ? \
              AND date(anchored_at, 'unixepoch', 'localtime') BETWEEN ? AND ? \
-             ORDER BY anchored_at ASC",
-        )
+             ORDER BY anchored_at ASC"
+        ))
         .bind(provider_id)
         .bind(&start)
         .bind(&end)
@@ -1009,7 +1620,7 @@ impl Storage {
         let history_success: Option<String> = instance.try_get("last_history_success_at")?;
         let rows = sqlx::query(
             "SELECT acquisition_path, started_at, status, error_message FROM refresh_runs \
-             WHERE provider_instance_id = ? AND id IN (\
+             WHERE provider_instance_id = ? AND id IN ( \
                SELECT MAX(id) FROM refresh_runs WHERE provider_instance_id = ? GROUP BY acquisition_path\
              )",
         )
@@ -1158,6 +1769,21 @@ mod tests {
         }
     }
 
+    fn device_row(provider: &str, bucket: &str, model: &str, total: u64) -> DeviceUsageRow {
+        DeviceUsageRow {
+            provider: provider.to_string(),
+            bucket: bucket.to_string(),
+            model: model.to_string(),
+            service_tier: "mixed".to_string(),
+            input: total / 2,
+            cache_read: 0,
+            output: total / 2,
+            reasoning: 0,
+            total,
+            cost_usd: Some(1.0),
+        }
+    }
+
     #[tokio::test]
     async fn an_hourly_range_is_read_back_one_point_per_recorded_hour() {
         let (storage, _database) = open_storage().await;
@@ -1174,7 +1800,7 @@ mod tests {
             .expect("save history");
 
         let hours = storage
-            .load_usage_hours(Some(CODEX), "2026-08-20", "2026-08-20")
+            .load_usage_hours(Some(CODEX), None, "2026-08-20", "2026-08-20")
             .await
             .expect("read the hourly range");
         assert_eq!(
@@ -1184,6 +1810,51 @@ mod tests {
         );
         assert_eq!(hours.hours[0].usage.total, 300);
         assert_eq!(hours.hours[1].models[0].model, "gpt-5-codex");
+    }
+
+    #[tokio::test]
+    async fn a_rolling_window_counts_only_the_hours_inside_it() {
+        let (storage, _database) = open_storage().await;
+        let history = HistorySnapshot {
+            days: vec![
+                day("2026-08-19", "gpt-5-codex", 100),
+                day("2026-08-20", "gpt-5-codex", 700),
+            ],
+            hours: vec![
+                // Before the window opens: on the 19th, but earlier than 14:00.
+                hour("2026-08-19T09:00", "gpt-5-codex", 100),
+                hour("2026-08-19T18:00", "gpt-5-codex", 300),
+                hour("2026-08-20T10:00", "gpt-5-codex", 400),
+            ],
+        };
+        storage
+            .save_history(CODEX, &history, "Australia/Sydney", "2026-08-20T15:00:00Z")
+            .await
+            .expect("save history");
+
+        let window = storage
+            .load_usage_window(Some(CODEX), None, "2026-08-19T14:00", "2026-08-20T13:00")
+            .await
+            .expect("read the rolling window");
+        assert_eq!(
+            window.range.usage.total, 700,
+            "the hour before the window opened is outside it"
+        );
+        assert_eq!(
+            window.hours.hours.iter().map(|point| point.hour_start.as_str()).collect::<Vec<_>>(),
+            ["2026-08-19T18:00", "2026-08-20T10:00"]
+        );
+        // Both days the window touches are partial, and each day row carries only the hours
+        // of it that fell inside.
+        assert_eq!(
+            window
+                .range
+                .days
+                .iter()
+                .map(|point| (point.date.as_str(), point.usage.total))
+                .collect::<Vec<_>>(),
+            [("2026-08-19", 300), ("2026-08-20", 400)]
+        );
     }
 
     #[tokio::test]
@@ -1200,7 +1871,7 @@ mod tests {
                 .expect("save history");
         }
         let hours = storage
-            .load_usage_hours(Some(CODEX), "2026-08-20", "2026-08-20")
+            .load_usage_hours(Some(CODEX), None, "2026-08-20", "2026-08-20")
             .await
             .expect("read the hourly range");
         assert_eq!(hours.hours.len(), 1);
@@ -1231,7 +1902,7 @@ mod tests {
                 .expect("read the surviving hours");
         assert_eq!(remaining, ["2026-08-20T09:00"]);
         let days = storage
-            .load_usage_range(Some(CODEX), "2026-06-01", "2026-08-20")
+            .load_usage_range(Some(CODEX), None, "2026-06-01", "2026-08-20")
             .await
             .expect("read the daily range");
         assert_eq!(days.days.len(), 1, "the daily rows are untouched by the hourly cutoff");
@@ -1244,6 +1915,7 @@ mod tests {
             storage.table_names().await.expect("read table names"),
             [
                 "daily_usage",
+                "devices",
                 "hourly_usage",
                 "limit_current",
                 "limit_resets",
@@ -1362,7 +2034,7 @@ mod tests {
             .expect("save second history");
 
         let range = storage
-            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02")
+            .load_usage_range(Some(CODEX), None, "2026-08-01", "2026-08-02")
             .await
             .expect("load range");
         assert_eq!(range.days.len(), 2, "the day outside the parse must survive");
@@ -1399,7 +2071,7 @@ mod tests {
             .expect("save Claude history");
 
         let combined = storage
-            .load_usage_range(None, "2026-08-01", "2026-08-01")
+            .load_usage_range(None, None, "2026-08-01", "2026-08-01")
             .await
             .expect("load combined range");
         assert_eq!(combined.usage.total, 500);
@@ -1411,12 +2083,135 @@ mod tests {
         assert_eq!(combined.models.len(), 2, "each provider's models keep their own row");
 
         let single = storage
-            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-01")
+            .load_usage_range(Some(CODEX), None, "2026-08-01", "2026-08-01")
             .await
             .expect("load Codex range");
         assert_eq!(
             single.usage.total, 100,
             "asking for one provider still answers for that one alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_usage_start_date_follows_provider_and_device_filters() {
+        let (storage, _database) = open_storage().await;
+        storage
+            .save_history(
+                CODEX,
+                &HistorySnapshot { days: vec![day("2026-08-03", "gpt-5", 100)], hours: Vec::new() },
+                "Australia/Brisbane",
+                "2026-08-03T10:00:00Z",
+            )
+            .await
+            .expect("save local Codex history");
+        let daily = [device_row("claude", "2026-07-01", "claude-opus-5", 400)];
+        storage
+            .import_device(
+                &DeviceImport {
+                    id: "workshop",
+                    display_name: "Workshop",
+                    parser_revision: "test",
+                    source_modified_at: 1,
+                    daily: &daily,
+                    hourly: &[],
+                },
+                "2026-08-03T10:01:00Z",
+            )
+            .await
+            .expect("import remote Claude usage");
+
+        assert_eq!(
+            storage.load_usage_start_date(None, None).await.expect("load combined start"),
+            Some("2026-07-01".to_string())
+        );
+        assert_eq!(
+            storage.load_usage_start_date(Some(CODEX), None).await.expect("load Codex start"),
+            Some("2026-08-03".to_string())
+        );
+        assert_eq!(
+            storage
+                .load_usage_start_date(None, Some("workshop"))
+                .await
+                .expect("load workshop start"),
+            Some("2026-07-01".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_filter_narrows_daily_and_hourly_usage_without_hiding_the_split() {
+        let (storage, _database) = open_storage().await;
+        storage.record_local_device("This machine").await.expect("name the local device");
+        storage
+            .save_history(
+                CODEX,
+                &HistorySnapshot {
+                    days: vec![day("2026-08-01", "gpt-5", 100)],
+                    hours: vec![hour("2026-08-01T09:00", "gpt-5", 100)],
+                },
+                "Australia/Brisbane",
+                "2026-08-01T10:00:00Z",
+            )
+            .await
+            .expect("save local history");
+        let daily = [device_row("codex", "2026-08-01", "gpt-5", 400)];
+        let hourly = [device_row("codex", "2026-08-01T09:00", "gpt-5", 400)];
+        storage
+            .import_device(
+                &DeviceImport {
+                    id: "workshop",
+                    display_name: "Workshop",
+                    parser_revision: "test",
+                    source_modified_at: 1,
+                    daily: &daily,
+                    hourly: &hourly,
+                },
+                "2026-08-01T10:01:00Z",
+            )
+            .await
+            .expect("import the other device");
+
+        let local = storage
+            .load_usage_range(Some(CODEX), Some(LOCAL_DEVICE), "2026-08-01", "2026-08-01")
+            .await
+            .expect("load local usage");
+        assert_eq!(local.usage.total, 100);
+        assert_eq!(local.devices.len(), 2, "the filter choices remain visible");
+        assert_eq!(local.devices.iter().map(|device| device.tokens).sum::<u64>(), 500);
+
+        let remote = storage
+            .load_usage_range(Some(CODEX), Some("workshop"), "2026-08-01", "2026-08-01")
+            .await
+            .expect("load remote usage");
+        assert_eq!(remote.usage.total, 400);
+        let remote_hours = storage
+            .load_usage_hours(Some(CODEX), Some("workshop"), "2026-08-01", "2026-08-01")
+            .await
+            .expect("load remote hours");
+        assert_eq!(remote_hours.hours[0].usage.total, 400);
+    }
+
+    #[tokio::test]
+    async fn imported_usage_makes_a_provider_available_without_local_history() {
+        let (storage, _database) = open_storage().await;
+        let daily = [device_row("claude", "2026-08-01", "claude-opus-5", 400)];
+        storage
+            .import_device(
+                &DeviceImport {
+                    id: "workshop",
+                    display_name: "Workshop",
+                    parser_revision: "test",
+                    source_modified_at: 1,
+                    daily: &daily,
+                    hourly: &[],
+                },
+                "2026-08-01T10:01:00Z",
+            )
+            .await
+            .expect("import remote Claude usage");
+
+        assert_eq!(
+            storage.load_usage_providers().await.expect("load providers"),
+            [ProviderKind::Claude]
         );
     }
 
@@ -1440,7 +2235,7 @@ mod tests {
             .expect("rebuild New York history");
 
         let range = storage
-            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02")
+            .load_usage_range(Some(CODEX), None, "2026-08-01", "2026-08-02")
             .await
             .expect("load range");
         assert_eq!(range.days.len(), 1, "rows bucketed in the previous timezone must not survive");
@@ -1474,7 +2269,7 @@ mod tests {
             .expect("adopt the current timezone");
 
         let range = storage
-            .load_usage_range(Some(CODEX), "2026-08-01", "2026-08-02")
+            .load_usage_range(Some(CODEX), None, "2026-08-01", "2026-08-02")
             .await
             .expect("load range");
         assert_eq!(
@@ -1499,7 +2294,7 @@ mod tests {
             .expect("save history");
 
         let range = storage
-            .load_usage_range(Some(CODEX), "2026-08-02", "2026-08-02")
+            .load_usage_range(Some(CODEX), None, "2026-08-02", "2026-08-02")
             .await
             .expect("load range");
         assert_eq!(range.days.len(), 1);
@@ -1515,6 +2310,7 @@ mod tests {
         let live = LiveSnapshot {
             plan_type: Some("plus".to_string()),
             earned_reset_count: Some(2),
+            earned_reset_expires_at: None,
             limits: vec![LimitWindow {
                 kind: LimitKind::Primary,
                 label: LimitKind::Primary.window_label(Some(300)),
@@ -1547,6 +2343,7 @@ mod tests {
         LiveSnapshot {
             plan_type: Some("plus".to_string()),
             earned_reset_count: Some(0),
+            earned_reset_expires_at: None,
             limits: vec![LimitWindow {
                 kind: LimitKind::Primary,
                 label: LimitKind::Primary.window_label(Some(WEEK_MINUTES)),
@@ -1771,6 +2568,239 @@ mod tests {
         let events = storage.load_recent_resets(claude).await.expect("load Claude resets");
         assert_eq!(events.len(), 1, "the restart is recorded");
         assert_eq!(events[0].used_percent_before, 78.0);
+    }
+
+    /// A local hour yesterday, as both the key its usage is stored under and the instant a
+    /// restart anchored there falls at. The day moves with the clock because a window's total
+    /// is only rebuilt while the hours behind it are still kept.
+    fn yesterday_at(hour: i8) -> (String, i64) {
+        let date = jiff::Zoned::now().date().yesterday().expect("a previous day");
+        let epoch = date
+            .at(hour, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::system())
+            .expect("a resolvable local hour")
+            .timestamp()
+            .as_second();
+        (format!("{date}T{hour:02}:00"), epoch)
+    }
+
+    /// Two restarts of a five-hour window and the hours of usage around them. The expiry is
+    /// the one the closed window was still publishing when the second restart was read, which
+    /// is what says whether that window ran to its end or expired unused some time before it.
+    async fn two_restarts(
+        storage: &Storage,
+        first: i64,
+        second: i64,
+        published_expiry: i64,
+        hours: Vec<HistoryHour>,
+    ) {
+        let window = |observed_at, used_percent, resets_at| WindowObservation {
+            observed_at,
+            kind: LimitKind::Primary,
+            used_percent,
+            window_duration_mins: 300,
+            resets_at,
+        };
+        storage
+            .backfill_resets(
+                CODEX,
+                &[
+                    window(first - 600, 40.0, first + 1_200),
+                    window(first + 600, 0.0, first + 18_000),
+                    window(second - 600, 55.0, published_expiry),
+                    window(second + 600, 2.0, second + 18_000),
+                ],
+                "2026-08-20T12:00:00Z",
+            )
+            .await
+            .expect("record the two restarts");
+        let date = jiff::Zoned::now().date().yesterday().expect("a previous day").to_string();
+        storage
+            .save_history(
+                CODEX,
+                &HistorySnapshot { days: vec![day(&date, "gpt-5-codex", 2_200)], hours },
+                "Australia/Sydney",
+                "2026-08-20T12:00:00Z",
+            )
+            .await
+            .expect("save history");
+    }
+
+    /// The reset list says how much was spent inside the window each restart closed, and the
+    /// hours are credited to the window that was running when they opened: the hour before
+    /// the window began belongs to the window before it, and the hour the restart fell in
+    /// belongs to the window that started there.
+    #[tokio::test]
+    async fn a_restart_reports_the_tokens_the_window_it_closed_carried() {
+        let (storage, _database) = open_storage().await;
+        let (before, _) = yesterday_at(5);
+        let (opening, first) = yesterday_at(6);
+        let (middle, _) = yesterday_at(9);
+        let (closing, second) = yesterday_at(11);
+        two_restarts(
+            &storage,
+            first,
+            second,
+            second,
+            vec![
+                hour(&before, "gpt-5-codex", 1_000),
+                hour(&opening, "gpt-5-codex", 200),
+                hour(&middle, "gpt-5-codex", 300),
+                hour(&closing, "gpt-5-codex", 700),
+            ],
+        )
+        .await;
+
+        let events = storage.load_recent_resets(CODEX).await.expect("load resets");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].anchored_at, second, "the newest restart is listed first");
+        assert_eq!(events[0].tokens_in_window, Some(500));
+    }
+
+    /// Codex moves a window between the primary and secondary slot, so the restart before
+    /// this one is the one of the same length rather than the one in the same slot. Pairing
+    /// by slot hands the weekly window the five-hour restart that happened in between and
+    /// reports a couple of hours of work as everything the week carried.
+    #[tokio::test]
+    async fn a_weekly_window_is_paired_with_the_weekly_restart_before_it() {
+        let (storage, _database) = open_storage().await;
+        let (_, week_first) = yesterday_at(4);
+        let (early, _) = yesterday_at(5);
+        let (_, five_hour) = yesterday_at(9);
+        let (late, _) = yesterday_at(10);
+        let (_, week_second) = yesterday_at(11);
+        let window = |observed_at, kind, used_percent, window_duration_mins, resets_at| {
+            WindowObservation { observed_at, kind, used_percent, window_duration_mins, resets_at }
+        };
+        storage
+            .backfill_resets(
+                CODEX,
+                &[
+                    // The weekly window starts in the secondary slot and comes back in the
+                    // primary one, with a five-hour restart of its own in between.
+                    window(
+                        week_first - 600,
+                        LimitKind::Secondary,
+                        60.0,
+                        10_080,
+                        week_first + 1_200,
+                    ),
+                    window(
+                        week_first + 600,
+                        LimitKind::Secondary,
+                        1.0,
+                        10_080,
+                        week_first + 604_800,
+                    ),
+                    window(five_hour - 600, LimitKind::Primary, 80.0, 300, five_hour + 1_200),
+                    window(five_hour + 600, LimitKind::Primary, 2.0, 300, five_hour + 18_000),
+                    window(
+                        week_second - 600,
+                        LimitKind::Primary,
+                        70.0,
+                        10_080,
+                        week_second + 1_200,
+                    ),
+                    window(
+                        week_second + 600,
+                        LimitKind::Primary,
+                        3.0,
+                        10_080,
+                        week_second + 604_800,
+                    ),
+                ],
+                "2026-08-20T12:00:00Z",
+            )
+            .await
+            .expect("record the restarts");
+        let date = jiff::Zoned::now().date().yesterday().expect("a previous day").to_string();
+        storage
+            .save_history(
+                CODEX,
+                &HistorySnapshot {
+                    days: vec![day(&date, "gpt-5-codex", 500)],
+                    hours: vec![hour(&early, "gpt-5-codex", 200), hour(&late, "gpt-5-codex", 300)],
+                },
+                "Australia/Sydney",
+                "2026-08-20T12:00:00Z",
+            )
+            .await
+            .expect("save history");
+
+        let events = storage.load_recent_resets(CODEX).await.expect("load resets");
+        let weekly = events
+            .iter()
+            .find(|event| event.anchored_at == week_second)
+            .expect("the second weekly restart");
+        assert_eq!(
+            weekly.tokens_in_window,
+            Some(500),
+            "the week runs from the weekly restart, not from the five-hour one inside it",
+        );
+    }
+
+    /// A restart that went unrecorded leaves a gap far longer than the window it closed, and
+    /// crediting the whole gap to it would report work three windows ago as this one's.
+    #[tokio::test]
+    async fn a_window_is_credited_with_no_more_than_its_own_length() {
+        let (storage, _database) = open_storage().await;
+        let (_, midnight) = yesterday_at(0);
+        let (long_before, _) = yesterday_at(3);
+        let (opening, _) = yesterday_at(6);
+        let (middle, _) = yesterday_at(9);
+        let (_, second) = yesterday_at(11);
+        two_restarts(
+            &storage,
+            midnight,
+            second,
+            second,
+            vec![
+                hour(&long_before, "gpt-5-codex", 1_000),
+                hour(&opening, "gpt-5-codex", 200),
+                hour(&middle, "gpt-5-codex", 300),
+            ],
+        )
+        .await;
+
+        let events = storage.load_recent_resets(CODEX).await.expect("load resets");
+        assert_eq!(events[0].anchored_at, second);
+        assert_eq!(
+            events[0].tokens_in_window,
+            Some(500),
+            "the eleven-hour gap is read as the five-hour window it can have been",
+        );
+    }
+
+    /// A window that expired unused is followed by however long it took for the next request
+    /// to anchor the next one. That idle gap belongs to neither window, and reading the
+    /// closed one as far as the restart would have credited it with the whole of it.
+    #[tokio::test]
+    async fn a_window_that_expired_before_the_next_one_began_stops_at_its_expiry() {
+        let (storage, _database) = open_storage().await;
+        let (opening, first) = yesterday_at(2);
+        let (middle, _) = yesterday_at(6);
+        let (after_expiry, _) = yesterday_at(10);
+        let (_, second) = yesterday_at(13);
+        two_restarts(
+            &storage,
+            first,
+            second,
+            first + 18_000,
+            vec![
+                hour(&opening, "gpt-5-codex", 400),
+                hour(&middle, "gpt-5-codex", 600),
+                hour(&after_expiry, "gpt-5-codex", 999),
+            ],
+        )
+        .await;
+
+        let events = storage.load_recent_resets(CODEX).await.expect("load resets");
+        assert_eq!(events[0].anchored_at, second);
+        assert_eq!(
+            events[0].tokens_in_window,
+            Some(1_000),
+            "an hour after the window stopped counting is not part of what it carried",
+        );
     }
 
     #[tokio::test]

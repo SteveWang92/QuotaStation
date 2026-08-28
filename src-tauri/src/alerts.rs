@@ -91,6 +91,9 @@ pub fn pending(
     announced.seeded = true;
     let mut alerts = Vec::new();
     for provider in &workspace.providers {
+        if provider.remote_usage_only {
+            continue;
+        }
         collect_quota(announced, provider, settings, seeding, &mut alerts);
         collect_failure(announced, provider, settings, seeding, &mut alerts);
         collect_resets(announced, provider, settings, seeding, &mut alerts);
@@ -158,7 +161,7 @@ fn quota_alert(provider: &ProviderSnapshot, window: &LimitWindow, loudness: Loud
         Loudness::Critical => format!("{} quota nearly gone", provider.display_name),
         _ => format!("{} quota running low", provider.display_name),
     };
-    let used = window.used_percent.unwrap_or_default();
+    let used = window.used_percent.unwrap();
     let body = match window.resets_at.and_then(local_moment) {
         Some(moment) => format!("{} {used:.0}% used · resets {moment}", window.label),
         None => format!("{} {used:.0}% used", window.label),
@@ -463,6 +466,7 @@ mod tests {
             previous_resets_at: anchored_at,
             used_percent_before: 94.0,
             early_by_seconds: 0,
+            tokens_in_window: None,
             classification: ResetClassification::Scheduled,
         };
         // A restart is recognised from the collapse in the share itself, so the reading at
@@ -538,6 +542,7 @@ mod tests {
             previous_resets_at: 1_800_000_000,
             used_percent_before: 91.0,
             early_by_seconds: 0,
+            tokens_in_window: None,
             classification: ResetClassification::Scheduled,
         };
         let mut restarted = provider(vec![window(LimitKind::Secondary, 20.0, 1_800_604_800)]);
@@ -571,6 +576,7 @@ mod tests {
             previous_resets_at: anchored_at,
             used_percent_before: 88.0,
             early_by_seconds: 0,
+            tokens_in_window: None,
             classification: ResetClassification::Scheduled,
         };
         let mut announced = Announced::default();
@@ -588,6 +594,27 @@ mod tests {
         let alerts = pending(&mut announced, &workspace(next), &settings);
         assert_eq!(alerts.len(), 1);
         assert!(alerts[0].title.contains("quota reset"));
+    }
+
+    #[test]
+    fn remote_usage_is_neither_unavailable_nor_a_read_failure() {
+        let mut remote = provider(Vec::new());
+        remote.remote_usage_only = true;
+        remote.resolve_derived_state();
+        assert_eq!(remote.compact_status.level, CompactStatusLevel::Healthy);
+
+        let mut announced = Announced::default();
+        let settings = AppSettings::default();
+        pending(&mut announced, &workspace(answering()), &settings);
+        remote.compact_status = CompactStatus {
+            level: CompactStatusLevel::Unavailable,
+            label: "Provider unavailable".to_string(),
+        };
+        remote.live_error = Some("Quota read failed".to_string());
+        assert!(
+            pending(&mut announced, &workspace(remote), &settings).is_empty(),
+            "a provider whose quota belongs to another device must not raise a failure alert"
+        );
     }
 
     #[test]

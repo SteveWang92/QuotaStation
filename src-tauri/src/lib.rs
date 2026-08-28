@@ -11,6 +11,7 @@ mod session_watcher;
 mod settings;
 mod storage;
 mod summary;
+mod sync;
 mod taskbar;
 mod terminal;
 mod theme;
@@ -25,11 +26,29 @@ use std::{
 };
 
 use domain::{
-    DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot, UsageHoursSnapshot,
-    UsageRangeSnapshot, WatcherDiagnostics, WorkspaceSnapshot,
+    DeviceDiagnostics, DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot,
+    SharedFolderDiagnostics, UsageHoursSnapshot, UsageRangeSnapshot, UsageWindowSnapshot,
+    WatcherDiagnostics, WorkspaceSnapshot,
 };
 use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
+
+/// Gives this machine an identity in a shared usage folder if it has not got one yet.
+///
+/// Generated once and then kept for good: another machine stores this machine's aggregates
+/// under this identifier, so issuing a new one would orphan every row it has for us. The
+/// name beside it is only a label and defaults to what Windows calls the computer.
+fn ensure_device_identity(path: &std::path::Path, mut settings: AppSettings) -> AppSettings {
+    if settings.device_id.is_some() && settings.device_name.is_some() {
+        return settings;
+    }
+    settings.device_id.get_or_insert_with(settings::new_device_id);
+    settings.device_name.get_or_insert_with(settings::default_device_name);
+    if let Err(error) = settings::save(path, &settings) {
+        log::write(format!("this machine's device identity could not be recorded: {error}"));
+    }
+    settings
+}
 
 /// Runs whichever Claude Code hook this process was started as, and reports whether it ran
 /// one. Exposed so `main` can return before any window exists.
@@ -57,6 +76,8 @@ pub struct AppState {
     live_refresh_lock: Mutex<()>,
     history_refresh_lock: Mutex<()>,
     watcher_diagnostics: RwLock<WatcherDiagnostics>,
+    /// What the shared usage folder last did, written by the refresh that ran it.
+    shared_folder_diagnostics: RwLock<SharedFolderDiagnostics>,
     quick_panel_focus_lost_at: StdMutex<Option<Instant>>,
     quick_panel_toggled_at: StdMutex<Option<Instant>>,
     quick_panel_shown_at: StdMutex<Option<Instant>>,
@@ -89,16 +110,43 @@ impl AppState {
         self.detected_providers.lock().map(|providers| providers.clone()).unwrap_or_default()
     }
 
-    /// Which provider clients have left usage records on this machine. A client can be
-    /// installed or signed in at any time, so this is re-checked with every full refresh
-    /// rather than only at startup.
-    fn detect_providers(&self) -> Vec<ProviderKind> {
-        let detected: Vec<ProviderKind> =
-            ProviderKind::ALL.into_iter().filter(|provider| provider.is_installed()).collect();
-        if let Ok(mut providers) = self.detected_providers.lock() {
-            providers.clone_from(&detected);
+    /// Which provider clients have left usage records on this machine. These are the only
+    /// providers the live reader, history parser and filesystem watcher may touch.
+    fn local_providers() -> Vec<ProviderKind> {
+        ProviderKind::ALL.into_iter().filter(|provider| provider.is_installed()).collect()
+    }
+
+    /// Refreshes the display list from local clients plus every provider represented by
+    /// imported usage. Remote snapshots are reloaded after each import so today's compact
+    /// totals move with the history tab instead of waiting for a restart.
+    async fn refresh_enabled_providers(&self) -> anyhow::Result<()> {
+        let local = Self::local_providers();
+        let stored = self.storage.load_usage_providers().await?;
+        let enabled = ProviderKind::ALL
+            .into_iter()
+            .filter(|provider| local.contains(provider) || stored.contains(provider))
+            .collect::<Vec<_>>();
+        let mut remote = Vec::new();
+        for &provider in enabled.iter().filter(|provider| !local.contains(provider)) {
+            let mut snapshot = self.storage.load_snapshot(provider).await?;
+            snapshot.remote_usage_only = true;
+            snapshot.limits.clear();
+            snapshot.earned_reset_count = None;
+            snapshot.earned_reset_expires_at = None;
+            snapshot.recent_resets.clear();
+            snapshot.live_error = None;
+            snapshot.resolve_derived_state();
+            remote.push((provider, snapshot));
         }
-        detected
+        {
+            let mut snapshots = self.snapshots.write().await;
+            snapshots.retain(|provider, _| enabled.contains(provider));
+            snapshots.extend(remote);
+        }
+        if let Ok(mut providers) = self.detected_providers.lock() {
+            providers.clone_from(&enabled);
+        }
+        Ok(())
     }
 
     async fn with_snapshot(
@@ -122,6 +170,7 @@ impl AppState {
     /// The payload every surface consumes. Derived state is resolved here so a snapshot
     /// never reaches the renderer with a status that disagrees with its own errors.
     async fn workspace_snapshot(&self) -> WorkspaceSnapshot {
+        let local = Self::local_providers();
         let snapshots = self.snapshots.read().await;
         let providers = self
             .enabled_providers()
@@ -131,6 +180,14 @@ impl AppState {
                     .get(&provider)
                     .cloned()
                     .unwrap_or_else(|| ProviderSnapshot::new(provider));
+                snapshot.remote_usage_only = !local.contains(&provider);
+                if snapshot.remote_usage_only {
+                    snapshot.limits.clear();
+                    snapshot.earned_reset_count = None;
+                    snapshot.earned_reset_expires_at = None;
+                    snapshot.recent_resets.clear();
+                    snapshot.live_error = None;
+                }
                 snapshot.resolve_derived_state();
                 snapshot
             })
@@ -149,13 +206,27 @@ async fn get_usage_range(
     // No provider is the combined history: the dashboard's "All" tab reads every
     // provider in one query rather than adding up separate answers in the renderer.
     provider: Option<ProviderKind>,
+    device: Option<String>,
     start_date: String,
     end_date: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<UsageRangeSnapshot, String> {
     state
         .storage
-        .load_usage_range(provider, &start_date, &end_date)
+        .load_usage_range(provider, device.as_deref(), &start_date, &end_date)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_usage_start_date(
+    provider: Option<ProviderKind>,
+    device: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<String>, String> {
+    state
+        .storage
+        .load_usage_start_date(provider, device.as_deref())
         .await
         .map_err(|error| error.to_string())
 }
@@ -164,15 +235,63 @@ async fn get_usage_range(
 #[tauri::command]
 async fn get_usage_hours(
     provider: Option<ProviderKind>,
+    device: Option<String>,
     start_date: String,
     end_date: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<UsageHoursSnapshot, String> {
     state
         .storage
-        .load_usage_hours(provider, &start_date, &end_date)
+        .load_usage_hours(provider, device.as_deref(), &start_date, &end_date)
         .await
         .map_err(|error| error.to_string())
+}
+
+/// A rolling window of hours — the last twenty-four of them — with its totals summed
+/// from exactly those hours rather than from the two partial days they fall in.
+#[tauri::command]
+async fn get_usage_window(
+    provider: Option<ProviderKind>,
+    device: Option<String>,
+    start_hour: String,
+    end_hour: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<UsageWindowSnapshot, String> {
+    state
+        .storage
+        .load_usage_window(provider, device.as_deref(), &start_hour, &end_hour)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Every restart QuotaStation has recorded, per provider. The dashboard annotates the
+/// window running now; this is the list the settings page shows in full.
+#[tauri::command]
+async fn get_reset_history(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<ProviderResetHistory>, String> {
+    let mut history = Vec::new();
+    for provider in state.enabled_providers() {
+        history.push(ProviderResetHistory {
+            provider,
+            display_name: provider.display_name().to_string(),
+            resets: state
+                .storage
+                .load_reset_history(provider)
+                .await
+                .map_err(|error| error.to_string())?,
+        });
+    }
+    Ok(history)
+}
+
+/// One provider's whole restart history, named so the settings page can head the list.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderResetHistory {
+    provider: ProviderKind,
+    display_name: String,
+    resets: Vec<domain::LimitResetEvent>,
 }
 
 #[tauri::command]
@@ -277,7 +396,7 @@ fn get_app_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
 /// Records a change the settings dialog made. The status-line bridge reads the same file
 /// on its next run, so a preference takes effect without the application telling it.
 #[tauri::command]
-fn set_app_settings(
+async fn set_app_settings(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     settings: AppSettings,
@@ -286,7 +405,14 @@ fn set_app_settings(
     let taskbar_changed = previous.taskbar_widget_enabled != settings.taskbar_widget_enabled;
     let display_changed = previous.taskbar_widget_display != settings.taskbar_widget_display;
     let theme_changed = previous.theme != settings.theme;
+    let name_changed = previous.device_name != settings.device_name;
     let updated = state.update_settings(|current| *current = settings)?;
+    if name_changed {
+        let name = updated.device_name.clone().unwrap_or_else(settings::default_device_name);
+        state.storage.record_local_device(&name).await.map_err(|error| {
+            sanitize::sanitize_error(&error.to_string(), "This machine could not be renamed")
+        })?;
+    }
     if theme_changed {
         apply_theme(&app, updated.theme);
     }
@@ -495,7 +621,7 @@ async fn get_diagnostics(
     state: State<'_, Arc<AppState>>,
 ) -> Result<DiagnosticsSnapshot, String> {
     let mut acquisitions = Vec::new();
-    for provider in state.enabled_providers() {
+    for provider in AppState::local_providers() {
         acquisitions.extend(state.storage.load_acquisition_diagnostics(provider).await.map_err(
             |error| sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable"),
         )?);
@@ -504,10 +630,25 @@ async fn get_diagnostics(
         state.storage.load_retention_diagnostics().await.map_err(|error| {
             sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
         })?;
+    let devices = state
+        .storage
+        .load_devices()
+        .await
+        .map_err(|error| sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable"))?
+        .into_iter()
+        .map(|device| DeviceDiagnostics {
+            local: device.id == storage::LOCAL_DEVICE,
+            id: device.id,
+            display_name: device.display_name,
+            last_import_at: device.last_import_at,
+        })
+        .collect();
     Ok(DiagnosticsSnapshot {
         watcher: state.watcher_diagnostics.read().await.clone(),
         acquisitions,
         retention,
+        shared_folder: state.shared_folder_diagnostics.read().await.clone(),
+        devices,
         parser_revision: domain::CCUSAGE_REVISION.to_string(),
         pricing_catalog_revision: domain::PRICING_CATALOG_REVISION.to_string(),
         app_version: app.package_info().version.to_string(),
@@ -521,7 +662,7 @@ async fn get_diagnostics(
 /// closed. Replaying it on startup is what makes the restart history complete rather than
 /// starting from whenever this feature was installed.
 async fn backfill_resets(state: &Arc<AppState>) -> anyhow::Result<()> {
-    for provider in state.enabled_providers() {
+    for provider in AppState::local_providers() {
         let since = state.storage.reset_backfill_start(provider).await?;
         let observations = providers::read_observations(provider, since).await?;
         if observations.is_empty() {
@@ -944,6 +1085,32 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     Ok(manager.is_enabled().unwrap_or(enabled))
 }
 
+/// Whether a typed shared-folder path already names a folder.
+///
+/// The path is hand-entered, so it is a trust boundary: it may name a file, a folder that
+/// does not exist yet, or nothing reachable at all. The settings page asks before it saves
+/// so it can offer to create a missing folder rather than storing a path that will fail
+/// quietly on every export afterwards.
+#[tauri::command]
+fn shared_folder_exists(path: String) -> Result<bool, String> {
+    let path = std::path::Path::new(path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("Enter a folder path.".to_string());
+    }
+    if path.is_file() {
+        return Err("That path is a file, not a folder.".to_string());
+    }
+    Ok(path.is_dir())
+}
+
+/// Creates the folder the user confirmed, parents included.
+#[tauri::command]
+fn create_shared_folder(path: String) -> Result<(), String> {
+    std::fs::create_dir_all(path.trim()).map_err(|error| {
+        sanitize::sanitize_error(&error.to_string(), "The folder could not be created")
+    })
+}
+
 /// Puts a shortcut on the desktop. The location is the user's own desktop, so the path is
 /// neither reported back nor worth reporting.
 #[tauri::command]
@@ -1005,6 +1172,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![autostart::BACKGROUND_ARG]),
@@ -1021,17 +1189,17 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let database_path = app_data_dir.join("quotastation.db");
             let settings_path = app_data_dir.join("settings.json");
-            let settings = settings::load(&settings_path);
+            let settings = ensure_device_identity(&settings_path, settings::load(&settings_path));
+            let device_name =
+                settings.device_name.clone().unwrap_or_else(settings::default_device_name);
             let storage = tauri::async_runtime::block_on(Storage::open(&database_path))
                 .map_err(|error| error.to_string())?;
             if let Err(error) = tauri::async_runtime::block_on(storage.run_retention_if_due()) {
                 log::write(format!("normalized data retention failed: {error:#}"));
             }
+            let local_providers = AppState::local_providers();
             let mut snapshots = BTreeMap::new();
-            for provider in ProviderKind::ALL {
-                if !provider.is_installed() {
-                    continue;
-                }
+            for &provider in &local_providers {
                 let snapshot = tauri::async_runtime::block_on(storage.load_snapshot(provider))
                     .unwrap_or_else(|_| ProviderSnapshot::new(provider));
                 snapshots.insert(provider, snapshot);
@@ -1043,14 +1211,24 @@ pub fn run() {
                 live_refresh_lock: Mutex::new(()),
                 history_refresh_lock: Mutex::new(()),
                 watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
+                shared_folder_diagnostics: RwLock::new(SharedFolderDiagnostics::default()),
                 quick_panel_focus_lost_at: StdMutex::new(None),
                 quick_panel_toggled_at: StdMutex::new(None),
                 quick_panel_shown_at: StdMutex::new(None),
                 settings: StdMutex::new(settings),
-                detected_providers: StdMutex::new(Vec::new()),
+                detected_providers: StdMutex::new(local_providers),
                 settings_path,
             });
-            state.detect_providers();
+            // What the device split calls this machine, so a split reads "Workshop" rather
+            // than an identifier — and follows the machine being renamed.
+            if let Err(error) =
+                tauri::async_runtime::block_on(state.storage.record_local_device(&device_name))
+            {
+                log::write(format!("this machine could not be named: {error:#}"));
+            }
+            if let Err(error) = tauri::async_runtime::block_on(state.refresh_enabled_providers()) {
+                log::write(format!("usage providers could not be loaded: {error:#}"));
+            }
             app.manage(state.clone());
             let _ = APP.set(app.handle().clone());
             build_tray(app)?;
@@ -1139,9 +1317,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
+            get_usage_start_date,
             get_usage_range,
             get_usage_hours,
+            get_usage_window,
             get_quota_history,
+            get_reset_history,
             refresh_now,
             get_diagnostics,
             get_log_available,
@@ -1159,6 +1340,8 @@ pub fn run() {
             set_app_settings,
             get_autostart,
             set_autostart,
+            shared_folder_exists,
+            create_shared_folder,
             create_desktop_shortcut
         ])
         .on_window_event(|window, event| {

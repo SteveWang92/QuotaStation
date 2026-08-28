@@ -63,7 +63,7 @@ reaching the interface. No credential is read, nothing leaves the machine, and n
 is shared with Claude Code's own usage display.
 
 That bridge changes a setting inside Claude Code's own configuration, so it is only ever
-installed from an explicit action in the dashboard's settings dialog, a status line belonging
+installed from an explicit action on the dashboard's settings page, a status line belonging
 to something else is reported rather than replaced, and removing it takes out only the entry
 QuotaStation wrote. Its readings arrive only from terminal sessions: a status line is
 something a terminal renders, and Claude Code hosted inside the desktop application draws its
@@ -191,6 +191,23 @@ identify its quota bucket. QuotaStation therefore does not attach that ambiguous
 to the five-hour window. Claude has no equivalent reset backfill, and its restart history
 begins when monitoring is enabled.
 
+Each recorded restart also carries the tokens the window it closed spent. That window runs
+from the restart before it to the earlier of its published expiry and this restart: a window
+rebuilt early stops when the restart anchored the next one, while one that expired unused
+stops at its expiry and is followed by however long it took for the next request to anchor
+the next window — an idle gap that belongs to neither. The span is held to the window's own
+length as well, so a restart nothing recorded between cannot credit one window with days of
+work; a window that restarted early is shorter than its length rather than longer, so that
+limit never applies to one of those. An hour is credited to whichever window was running
+when it opened, so no hour is counted twice; the figure is therefore approximate at the two
+boundaries and exact between them, which is why the interface writes it with a tilde.
+
+Hourly rows are kept for 14 days and reset events indefinitely, so the total is stored on
+the event rather than summed on the way out. It is rebuilt on every write for as long as all
+the hours behind it are still stored, and left alone once the oldest of them is pruned: a
+restart from last year keeps the figure it was given at the time, and one older than the
+hourly window has ever covered reports nothing rather than a zero.
+
 ## Runtime ownership
 
 - The Rust core owns the single-instance lifecycle, tray, provider child processes,
@@ -243,6 +260,8 @@ telemetry, mutation calls, and raw-data upload behavior are excluded.
 - The application and the status-line bridge append an activity log to the application data
   directory, recording which source answered and why a read failed. It carries no session
   content, no credential, and no provider paths, and is rolled over at half a megabyte.
+
+See [Multi-machine usage](multi-machine.md) for the aggregate-sharing boundary and setup.
 
 ## Deferred decisions
 

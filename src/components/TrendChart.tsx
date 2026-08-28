@@ -148,8 +148,8 @@ export function TrendChart({
   const plotWidth = Math.max(0, width - LEFT_GUTTER - RIGHT_PADDING);
   const totals = buckets.map((_, index) =>
     mode === "stacked"
-      ? series.reduce((sum, entry) => sum + Math.max(0, entry.values[index] ?? 0), 0)
-      : series.reduce((peak, entry) => Math.max(peak, entry.values[index] ?? 0), 0),
+      ? series.reduce((sum, entry) => sum + Math.max(0, entry.values[index]!), 0)
+      : series.reduce((peak, entry) => Math.max(peak, entry.values[index]!), 0),
   );
   const highest = totals.reduce((peak, value) => Math.max(peak, value), 0);
   const scale = axisScale(maxValue ?? highest);
@@ -185,7 +185,7 @@ export function TrendChart({
   const tooltipRows =
     tooltipIndex === null
       ? []
-      : series.filter((entry) => mode === "line" || (entry.values[tooltipIndex] ?? 0) > 0);
+      : series.filter((entry) => mode === "line" || entry.values[tooltipIndex]! > 0);
 
   return (
     <article className={`chart-card${loading ? " chart-loading" : ""}`}>
@@ -260,7 +260,7 @@ export function TrendChart({
               {mode === "stacked"
                 ? buckets.map((bucket, index) => {
                     const segments = stackSegments(
-                      series.map((entry) => Math.max(0, entry.values[index] ?? 0)),
+                      series.map((entry) => Math.max(0, entry.values[index]!)),
                       (value) => toY(value),
                     );
                     // Only the segment on top of the stack ends in a rounded data-end; the
@@ -296,9 +296,7 @@ export function TrendChart({
                   })
                 : series.map((entry) => {
                     const points = entry.values.map((value, index) =>
-                      value === null || !Number.isFinite(value)
-                        ? null
-                        : { x: bands.center(index), y: toY(value) },
+                      value === null ? null : { x: bands.center(index), y: toY(value) },
                     );
                     const drawn = points.filter((point) => point !== null);
                     const last = drawn.at(-1);
@@ -391,7 +389,7 @@ export function TrendChart({
                   <b>
                     {entry.values[tooltipIndex] === null
                       ? "No reading"
-                      : formatValue(entry.values[tooltipIndex] ?? 0)}
+                      : formatValue(entry.values[tooltipIndex])}
                   </b>
                 </p>
               ))}

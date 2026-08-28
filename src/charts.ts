@@ -7,7 +7,7 @@
  * same date range. The functions here produce that axis, the value scale under it, and the
  * geometry the marks are drawn from; nothing here knows about SVG.
  */
-import { toLocalDateString } from "./dateRanges";
+import { toLocalDateString, toLocalHourString } from "./dateRanges";
 import type { TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot } from "./types";
 
 const TOKEN_FIELDS: Array<keyof TokenUsage> = [
@@ -18,12 +18,16 @@ const TOKEN_FIELDS: Array<keyof TokenUsage> = [
   "total",
 ];
 
-/** Whether hourly rows are a complete representation of the same stored range. */
+/**
+ * Whether hourly rows are a complete representation of the same stored range. Both answers
+ * are read for one resolved range, so completeness is the only question: hourly rows start
+ * existing only after a provider's first refresh on this build, and a range no provider
+ * covers in full has to stay on the daily axis.
+ */
 export function hourlyUsageMatchesRange(
   hours: UsageHoursSnapshot,
   range: UsageRangeSnapshot,
 ): boolean {
-  if (hours.startDate !== range.startDate || hours.endDate !== range.endDate) return false;
   return TOKEN_FIELDS.every(
     (field) => hours.hours.reduce((sum, hour) => sum + hour.usage[field], 0) === range.usage[field],
   );
@@ -33,7 +37,6 @@ export function hourlyUsageMatchesRange(
 export function calendarDays(startDate: string, endDate: string): string[] {
   const start = Date.parse(`${startDate}T00:00:00Z`);
   const end = Date.parse(`${endDate}T00:00:00Z`);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return [];
   const days: string[] = [];
   for (let day = start; day <= end; day += 86_400_000) {
     days.push(new Date(day).toISOString().slice(0, 10));
@@ -63,6 +66,23 @@ export function calendarHours(startDate: string, endDate: string, now = new Date
 }
 
 /**
+ * Every local hour from `startHour` to `endHour` inclusive, as `YYYY-MM-DDTHH:00`.
+ *
+ * The rolling window is bounded by its two ends rather than by the calendar, so it neither
+ * starts at a midnight nor runs on to one; the days it touches are partial at both ends.
+ */
+export function windowHours(startHour: string, endHour: string): string[] {
+  const hours: string[] = [];
+  const cursor = new Date(`${startHour}:00`);
+  const end = new Date(`${endHour}:00`);
+  while (cursor <= end) {
+    hours.push(toLocalHourString(cursor));
+    cursor.setHours(cursor.getHours() + 1);
+  }
+  return hours;
+}
+
+/**
  * Lines up sparse records against the full run of buckets.
  *
  * The core stores only the days and hours a provider was used in, which is what the totals
@@ -86,7 +106,7 @@ export function alignToBuckets<T>(
  * yet is drawn rather than hidden.
  */
 export function axisScale(maxValue: number, tickCount = 4): { max: number; ticks: number[] } {
-  if (!Number.isFinite(maxValue) || maxValue <= 0) {
+  if (maxValue <= 0) {
     return { max: 1, ticks: [0, 1] };
   }
   const rawStep = maxValue / tickCount;
@@ -158,7 +178,7 @@ export function stackSegments(
 ): Array<{ index: number; top: number; height: number } | null> {
   let runningTotal = 0;
   const drawn: Array<{ index: number; top: number; height: number } | null> = [];
-  const positive = values.map((value) => (Number.isFinite(value) && value > 0 ? value : 0));
+  const positive = values.map((value) => (value > 0 ? value : 0));
   const lastDrawnIndex = positive.reduce((last, value, index) => (value > 0 ? index : last), -1);
   positive.forEach((value, index) => {
     if (value <= 0) {

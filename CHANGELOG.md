@@ -7,6 +7,31 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-28
+
+### Added
+
+- An All usage range that runs from the earliest recorded usage through today.
+- The reset history says how many tokens were spent inside each window that reset.
+- Usage from multiple machines can be combined, inspected by device, and filtered across the history dashboard.
+- The shared usage folder can be chosen with the native Windows folder picker, or typed as a path that QuotaStation offers to create.
+- A "Last 24 hours" range that reads the rolling day rather than the calendar one.
+- Codex reports when the first of its earned resets expires.
+- The settings page lists every quota-window restart ever recorded.
+
+### Changed
+
+- Earned reset details now use two compact rows so the countdown and exact expiry remain readable.
+- Settings is a page opened from beside Refresh rather than a dialog over the dashboard.
+- The provider panels show the last restart of each window instead of the whole history.
+- An early-restart note can be acknowledged, and comes back at the next restart.
+
+### Fixed
+
+- The quick panel no longer hides the expiry details of an earned reset.
+- Conflict copies left in the shared usage folder by a sync tool no longer report the folder as failing.
+- A Codex window that moves between the primary and secondary slot no longer hides the restart that came with it.
+
 ## [0.4.0] - 2026-08-23
 
 ### Added
@@ -144,7 +169,8 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.1.0...v0.2.0

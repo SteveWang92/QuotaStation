@@ -56,6 +56,44 @@ pub struct AppSettings {
     /// Whether a confirmed quota window restart is announced.
     #[serde(default = "enabled")]
     pub notify_quota_resets: bool,
+    /// How this machine names itself to the others sharing a usage folder. Generated once
+    /// and then kept: the rows another machine has stored for it are keyed by this, so a
+    /// new identifier would orphan every one of them. Unset until the first start that
+    /// wrote one.
+    #[serde(default)]
+    pub device_id: Option<String>,
+    /// What the device split calls this machine. Defaults to the computer name, and is
+    /// only a label — renaming the machine renames the rows rather than splitting them.
+    #[serde(default)]
+    pub device_name: Option<String>,
+    /// Which "possibly restarted early" notes the user has acknowledged, as
+    /// `provider:windowKind:newResetsAt`. The note explains the expiry the window is
+    /// showing right now, so keying it on that expiry is what brings it back at the next
+    /// restart without ever bringing back the one already read. The settings page rewrites
+    /// the whole list against the windows currently in view, which is what keeps it short.
+    #[serde(default)]
+    pub dismissed_reset_notices: Vec<String>,
+    /// The folder this machine's aggregates are written to and the other machines' are
+    /// read from — whatever folder a sync client already keeps in step. Unset is the
+    /// ordinary single-machine case, where nothing is exported or read.
+    #[serde(default)]
+    pub shared_usage_folder: Option<String>,
+}
+
+/// A fresh identity for this machine.
+///
+/// It has one job: to differ from the other machine's. Two first starts cannot land on the
+/// same nanosecond, and the value is written once and then read for good.
+pub fn new_device_id() -> String {
+    format!("{:x}", jiff::Timestamp::now().as_nanosecond())
+}
+
+/// What this machine calls itself before anyone renames it.
+pub fn default_device_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "This machine".to_string())
 }
 
 fn enabled() -> bool {
@@ -74,6 +112,10 @@ impl Default for AppSettings {
             notify_low_quota: enabled(),
             notify_read_failures: enabled(),
             notify_quota_resets: enabled(),
+            device_id: None,
+            device_name: None,
+            dismissed_reset_notices: Vec::new(),
+            shared_usage_folder: None,
         }
     }
 }
@@ -204,6 +246,10 @@ mod tests {
             notify_low_quota: false,
             notify_read_failures: false,
             notify_quota_resets: false,
+            device_id: Some("18f3c".to_string()),
+            device_name: Some("Workshop".to_string()),
+            dismissed_reset_notices: vec!["codex:primary:1781654400".to_string()],
+            shared_usage_folder: Some("D:\\Sync\\QuotaStation".to_string()),
         };
         let encoded = serde_json::to_string(&settings).expect("encode");
         assert_eq!(serde_json::from_str::<AppSettings>(&encoded).expect("decode"), settings);
@@ -234,6 +280,10 @@ mod tests {
             notify_low_quota: false,
             notify_read_failures: false,
             notify_quota_resets: false,
+            device_id: Some("18f3c".to_string()),
+            device_name: Some("Workshop".to_string()),
+            dismissed_reset_notices: vec!["codex:primary:1781654400".to_string()],
+            shared_usage_folder: Some("D:\\Sync\\QuotaStation".to_string()),
         };
         save(&path, &expected).expect("replace the settings");
         assert_eq!(load(&path), expected);

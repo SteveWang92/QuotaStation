@@ -20,9 +20,11 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
       </header>
       <QuotaSection
         compact
-        provider={snapshot.displayName}
+        provider={snapshot.provider}
+        providerName={snapshot.displayName}
         limits={snapshot.limits}
         earnedResetCount={snapshot.earnedResetCount}
+        earnedResetExpiresAt={snapshot.earnedResetExpiresAt}
         resets={snapshot.recentResets}
       />
       <section className="quick-usage" aria-label={`${snapshot.displayName} usage today`}>
@@ -61,9 +63,7 @@ function useReportedHeight() {
       // the two would trade single pixels back and forth forever.
       if (height <= 0 || Math.abs(height - reported) < 2) return;
       reported = height;
-      void invoke("set_quick_panel_height", { height }).catch(() => {
-        // A panel that cannot resize is still a readable panel at its configured size.
-      });
+      void invoke("set_quick_panel_height", { height }).catch(() => {});
     };
     const observer = new ResizeObserver(report);
     observer.observe(element);

@@ -1,6 +1,9 @@
 import { formatAxisHour, hourDate, LOCALE } from "./format";
 
-export type RangePreset = "today" | "3d" | "7d" | "30d" | "custom";
+export type RangePreset = "24h" | "today" | "3d" | "7d" | "30d" | "all" | "custom";
+
+/** How many hours the rolling window covers, counting the hour in progress as one. */
+export const WINDOW_HOURS = 24;
 
 /** A daily SVG stays bounded while still allowing a full year to be inspected at once. */
 export const MAX_CUSTOM_RANGE_DAYS = 366;
@@ -19,6 +22,15 @@ export interface DateRangeSelection {
   label: string;
   startDate: string;
   endDate: string;
+  /**
+   * The inclusive hour bounds of a rolling window, as `YYYY-MM-DDTHH:00`.
+   *
+   * Only the 24-hour preset carries them, and carrying them is what makes it a different
+   * question from "today": the calendar presets are answered from whole stored days, and
+   * both of the days a rolling window touches are partial.
+   */
+  startHour?: string;
+  endHour?: string;
 }
 
 /** A calendar day in the machine's own time zone, which is how every stored date is dated. */
@@ -33,7 +45,30 @@ export function todayString(): string {
   return toLocalDateString(new Date());
 }
 
+/** The local hour a moment falls in, which is how every stored hourly bucket is keyed. */
+export function toLocalHourString(date: Date): string {
+  return `${toLocalDateString(date)}T${String(date.getHours()).padStart(2, "0")}:00`;
+}
+
+/** The last [`WINDOW_HOURS`] hours, ending with the hour in progress. */
+function createWindowRange(): DateRangeSelection {
+  const end = new Date();
+  end.setMinutes(0, 0, 0);
+  const start = new Date(end);
+  start.setHours(end.getHours() - WINDOW_HOURS + 1);
+  return {
+    preset: "24h",
+    label: `Last ${WINDOW_HOURS} hours`,
+    startDate: toLocalDateString(start),
+    endDate: toLocalDateString(end),
+    startHour: toLocalHourString(start),
+    endHour: toLocalHourString(end),
+  };
+}
+
 export function createPresetRange(preset: Exclude<RangePreset, "custom">): DateRangeSelection {
+  if (preset === "24h") return createWindowRange();
+  if (preset === "all") return createAllRange(todayString());
   const days = preset === "today" ? 1 : Number.parseInt(preset, 10);
   const end = new Date();
   const start = new Date(end);
@@ -43,6 +78,16 @@ export function createPresetRange(preset: Exclude<RangePreset, "custom">): DateR
     label: preset === "today" ? "Today" : `Last ${days} days`,
     startDate: toLocalDateString(start),
     endDate: toLocalDateString(end),
+  };
+}
+
+/** Every recorded usage day through today; the core supplies the first stored date. */
+export function createAllRange(startDate: string): DateRangeSelection {
+  return {
+    preset: "all",
+    label: "All time",
+    startDate,
+    endDate: todayString(),
   };
 }
 
@@ -76,7 +121,9 @@ export function isHourlyRange(startDate: string, endDate: string): boolean {
 
 /** Recomputes calendar presets at query time so a tray process can cross midnight safely. */
 export function resolveDateRange(selection: DateRangeSelection): DateRangeSelection {
-  return selection.preset === "custom" ? selection : createPresetRange(selection.preset);
+  if (selection.preset === "custom") return selection;
+  if (selection.preset === "all") return createAllRange(selection.startDate);
+  return createPresetRange(selection.preset);
 }
 
 /**
@@ -86,7 +133,13 @@ export function resolveDateRange(selection: DateRangeSelection): DateRangeSelect
  */
 export function hasRolledOver(selection: DateRangeSelection): boolean {
   const resolved = resolveDateRange(selection);
-  return resolved.startDate !== selection.startDate || resolved.endDate !== selection.endDate;
+  return (
+    resolved.startDate !== selection.startDate ||
+    resolved.endDate !== selection.endDate ||
+    // The rolling window moves every hour rather than every midnight.
+    resolved.startHour !== selection.startHour ||
+    resolved.endHour !== selection.endHour
+  );
 }
 
 export function formatRangeDate(value: string): string {
@@ -110,7 +163,22 @@ export function formatRangeHour(value: string): string {
 export function previousPeriod(selection: DateRangeSelection): {
   startDate: string;
   endDate: string;
+  startHour?: string;
+  endHour?: string;
 } {
+  if (selection.startHour !== undefined) {
+    const start = new Date(`${selection.startHour}:00`);
+    const end = new Date(start);
+    end.setHours(start.getHours() - 1);
+    const earlierStart = new Date(end);
+    earlierStart.setHours(end.getHours() - WINDOW_HOURS + 1);
+    return {
+      startDate: toLocalDateString(earlierStart),
+      endDate: toLocalDateString(end),
+      startHour: toLocalHourString(earlierStart),
+      endHour: toLocalHourString(end),
+    };
+  }
   const start = new Date(`${selection.startDate}T00:00:00`);
   const end = new Date(`${selection.endDate}T00:00:00`);
   const length = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;

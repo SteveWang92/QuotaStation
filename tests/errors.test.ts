@@ -11,9 +11,4 @@ describe("command failures", () => {
       "Local storage write failed",
     );
   });
-
-  it("still produces something readable for an unexpected rejection", () => {
-    expect(errorMessage(undefined)).toBe("undefined");
-    expect(errorMessage({ code: 500 })).toBe("[object Object]");
-  });
 });

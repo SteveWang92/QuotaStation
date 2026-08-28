@@ -34,6 +34,8 @@ const CACHE_TTL_SECS: i64 = 3;
 const CACHE_LIMIT: usize = 16;
 
 /// The status line is rendered synchronously by Claude Code, so Git may never hold it up.
+/// A worktree on a disconnected share, or one behind a stale `index.lock`, takes as long as
+/// it takes; the cache does not help, because it is the uncached call that stalls.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Windows would otherwise flash a console window for the `git` child process.
@@ -130,39 +132,28 @@ fn read_status(root: &Path) -> Option<WorkTreeStatus> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
     let mut child = command.spawn().ok()?;
-    let Some(mut stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    };
+    let mut stdout = child.stdout.take()?;
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut bytes = Vec::new();
-        let output = stdout.read_to_end(&mut bytes).ok().map(|_| bytes);
-        let _ = sender.send(output);
+        let _ = sender.send(stdout.read_to_end(&mut bytes).ok().map(|_| bytes));
     });
     let deadline = Instant::now() + STATUS_TIMEOUT;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) => {}
-            Err(_) => {
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            _ => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
             }
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        thread::sleep(Duration::from_millis(10));
     };
-    let output = receiver.recv_timeout(Duration::from_millis(100)).ok()??;
     if !status.success() {
         return None;
     }
+    let output = receiver.recv_timeout(Duration::from_millis(100)).ok()??;
     Some(parse_status(&String::from_utf8_lossy(&output)))
 }
 

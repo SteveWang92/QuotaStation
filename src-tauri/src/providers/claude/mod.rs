@@ -59,7 +59,12 @@ pub async fn read_live() -> Result<LiveSnapshot> {
         Err(error) if reported.is_empty() => return Err(error),
         Err(_) => {
             crate::log::write("claude session logs unreadable");
-            LiveSnapshot { plan_type, limits: Vec::new(), earned_reset_count: None }
+            LiveSnapshot {
+                plan_type,
+                limits: Vec::new(),
+                earned_reset_count: None,
+                earned_reset_expires_at: None,
+            }
         }
     };
     snapshot.limits = merge_windows(reported, snapshot.limits);

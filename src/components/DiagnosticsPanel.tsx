@@ -32,9 +32,7 @@ export function DiagnosticsPanel({
   const [logAvailable, setLogAvailable] = useState(false);
 
   useEffect(() => {
-    void invoke<boolean>("get_log_available")
-      .then(setLogAvailable)
-      .catch(() => setLogAvailable(false));
+    void invoke<boolean>("get_log_available").then(setLogAvailable);
   }, []);
 
   return (
@@ -66,6 +64,30 @@ export function DiagnosticsPanel({
           ) : null}
         </div>
         <div className="diagnostic-item">
+          <span>Shared usage folder</span>
+          <strong
+            className={
+              diagnostics.sharedFolder.status === "failed"
+                ? "failed"
+                : diagnostics.sharedFolder.status === "succeeded"
+                  ? "succeeded"
+                  : "pending"
+            }
+          >
+            {diagnostics.sharedFolder.status === "off"
+              ? "not enabled"
+              : diagnostics.sharedFolder.status}
+          </strong>
+          <small>
+            {diagnostics.sharedFolder.status === "off"
+              ? "No shared folder configured"
+              : `Last completed ${formatTimestamp(diagnostics.sharedFolder.lastCompletedAt)}`}
+          </small>
+          {diagnostics.sharedFolder.error ? (
+            <small className="diagnostic-error">{diagnostics.sharedFolder.error}</small>
+          ) : null}
+        </div>
+        <div className="diagnostic-item">
           <span>Application interface</span>
           <strong className={interfaceError ? "failed" : "succeeded"}>
             {interfaceError ? "failed" : "connected"}
@@ -87,6 +109,21 @@ export function DiagnosticsPanel({
           ) : null}
         </div>
       </div>
+      {diagnostics.devices.length > 0 ? (
+        <div className="diagnostic-devices">
+          <h3>Devices</h3>
+          {diagnostics.devices.map((device) => (
+            <div className="diagnostic-device-row" key={device.id}>
+              <span>{device.displayName}</span>
+              {device.local ? (
+                <strong>This machine</strong>
+              ) : (
+                <small>Last imported {formatTimestamp(device.lastImportAt)}</small>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {/* The quota rows themselves show the numbers and nothing about where they came
           from. A window read from a session log is as current as the last session, one read
           from a status line as current as the last turn, so which source produced it is
