@@ -11,14 +11,21 @@ use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
+    time::{Duration, timeout},
 };
 
 use crate::domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, QuotaLevel, WindowSource};
 
 const CODEX_EXECUTABLE_OVERRIDE: &str = "QUOTASTATION_CODEX_EXECUTABLE";
 
+/// The app-server is an external child process: it can start and then never answer, and a
+/// refresh that waits for it forever holds the live-refresh lock for the rest of the session.
+/// The outer bound covers the whole candidate walk, the inner one each candidate's exchange,
+/// so a stalled executable is abandoned and the next one still gets its turn.
 pub async fn read_live() -> Result<LiveSnapshot> {
-    read_live_inner().await
+    timeout(Duration::from_secs(12), read_live_inner())
+        .await
+        .context("Codex app-server timed out")?
 }
 
 async fn read_live_inner() -> Result<LiveSnapshot> {
@@ -28,9 +35,9 @@ async fn read_live_inner() -> Result<LiveSnapshot> {
 
 async fn attempt_candidate(executable: PathBuf) -> Result<LiveSnapshot> {
     let mut child = spawn_app_server(&executable)?;
-    let result = exchange(&mut child).await;
+    let result = timeout(Duration::from_secs(4), exchange(&mut child)).await;
     let _ = child.kill().await;
-    result
+    result.context("Codex app-server candidate timed out")?
 }
 
 async fn first_success<T, F, Fut>(candidates: Vec<PathBuf>, mut attempt: F) -> Result<T>

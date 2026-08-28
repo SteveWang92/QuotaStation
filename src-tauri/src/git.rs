@@ -11,8 +11,12 @@
 //! cache keeps the client from paying for a process on every render of a streaming turn.
 
 use std::{
+    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +32,11 @@ const CACHE_TTL_SECS: i64 = 3;
 /// Repositories worth remembering between renders. Enough for every project open at once,
 /// small enough that the file is rewritten without thought.
 const CACHE_LIMIT: usize = 16;
+
+/// The status line is rendered synchronously by Claude Code, so Git may never hold it up.
+/// A worktree on a disconnected share, or one behind a stale `index.lock`, takes as long as
+/// it takes; the cache does not help, because it is the uncached call that stalls.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Windows would otherwise flash a console window for the `git` child process.
 #[cfg(windows)]
@@ -122,11 +131,30 @@ fn read_status(root: &Path) -> Option<WorkTreeStatus> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = command.output().ok()?;
-    if !output.status.success() {
+    let mut child = command.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = sender.send(stdout.read_to_end(&mut bytes).ok().map(|_| bytes));
+    });
+    let deadline = Instant::now() + STATUS_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
         return None;
     }
-    Some(parse_status(&String::from_utf8_lossy(&output.stdout)))
+    let output = receiver.recv_timeout(Duration::from_millis(100)).ok()??;
+    Some(parse_status(&String::from_utf8_lossy(&output)))
 }
 
 /// Reads the porcelain v2 report. Entry lines are counted rather than interpreted: what
