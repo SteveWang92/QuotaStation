@@ -35,8 +35,11 @@ fn config_path() -> Option<PathBuf> {
 }
 
 fn read_items(document: &DocumentMut, key: &str) -> Vec<String> {
-    document["tui"][key]
-        .as_array()
+    document
+        .get("tui")
+        .and_then(Item::as_table)
+        .and_then(|tui| tui.get(key))
+        .and_then(Item::as_array)
         .map(|items| {
             items.iter().filter_map(|item| item.as_str().map(ToString::to_string)).collect()
         })
@@ -87,4 +90,17 @@ pub fn apply_layout() -> Result<StatusLineStatus> {
         let _ = std::fs::remove_file(&staging);
     })?;
     status()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_items;
+    use toml_edit::DocumentMut;
+
+    #[test]
+    fn an_unconfigured_tui_has_no_status_items() {
+        let document = DocumentMut::new();
+        assert!(read_items(&document, "status_line").is_empty());
+        assert!(read_items(&document, "terminal_title").is_empty());
+    }
 }
