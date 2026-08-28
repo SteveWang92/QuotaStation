@@ -22,14 +22,12 @@ on `main`, with the matching section below as its notes.
 ### Fixed
 
 - Concurrent Claude Code sessions no longer overwrite each other's notification titles.
-- Diagnostics exports preserve an existing file when saving its replacement fails.
-- Explorer selects diagnostics exports whose paths contain spaces.
+- Explorer selects the application log instead of opening the wrong folder when the path contains a space.
 - Failed settings reads and reset-note saves are shown instead of failing silently.
 - Malformed shared usage aggregates and reset events are rejected before they reach local storage.
 - Multiple quota restarts in the same chart bucket are all shown in its tooltip.
 - Quota reset history stays visible and reports the storage error when a reload fails.
 - Successful diagnostics reads no longer clear unrelated refresh or event errors.
-- The first usage range read now shows its loading state instead of an empty chart.
 - The usage charts no longer dim and settle every time a background refresh runs behind them.
 - The release build no longer exits when an enabled taskbar status widget is repositioned.
 

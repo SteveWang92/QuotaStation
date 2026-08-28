@@ -74,5 +74,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job checks nothing out, so gh has no repository to infer from.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: gh release upload "$TAG" installer/*-setup.exe --clobber
