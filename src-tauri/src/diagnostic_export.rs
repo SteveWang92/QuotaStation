@@ -135,12 +135,12 @@ impl DiagnosticExport {
         ));
         std::fs::write(&staging, content)
             .map_err(|_| "Diagnostic export could not be written.".to_string())?;
-        std::fs::rename(&staging, path)
-            .or_else(|_| {
-                std::fs::remove_file(path)?;
-                std::fs::rename(&staging, path)
-            })
-            .map_err(|_| "Diagnostic export could not be saved.".to_string())?;
+        // The rename replaces an existing export in one step. A failure leaves that file
+        // untouched, so the staging copy is what goes.
+        if std::fs::rename(&staging, path).is_err() {
+            let _ = std::fs::remove_file(&staging);
+            return Err("Diagnostic export could not be saved.".to_string());
+        }
         Ok(())
     }
 }
