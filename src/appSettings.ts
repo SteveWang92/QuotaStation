@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
+import { errorMessage } from "./errors";
 import type { AppSettings } from "./types";
 
 /**
@@ -10,35 +11,67 @@ import type { AppSettings } from "./types";
  * would quietly undo whatever another card changed since. They share this instead.
  */
 let current: AppSettings | null = null;
+let loadError: string | null = null;
 let loading: Promise<unknown> | null = null;
 let saveQueue: Promise<void> = Promise.resolve();
-const listeners = new Set<(settings: AppSettings | null) => void>();
+export interface AppSettingsState {
+  settings: AppSettings | null;
+  error: string | null;
+  reload: () => Promise<void>;
+}
 
-function publish(next: AppSettings) {
-  current = next;
+type StoredSettingsState = Omit<AppSettingsState, "reload">;
+const listeners = new Set<(state: StoredSettingsState) => void>();
+
+function state(): StoredSettingsState {
+  return { settings: current, error: loadError };
+}
+
+function notify() {
+  const next = state();
   for (const listener of listeners) listener(next);
 }
 
-/** The settings as last read or written, or `null` until the first read lands. */
-export function useAppSettings(): AppSettings | null {
-  const [settings, setSettings] = useState(current);
+function publish(next: AppSettings) {
+  current = next;
+  loadError = null;
+  notify();
+}
+
+/** Reads settings again after a visible startup or IPC failure. */
+export async function reloadAppSettings(): Promise<void> {
+  if (loading !== null) {
+    await loading;
+    return;
+  }
+  loading = invoke<AppSettings>("get_app_settings")
+    .then(publish)
+    .catch((cause) => {
+      loadError = errorMessage(cause);
+      notify();
+    })
+    .finally(() => {
+      loading = null;
+    });
+  await loading;
+}
+
+/** The settings as last read or written, with a visible failure and retry path. */
+export function useAppSettings(): AppSettingsState {
+  const [stored, setStored] = useState(state);
 
   useEffect(() => {
-    listeners.add(setSettings);
-    setSettings(current);
+    listeners.add(setStored);
+    setStored(state());
     if (current === null && loading === null) {
-      loading = invoke<AppSettings>("get_app_settings")
-        .then(publish)
-        .finally(() => {
-          loading = null;
-        });
+      void reloadAppSettings();
     }
     return () => {
-      listeners.delete(setSettings);
+      listeners.delete(setStored);
     };
   }, []);
 
-  return settings;
+  return { ...stored, reload: reloadAppSettings };
 }
 
 /** Records a change to some of the settings and hands every card the saved result. */
@@ -49,7 +82,7 @@ export async function saveAppSettings(
     // The record is replaced wholesale by the core, and every field it carries has a serde
     // default, so a patch sent before the first read landed would reset the device identity
     // and the shared folder rather than change one setting.
-    if (current === null) return;
+    if (current === null) throw new Error("Settings have not loaded");
     // A patch built from a list has to be built here rather than at the call site: two
     // clicks before the first result renders would otherwise both start from the same
     // stale list and the second would undo the first.

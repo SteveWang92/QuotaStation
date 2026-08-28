@@ -177,7 +177,9 @@ function Dashboard() {
   const [rangeLoading, setRangeLoading] = useState(false);
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [commandError, setCommandError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [historyEventError, setHistoryEventError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
   // Settings is a page rather than an overlay: it is read and worked through — a source
   // set up, then checked, then the restart history read — and a dialog over the dashboard
@@ -268,9 +270,9 @@ function Dashboard() {
   const loadDiagnostics = useCallback(async () => {
     try {
       setDiagnostics(await invoke<DiagnosticsSnapshot>("get_diagnostics"));
-      setCommandError(null);
+      setDiagnosticsError(null);
     } catch (error) {
-      setCommandError(errorMessage(error));
+      setDiagnosticsError(errorMessage(error));
     }
   }, []);
 
@@ -342,13 +344,13 @@ function Dashboard() {
     try {
       // refresh_now publishes the new snapshot through the shared subscription.
       await invoke("refresh_now");
-      setCommandError(null);
+      setRefreshError(null);
       await Promise.all([
         loadUsageRange(activeRangeRef.current, providerRef.current, deviceRef.current),
         loadDiagnostics(),
       ]);
     } catch (error) {
-      setCommandError(errorMessage(error));
+      setRefreshError(errorMessage(error));
     } finally {
       setRefreshing(false);
     }
@@ -368,7 +370,7 @@ function Dashboard() {
         else stopListening = unlisten;
       })
       .catch((error) => {
-        if (!disposed) setCommandError(errorMessage(error));
+        if (!disposed) setHistoryEventError(errorMessage(error));
       });
     return () => {
       disposed = true;
@@ -379,7 +381,7 @@ function Dashboard() {
   const showClaudeSettings = workspace.providers.some(
     (provider) => provider.provider === "claude" && !provider.remoteUsageOnly,
   );
-  const interfaceError = snapshotError ?? commandError;
+  const interfaceError = snapshotError ?? refreshError ?? historyEventError ?? diagnosticsError;
   // The panel is behind a control now, so anything wrong inside it has to be visible from
   // outside it; otherwise a failed acquisition path is only found by looking for it.
   // Every quota window on display right now, in the vocabulary the dismissed early-restart

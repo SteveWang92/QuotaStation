@@ -27,7 +27,7 @@ const MIN_FORWARD_SHIFT_SECONDS: i64 = 60;
 /// after the restart, so its anchor cannot predate the earlier observation. The slack
 /// absorbs clock differences between the Codex server and this machine.
 const ANCHOR_SLACK_SECONDS: i64 = 300;
-const MAX_WINDOW_DURATION_MINS: i64 = 366 * 24 * 60;
+pub const MAX_WINDOW_DURATION_MINS: i64 = 366 * 24 * 60;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WindowObservation {

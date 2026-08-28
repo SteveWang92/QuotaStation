@@ -16,7 +16,7 @@ import type { AppSettings, ClaudeStatusLineStatus, ProviderLabelStyle } from "..
  */
 export function ClaudeStatusLine() {
   const [status, setStatus] = useState<ClaudeStatusLineStatus | null>(null);
-  const settings = useAppSettings();
+  const { settings } = useAppSettings();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);

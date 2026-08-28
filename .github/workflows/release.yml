@@ -13,18 +13,17 @@ on:
         description: Existing release tag to build and attach an installer to
         required: true
 
-permissions:
-  contents: write
-
 env:
   CARGO_INCREMENTAL: 0
   CARGO_TERM_COLOR: always
 
 jobs:
-  installer:
-    name: Build and attach the Windows installer
+  build:
+    name: Build the Windows installer
     runs-on: windows-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
@@ -46,6 +45,29 @@ jobs:
       - name: Build the installer
         run: npm run build:installer
 
+      - name: Store the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  attach:
+    name: Attach the installer to the release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the installer
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: installer
+
       # The installer is unsigned; QuotaStation buys no code-signing certificate. See
       # docs/development.md for what that means for the people who download it.
       - name: Attach it to the release
@@ -53,4 +75,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
-        run: gh release upload "$TAG" src-tauri/target/release/bundle/nsis/*-setup.exe --clobber
+        run: gh release upload "$TAG" installer/*-setup.exe --clobber

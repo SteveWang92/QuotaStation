@@ -50,6 +50,59 @@ const MAX_REGISTER_AGE_SECS: i64 = 24 * 60 * 60;
 /// and small enough that the register is rewritten without thought.
 const REGISTER_LIMIT: usize = 32;
 
+/// The status-line bridge is a new process on every render, so a process-local mutex cannot
+/// protect the shared register. A named Windows mutex is released automatically if one of
+/// those short-lived processes exits while holding it.
+#[cfg(windows)]
+struct SessionRegisterLock(windows::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl SessionRegisterLock {
+    fn acquire() -> Option<Self> {
+        use windows::{
+            Win32::{
+                Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0},
+                System::Threading::{CreateMutexW, WaitForSingleObject},
+            },
+            core::w,
+        };
+
+        let handle =
+            unsafe { CreateMutexW(None, false, w!("Local\\QuotaStationClaudeSessionRegister")) }
+                .ok()?;
+        let wait = unsafe { WaitForSingleObject(handle, 1_000) };
+        if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
+            Some(Self(handle))
+        } else {
+            let _ = unsafe { CloseHandle(handle) };
+            None
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for SessionRegisterLock {
+    fn drop(&mut self) {
+        use windows::Win32::{Foundation::CloseHandle, System::Threading::ReleaseMutex};
+
+        let _ = unsafe { ReleaseMutex(self.0) };
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
+#[cfg(not(windows))]
+struct SessionRegisterLock {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(not(windows))]
+impl SessionRegisterLock {
+    fn acquire() -> Option<Self> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().ok().map(|guard| Self { _guard: guard })
+    }
+}
+
 /// What Claude Code hands the Stop hook. Two fields are read: which session ended, and
 /// where it was running. The payload also carries the assistant's final message, and that
 /// is conversation content this has no reason to write to disk.
@@ -97,6 +150,7 @@ fn register_path() -> Option<PathBuf> {
 /// is one small file rewritten in place rather than a growing log: the register describes
 /// the sessions running now, and one that has stopped rendering falls out of it.
 pub fn record_session(id: &str, name: Option<&str>, project: Option<&str>, now: i64) {
+    let Some(_lock) = SessionRegisterLock::acquire() else { return };
     let mut register = load_register();
     // A title that is already right does not need the file rewritten three times a second,
     // so an unchanged record is only refreshed often enough to stay clear of its own expiry.

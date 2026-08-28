@@ -1,6 +1,7 @@
 import { Check } from "lucide-react";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { saveAppSettings, useAppSettings } from "../appSettings";
+import { errorMessage } from "../errors";
 import {
   formatCompactNumber,
   formatCountdown,
@@ -184,19 +185,25 @@ export function QuotaSection({
   liveWindowKeys,
   compact = false,
 }: QuotaSectionProps) {
-  const settings = useAppSettings();
+  const { settings, error: settingsError } = useAppSettings();
+  const [dismissError, setDismissError] = useState<string | null>(null);
   const dismissed = settings?.dismissedResetNotices ?? [];
 
   const dismiss = useCallback(
     async (key: string) => {
       // Only the notes for windows still on display are carried forward, so the record
       // stays as short as the number of windows rather than growing with every restart.
-      await saveAppSettings((saved) => {
-        const kept = (liveWindowKeys ?? []).filter(
-          (live) => live !== key && saved.dismissedResetNotices.includes(live),
-        );
-        return { dismissedResetNotices: [...kept, key] };
-      });
+      setDismissError(null);
+      try {
+        await saveAppSettings((saved) => {
+          const kept = (liveWindowKeys ?? []).filter(
+            (live) => live !== key && saved.dismissedResetNotices.includes(live),
+          );
+          return { dismissedResetNotices: [...kept, key] };
+        });
+      } catch (cause) {
+        setDismissError(errorMessage(cause));
+      }
     },
     [liveWindowKeys],
   );
@@ -207,6 +214,9 @@ export function QuotaSection({
       className={`quota-section${compact ? " compact" : ""}`}
       aria-label={`${providerName} quota windows`}
     >
+      {settingsError || dismissError ? (
+        <p className="provider-panel-error">Settings: {dismissError ?? settingsError}</p>
+      ) : null}
       {limits.length > 0 ? (
         limits.map((limit) => {
           const key = resetNoticeKey(provider, limit.kind, limit.resetsAt);

@@ -14,7 +14,7 @@
 //! is the whole reason aggregates are exported rather than the session logs themselves,
 //! which would work with no code at all and would put prompts in a sync folder.
 
-use std::{path::Path, sync::Arc};
+use std::{path::Path, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState,
     domain::{CCUSAGE_REVISION, DeviceUsageRow, SharedFolderDiagnostics, SharedResetEvent},
+    resets::{MAX_WINDOW_DURATION_MINS, UNPLANNED_THRESHOLD_SECONDS},
     sanitize::sanitize_error,
     storage::DeviceImport,
 };
@@ -32,6 +33,7 @@ const FORMAT_VERSION: u32 = 1;
 
 const FILE_PREFIX: &str = "usage-";
 const FILE_SUFFIX: &str = ".json";
+const MAX_DEVICE_ID_LEN: usize = 32;
 
 /// One machine's whole record, as the shared folder carries it.
 ///
@@ -58,6 +60,12 @@ struct ExportFile {
 
 fn file_name(device_id: &str) -> String {
     format!("{FILE_PREFIX}{device_id}{FILE_SUFFIX}")
+}
+
+fn valid_device_id(device_id: &str) -> bool {
+    !device_id.is_empty()
+        && device_id.len() <= MAX_DEVICE_ID_LEN
+        && device_id.chars().all(|character| character.is_ascii_hexdigit())
 }
 
 fn system_timezone() -> String {
@@ -168,7 +176,7 @@ async fn import_others(state: &Arc<AppState>, folder: &Path, device_id: &str) ->
         // Such a copy is a duplicate of a file already read, and reporting it as an
         // unreadable device would leave the shared-folder status failing until someone
         // deleted a file the sync client is entitled to create.
-        if !file_device.chars().all(|character| character.is_ascii_hexdigit()) {
+        if !valid_device_id(file_device) {
             continue;
         }
         if file_device == device_id {
@@ -198,12 +206,72 @@ async fn import_others(state: &Arc<AppState>, folder: &Path, device_id: &str) ->
 const DAY_KEY_LEN: usize = 10;
 const HOUR_KEY_LEN: usize = 16;
 
-/// Refuses a file whose bucket keys are not the fixed-width local keys this machine writes.
-fn check_buckets(rows: &[DeviceUsageRow], width: usize) -> Result<()> {
+/// Refuses rows that cannot have been produced by this build before SQLite sees them.
+fn check_rows(rows: &[DeviceUsageRow], hourly: bool) -> Result<()> {
     for row in rows {
+        let date = row.bucket.get(..DAY_KEY_LEN).unwrap_or_default();
         anyhow::ensure!(
-            row.bucket.len() == width && row.bucket.is_char_boundary(DAY_KEY_LEN),
+            jiff::civil::Date::from_str(date).is_ok_and(|parsed| parsed.to_string() == date)
+                && if hourly {
+                    row.bucket.len() == HOUR_KEY_LEN
+                        && row.bucket.as_bytes().get(10) == Some(&b'T')
+                        && row.bucket.as_bytes().get(13) == Some(&b':')
+                        && row.bucket.get(14..) == Some("00")
+                        && row
+                            .bucket
+                            .get(11..13)
+                            .and_then(|hour| hour.parse::<u8>().ok())
+                            .is_some_and(|hour| hour < 24)
+                } else {
+                    row.bucket.len() == DAY_KEY_LEN
+                },
             "carries an unreadable bucket key"
+        );
+        anyhow::ensure!(
+            [row.input, row.cache_read, row.output, row.reasoning, row.total]
+                .into_iter()
+                .all(|tokens| i64::try_from(tokens).is_ok()),
+            "carries a token total outside the supported range"
+        );
+        anyhow::ensure!(
+            row.cost_usd.is_none_or(|cost| cost.is_finite() && cost >= 0.0),
+            "carries an invalid cost"
+        );
+    }
+    Ok(())
+}
+
+fn check_resets(resets: &[SharedResetEvent]) -> Result<()> {
+    for reset in resets {
+        anyhow::ensure!(
+            matches!(reset.source.as_str(), "live" | "backfill"),
+            "carries an invalid reset source"
+        );
+        anyhow::ensure!(
+            (1..=MAX_WINDOW_DURATION_MINS).contains(&reset.window_duration_mins)
+                && (0.0..=100.0).contains(&reset.used_percent_before),
+            "carries invalid reset values"
+        );
+        let duration_seconds = reset.window_duration_mins.checked_mul(60);
+        anyhow::ensure!(
+            duration_seconds.and_then(|duration| reset.anchored_at.checked_add(duration))
+                == Some(reset.new_resets_at)
+                && reset.previous_resets_at.checked_sub(reset.anchored_at)
+                    == Some(reset.early_by_seconds),
+            "carries an inconsistent reset window"
+        );
+        let expected_classification = if reset.early_by_seconds > UNPLANNED_THRESHOLD_SECONDS {
+            crate::domain::ResetClassification::Unplanned
+        } else {
+            crate::domain::ResetClassification::Scheduled
+        };
+        anyhow::ensure!(
+            reset.classification == expected_classification,
+            "carries an inconsistent reset classification"
+        );
+        anyhow::ensure!(
+            jiff::Timestamp::from_str(&reset.detected_at).is_ok(),
+            "carries an unreadable reset timestamp"
         );
     }
     Ok(())
@@ -221,17 +289,18 @@ async fn import_one(
         "written by a different version of QuotaStation"
     );
     anyhow::ensure!(published.device_id == file_device, "names a different device inside");
+    anyhow::ensure!(valid_device_id(&published.device_id), "names an invalid device");
     let timezone = system_timezone();
     anyhow::ensure!(
         published.timezone == timezone,
         "aggregated in {} rather than {timezone}",
         published.timezone
     );
-    // The bucket keys are stored as they arrive and later sliced to the date they open with.
-    // Everything else in the file is a number or a name the reader never cuts up, so this is
-    // the one field a file mangled in the shared folder could turn into a panic.
-    check_buckets(&published.daily, DAY_KEY_LEN)?;
-    check_buckets(&published.hourly, HOUR_KEY_LEN)?;
+    // The imported values are bound directly into SQLite and later read as signed integers,
+    // dates and reset facts, so the external document has to fit those exact representations.
+    check_rows(&published.daily, false)?;
+    check_rows(&published.hourly, true)?;
+    check_resets(&published.resets)?;
 
     state
         .storage
@@ -249,4 +318,73 @@ async fn import_one(
         )
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(bucket: &str) -> DeviceUsageRow {
+        DeviceUsageRow {
+            provider: "codex".into(),
+            bucket: bucket.into(),
+            model: "gpt-5".into(),
+            service_tier: "default".into(),
+            input: 1,
+            cache_read: 2,
+            output: 3,
+            reasoning: 4,
+            total: 10,
+            cost_usd: Some(0.25),
+        }
+    }
+
+    #[test]
+    fn shared_rows_require_real_canonical_bucket_keys() {
+        assert!(check_rows(&[row("2026-08-29")], false).is_ok());
+        assert!(check_rows(&[row("2026-08-29T23:00")], true).is_ok());
+        assert!(check_rows(&[row("2026-02-29")], false).is_err());
+        assert!(check_rows(&[row("2026-08-29T24:00")], true).is_err());
+        assert!(check_rows(&[row("2026-08-29T23:30")], true).is_err());
+    }
+
+    #[test]
+    fn shared_rows_fit_the_database_number_types() {
+        let mut invalid_tokens = row("2026-08-29");
+        invalid_tokens.total = i64::MAX as u64 + 1;
+        assert!(check_rows(&[invalid_tokens], false).is_err());
+
+        let mut invalid_cost = row("2026-08-29");
+        invalid_cost.cost_usd = Some(-0.01);
+        assert!(check_rows(&[invalid_cost], false).is_err());
+    }
+
+    #[test]
+    fn device_ids_cannot_be_empty_or_unbounded() {
+        assert!(valid_device_id("18dc7f42a1"));
+        assert!(!valid_device_id(""));
+        assert!(!valid_device_id("not-hex"));
+        assert!(!valid_device_id(&"a".repeat(MAX_DEVICE_ID_LEN + 1)));
+    }
+
+    #[test]
+    fn shared_resets_must_describe_one_consistent_window() {
+        let mut reset = SharedResetEvent {
+            provider: "codex".into(),
+            window_kind: crate::domain::LimitKind::Primary,
+            window_duration_mins: 300,
+            anchored_at: 1_800_000_000,
+            new_resets_at: 1_800_018_000,
+            previous_resets_at: 1_800_003_600,
+            used_percent_before: 82.0,
+            early_by_seconds: 3_600,
+            classification: crate::domain::ResetClassification::Scheduled,
+            source: "live".into(),
+            detected_at: "2027-01-15T08:00:00Z".into(),
+        };
+        assert!(check_resets(&[reset.clone()]).is_ok());
+
+        reset.new_resets_at += 1;
+        assert!(check_resets(&[reset]).is_err());
+    }
 }
