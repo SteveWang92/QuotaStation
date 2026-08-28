@@ -63,7 +63,7 @@ and the SQLite layer, including that migrations apply and that a history refresh
 only the days it parsed:
 
 ```powershell
-cargo test --manifest-path src-tauri/Cargo.toml
+npm run test:core
 ```
 
 Check the renderer's formatting, import order, and lint rules. `npm run format` writes what
@@ -78,13 +78,20 @@ warning as an error, and `cargo fmt --manifest-path src-tauri/Cargo.toml` writes
 formatting:
 
 ```powershell
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+npm run fmt:core
+npm run lint:core
 ```
 
-Both suites and both lint gates, plus the renderer build, run on a Windows runner for the
-`dev` to `main` release pull request and every push to `main`; see `.github/workflows/ci.yml`.
-Commits on `dev` rely on the same local gates before they are pushed.
+Run every renderer and core gate together before a release pull request with:
+
+```powershell
+npm run verify
+```
+
+Both suites and both lint gates, plus the renderer build, run on a Windows runner for every
+pull request into `dev`, for the `dev` to `main` release pull request, and for every push to
+`main`; see `.github/workflows/ci.yml`. A commit pushed straight to `dev` is not covered, so
+run the gates above locally before pushing one.
 
 ### What each build command produces
 
@@ -94,11 +101,11 @@ but the result cannot be run. Each row states what lands on disk and what it is 
 | Command | Produces | Use it for |
 | --- | --- | --- |
 | `npm run build` | `dist/` — the compiled renderer only | Type-checking and bundling the interface. Produces no executable |
-| `cargo check --manifest-path src-tauri/Cargo.toml` | Nothing on disk | Confirming the core compiles, faster than a build |
+| `npm run check:core` | Nothing on disk | Confirming the core compiles, faster than a build |
 | `npm run tauri dev` | A running application, plus a **dev-server-bound** `src-tauri/target/debug/quotastation.exe` | Development and diagnosis. See the caution below |
-| `npm run tauri -- build --debug --no-bundle` | `src-tauri/target/debug/quotastation.exe`, standalone | A runnable build with debug assertions and symbols |
-| `npm run tauri build -- --no-bundle` | `src-tauri/target/release/quotastation.exe`, standalone | The optimized application, run straight from `target/` |
-| `npm run tauri -- build --bundles nsis` | An NSIS installer under `src-tauri/target/release/bundle/nsis/` | Distribution only, as part of an explicitly requested release |
+| `npm run build:debug` | `src-tauri/target/debug/quotastation.exe`, standalone | A runnable build with debug assertions and symbols |
+| `npm run build:release` | `src-tauri/target/release/quotastation.exe`, standalone | The optimized application, run straight from `target/` |
+| `npm run build:installer` | An NSIS installer under `src-tauri/target/release/bundle/nsis/` | Distribution only, as part of an explicitly requested release |
 
 `src-tauri/target/release/quotastation.exe` is the copy the application is actually run
 from between releases, so it is the one a finished change is rebuilt and relaunched as. The
@@ -129,6 +136,20 @@ application's history, quota, and provider settings.
 
 Use the minimum relevant check for a focused change. Documentation-only changes need only
 a review of the edited files.
+
+## Packaging and distribution
+
+`npm run build:installer` produces the per-user NSIS installer. A release does not need it
+built by hand: publishing a `vX.Y.Z` release runs `.github/workflows/release.yml`, which
+builds the installer from the published tag and attaches it to that release.
+
+The installer and the executable inside it are **unsigned**. A code-signing certificate is a
+recurring cost QuotaStation deliberately does not carry, so Windows SmartScreen warns the
+first people to download each new version until it has seen enough of them; the warning is
+dismissed through **More info** → **Run anyway**. Nothing in the build works around that
+warning, and no unsigned-warning workaround should be added: the honest answer is that the
+build is reproducible from this repository and its source is the tag the installer was built
+from.
 
 ## Application icon
 

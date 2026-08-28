@@ -1,13 +1,14 @@
 name: CI
 
-# Base-branch filter, not a typo: pull_request fires on the PR's target branch, so this
-# runs on the dev->main release PR and again on the merge commit that lands on main. A
-# Windows runner bills at twice the wall clock and a cold Rust build dominates it, so the
-# gates do not run on every dev commit: CLAUDE.md already requires them locally before a
-# change is finished, and CI exists here to gate the release path.
+# Base-branch filter, not a typo: pull_request fires on the PR's target branch, so this runs
+# on every pull request proposing work into dev, on the dev->main release PR, and again on
+# the merge commit that lands on main. A Windows runner bills at twice the wall clock and a
+# cold Rust build dominates it, so a push to dev is deliberately not covered: work committed
+# straight to dev is gated by the local run CLAUDE.md requires, while a pull request is the
+# one path whose author may not have run it.
 on:
   pull_request:
-    branches: [main]
+    branches: [dev, main]
   push:
     branches: [main]
 

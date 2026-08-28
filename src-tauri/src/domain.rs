@@ -207,6 +207,24 @@ pub struct LimitResetEvent {
     pub classification: ResetClassification,
 }
 
+/// Account-level reset facts safe to exchange through the shared folder. The token total is
+/// intentionally absent: each receiving machine derives it from the usage it has imported.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedResetEvent {
+    pub provider: String,
+    pub window_kind: LimitKind,
+    pub window_duration_mins: i64,
+    pub anchored_at: i64,
+    pub new_resets_at: i64,
+    pub previous_resets_at: i64,
+    pub used_percent_before: f64,
+    pub early_by_seconds: i64,
+    pub classification: ResetClassification,
+    pub source: String,
+    pub detected_at: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {

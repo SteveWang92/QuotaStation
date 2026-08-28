@@ -1,0 +1,41 @@
+/**
+ * What the AGPL calls Appropriate Legal Notices: the program's name and version, its
+ * copyright, the licence it is offered under, the absence of a warranty, and where the
+ * corresponding source is. Section 5(d) requires an interactive program to display these,
+ * and a desktop application has nowhere to display them but a surface like this one.
+ *
+ * The links are plain text rather than anchors: no window here is allowed to navigate away
+ * from the interface, and QuotaStation ships no shell-opener plugin, so an anchor would
+ * simply do nothing when clicked. An address that can be read and copied satisfies the
+ * requirement; one that silently fails does not.
+ */
+export function AboutPanel({
+  appVersion,
+  buildCommit,
+}: {
+  appVersion: string;
+  buildCommit: string;
+}) {
+  return (
+    <section className="provider-consent" aria-label="About QuotaStation">
+      <div className="provider-consent-body">
+        <h2>
+          QuotaStation {appVersion} <code>{buildCommit}</code>
+        </h2>
+        <p>Copyright © 2026 Steve Wang</p>
+        <p>
+          Licensed under the GNU Affero General Public License, version 3 only. QuotaStation is free
+          software: you may redistribute and modify it under those terms. It comes with absolutely
+          no warranty, to the extent permitted by law.
+        </p>
+        <p>
+          Source code and the full licence text: <code>github.com/SteveWang92/QuotaStation</code>
+        </p>
+        <p>
+          The reused open-source components, their pinned revisions and their licences are listed in{" "}
+          <code>THIRD_PARTY_NOTICES.md</code> in that repository.
+        </p>
+      </div>
+    </section>
+  );
+}

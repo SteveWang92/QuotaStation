@@ -1,6 +1,6 @@
 [package]
 name = "quotastation"
-version = "0.5.0"
+version = "0.6.0"
 description = "Local-first AI quota and usage monitoring for Windows"
 authors = ["Steve Wang <contact@stevewang.me>"]
 edition = "2024"
@@ -43,6 +43,7 @@ tauri-winrt-notification = "0.7"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Security",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Registry",
     "Win32_System_Threading",

@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { downloadDir, join } from "@tauri-apps/api/path";
+import { save } from "@tauri-apps/plugin-dialog";
+import { useCallback, useEffect, useState } from "react";
+import { errorMessage } from "../errors";
 import { formatResetTimestamp, formatRevision, formatTimestamp } from "../format";
 import type { DiagnosticsSnapshot, LimitWindow, ProviderSnapshot } from "../types";
 
@@ -30,9 +33,36 @@ export function DiagnosticsPanel({
   // for milliseconds inside Claude Code. The log is where both of them report, so the panel
   // has to be able to point at it.
   const [logAvailable, setLogAvailable] = useState(false);
+  const [exportPath, setExportPath] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     void invoke<boolean>("get_log_available").then(setLogAvailable);
+  }, []);
+
+  const exportDiagnostics = useCallback(async () => {
+    setExporting(true);
+    setExportError(null);
+    setExportPath(null);
+    try {
+      const defaultPath = await join(
+        await downloadDir(),
+        `quotastation-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
+      );
+      const selected = await save({
+        title: "Export diagnostics",
+        defaultPath,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (selected !== null) {
+        setExportPath(await invoke<string>("export_diagnostics", { path: selected }));
+      }
+    } catch (cause) {
+      setExportError(errorMessage(cause));
+    } finally {
+      setExporting(false);
+    }
   }, []);
 
   return (
@@ -163,6 +193,51 @@ export function DiagnosticsPanel({
             Show activity log
           </button>
         ) : null}
+        <span>
+          <button
+            type="button"
+            className="diagnostic-log"
+            disabled={exporting}
+            onClick={() => void exportDiagnostics()}
+          >
+            {exporting ? "Exporting…" : "Export diagnostics…"}
+          </button>
+          {exportError ? <small className="diagnostic-error">{exportError}</small> : null}
+          {exportPath ? (
+            <ExportSuccess path={exportPath} onClose={() => setExportPath(null)} />
+          ) : null}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ExportSuccess({ path, onClose }: { path: string; onClose: () => void }) {
+  return (
+    <div className="confirm-overlay" onMouseDown={onClose}>
+      <div
+        className="confirm-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-label="Diagnostics exported"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <h3>Diagnostics exported</h3>
+        <p>
+          The redacted diagnostic file was saved to <code>{path}</code>.
+        </p>
+        <div className="confirm-actions">
+          <button type="button" onClick={onClose}>
+            Close
+          </button>
+          <button
+            type="button"
+            className="confirm-primary"
+            onClick={() => void invoke("reveal_export_file", { path })}
+          >
+            Open folder
+          </button>
+        </div>
       </div>
     </div>
   );

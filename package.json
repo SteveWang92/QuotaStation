@@ -1,7 +1,7 @@
 {
   "name": "quotastation",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -9,9 +9,18 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "check:core": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "test:core": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+    "fmt:core": "cargo fmt --manifest-path src-tauri/Cargo.toml --check",
+    "format:core": "cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "lint:core": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "verify": "npm run lint && npm test && npm run build && npm run fmt:core && npm run lint:core && npm run test:core",
     "lint": "biome check",
     "format": "biome check --write",
     "tauri": "tauri",
+    "build:debug": "tauri build --debug --no-bundle",
+    "build:release": "tauri build --no-bundle",
+    "build:installer": "tauri build --bundles nsis",
     "icons": "node scripts/icons.mjs"
   },
   "engines": {

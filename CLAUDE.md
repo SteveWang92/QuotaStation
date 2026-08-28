@@ -1,13 +1,13 @@
 # QuotaStation contributor guidance
 
-This repository follows Steve's global project rules. The rules below are specific to
-QuotaStation and take precedence when they differ.
+This is the authoritative guidance for working in QuotaStation, for a coding agent and a
+human contributor alike. The maintainer's own cross-project rules live outside this
+repository; where they and the rules below differ, the rules below win.
 
 ## Project status
 
-- QuotaStation is released and under active development. Codex and Claude are both covered;
-  the repository is private. Which version is current is a question for the tags and
-  `CHANGELOG.md`, not for this file.
+- QuotaStation is released and under active development. Codex and Claude are both covered.
+  Which version is current is a question for the tags and `CHANGELOG.md`, not for this file.
 - Read `docs/PROJECT_PLAN.local.md` when it exists before changing implementation scope.
 - Keep public documentation free of machine-specific paths, account details, credentials,
   and private usage data.
@@ -25,6 +25,7 @@ it, and a paragraph found in two of them is a bug in the documentation.
 | `docs/PROJECT_PLAN.local.md` | What is done, what is next, and the decisions and dead ends behind both. The only home for progress. |
 | `CHANGELOG.md` | What changed for a user, per version. |
 | `CLAUDE.md` | How to work in this repository. |
+| `CLAUDE.local.md` | Facts true of one machine only: where its working copy and its running instance live. Never rules. |
 
 ## Local-only files
 
@@ -39,14 +40,14 @@ it, and a paragraph found in two of them is a bug in the documentation.
   outside the local machine.
 - Reuse one normalized provider and usage model across tray, widget, and dashboard surfaces.
 - Deliver Codex first; Claude, Gemini, and other providers must not block the first release.
-- Use Tauri 2 with a Rust core and a React/TypeScript renderer unless Steve explicitly
-  approves an architecture change.
+- Use Tauri 2 with a Rust core and a React/TypeScript renderer unless the maintainer
+  explicitly approves an architecture change.
 - For AI client logs and provider behavior, inspect established open-source implementations
   first and directly reuse compatible code when practical.
 - Pin every reused implementation to an audited revision and record its license,
   attribution, security behavior, and local changes in `THIRD_PARTY_NOTICES.md`.
 - Do not add vendor hash manifests, whole-tree integrity hashes, or CI hash verification
-  unless Steve explicitly approves that maintenance cost first.
+  unless the maintainer explicitly approves that maintenance cost first.
 - Do not reimplement the Codex log parser unless direct use or minimal vendoring of the
   reviewed `ccusage` Rust adapter is blocked by a concrete incompatibility.
 - Keep file, process, provider protocol, credential, and database access in the Rust core;
@@ -55,23 +56,23 @@ it, and a paragraph found in two of them is a bug in the documentation.
 ## Verification
 
 - Documentation-only work needs only a focused file review.
-- Use the minimum local check required by the global rules. The gates are `npm run lint`,
+- Run the minimum local check that proves the change works, and no more. The gates are `npm run lint`,
   `npm test`, `npm run build`, `cargo fmt --manifest-path src-tauri/Cargo.toml --check`,
   `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`,
   and `cargo test --locked --manifest-path src-tauri/Cargo.toml`.
-- **CI runs those gates on the release path only** — the `dev` -> `main` pull request and
-  `main` itself — because a Windows runner bills at twice its wall clock and a cold Rust
-  build dominates it. Nothing checks a `dev` commit but the local run above, so running it
-  is not optional here.
+- **CI runs those gates on every pull request** — into `dev` and into `main` — and on `main`
+  itself. A push straight to `dev` is deliberately not covered, because a Windows runner
+  bills at twice its wall clock and a cold Rust build dominates it. Nothing checks such a
+  commit but the local run above, so running it is not optional here.
 - `npm run format` writes the renderer's formatting and import order; `cargo fmt` does the
   same for the core. Run them rather than hand-correcting what the gate reports. A rule the
   code deliberately breaks is turned off in `biome.jsonc` with the reason beside it — never
   with an inline suppression comment.
-- **The verification artifact is the unbundled release build, never the debug one.** Steve
-  runs `src-tauri/target/release/quotastation.exe` — a debug build is a different binary with
-  different performance, and handing him one is handing him something he does not run. The
-  `--debug` and `npm run tauri dev` forms in `docs/development.md` exist for diagnosing a
-  specific problem, not for finishing a change.
+- **The verification artifact is the unbundled release build, never the debug one.** The
+  maintainer runs `src-tauri/target/release/quotastation.exe` between releases — a debug
+  build is a different binary with different performance, so handing one over is handing over
+  something nobody runs. The `--debug` and `npm run tauri dev` forms in
+  `docs/development.md` exist for diagnosing a specific problem, not for finishing a change.
 - After the gates pass, close the running instance, rebuild it with `npm run build` then
   `cargo build --release --manifest-path src-tauri/Cargo.toml`, and start it again **in the
   background** — always with `--background`, which comes up in the tray and opens no window:
@@ -82,26 +83,25 @@ it, and a paragraph found in two of them is a bug in the documentation.
   ```
 
   The argument is the point. A launch with no arguments opens the dashboard and takes over
-  Steve's screen for a restart he did not ask for; the logon entry carries `--background` for
-  that reason, and a verification start is no different. The COM call is what carries an
-  argument while leaving the process detached from the agent's terminal, which
-  `explorer.exe <path>` cannot do and `Start-Process` does not do. Keep the executable path
-  stable: Claude Code's registered status-line command points at it.
+  the screen for a restart nobody asked for; the logon entry carries `--background` for that
+  reason, and a verification start is no different. The COM call is what carries an argument
+  while leaving the process detached from the agent's terminal, which `explorer.exe <path>`
+  cannot do and `Start-Process` does not do. Keep the executable path stable — what points
+  at it on a given machine is in that machine's `CLAUDE.local.md`.
 - Only one instance runs at a time — a second one hands over to the first and exits, which
   looks like a crash. Close the running copy, including one started from the tray, first.
 
 ## Changelog
 
-- `CHANGELOG.md` is the release history and follows the changelog rules in Steve's global
-  `CLAUDE.md`, which is where they are explained: user-facing results only, one entry to one
-  line, Keep a Changelog categories in order.
+- `CHANGELOG.md` is the release history: user-facing results only, one entry to one line,
+  Keep a Changelog categories in order, and nothing about commits or internal churn.
 - The one difference here: this repository has no release script, so the compare links at the
   bottom of the file are maintained by hand.
 
 ## Releasing
 
-Releasing is manual here, and Steve starts it. Never bump a version, tag, create the
-`dev` → `main` pull request, or publish a release without being asked.
+Releasing is manual here, and the maintainer starts it. Never bump a version, tag, create
+the `dev` → `main` pull request, or publish a release without being asked.
 
 - The version appears in three files that must always move together: `package.json`,
   `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`. `Cargo.lock` and
@@ -110,23 +110,23 @@ Releasing is manual here, and Steve starts it. Never bump a version, tag, create
   changelog dating are committed and pushed *before* the pull request is opened, so the
   review and CI both run against the exact tree that will be tagged; review fixes then land
   as ordinary commits on top of it. The squash merge is what makes the order irrelevant —
-  the branch becomes one commit on `main` and the tag goes on `main` afterwards. QuotaStation
-  has no release script, so this sequence is run by hand, matching what `release.mjs` /
-  `release.py` do in the scripted repositories.
+  the branch becomes one commit on `main` and the tag goes on `main` afterwards. There is no
+  release script here, so this sequence is run by hand.
 - `main` holds the released state and nothing deploys from it — QuotaStation is a desktop
-  application, so a release is a tag and its changelog notes. The repository's GitHub default
-  branch is `dev`.
-- **No installer is attached to a release while the repository is private.** A bundle is
-  built for Steve's own verification, not for distribution, and uploading one before the
-  project is public serves nobody. Do not build or attach one, and do not ask each time;
-  when QuotaStation goes public, Steve will say so and that is when the artifact question
-  reopens.
+  application, so a release is a tag, its changelog notes, and the installer CI attaches to
+  it. The repository's GitHub default branch is `dev`.
+- **The installer is attached by CI, not by hand.** Publishing the release runs
+  `.github/workflows/release.yml`, which builds the per-user NSIS installer from the
+  published tag and uploads it to that release. Do not build or upload a bundle manually; if
+  the workflow fails, fix it or re-run it from the tag rather than attaching a local build
+  nobody can trace to a tree. The installer is unsigned on purpose — `docs/development.md`
+  owns that decision and what it means for the people who download it.
 - Annotated `vX.Y.Z` tags on `main` are the source of truth for released versions. The tag
   message is the subject line only — `QuotaStation X.Y.Z` — because the notes already live
   in `CHANGELOG.md` and a second copy would drift. Tags carry no AI attribution, exactly as
   commits do.
 
-The full sequence, once Steve asks for it:
+The full sequence, once the maintainer asks for it:
 
 1. On a clean `dev`: `git fetch origin` then `git merge --ff-only origin/dev`. Run the
    verification gates.
@@ -143,8 +143,8 @@ The full sequence, once Steve asks for it:
    the review concludes the release should be a different level, change the version in every
    place at once — the three version fields, both lockfiles, the changelog heading, the
    compare links and the pull request title — in the same commit as the fix that caused it.
-5. Wait for Steve to confirm the pull request is ready to merge. Nothing below this line
-   happens before that confirmation.
+5. Wait for the maintainer to confirm the pull request is ready to merge. Nothing below
+   this line happens before that confirmation.
 6. Verify the pull request can actually merge before merging it:
    `gh pr view <N> --json headRefOid,mergeable,mergeStateStatus,statusCheckRollup`. Merge
    only when `mergeStateStatus` is `CLEAN` and `headRefOid` matches local `dev`; anything
@@ -155,8 +155,10 @@ The full sequence, once Steve asks for it:
    `git tag -a vX.Y.Z -m "QuotaStation X.Y.Z"` and `git push origin vX.Y.Z`. Tags do not
    travel with an ordinary push.
 9. Publish a GitHub release from the tag — `gh release create vX.Y.Z --title vX.Y.Z
-   --notes-file <section>` — with that version's changelog section as its notes and no
-   attached artifact. Every tag gets a release; a tag on its own is not the published record.
+   --notes-file <section>` — with that version's changelog section as its notes. Every tag
+   gets a release; a tag on its own is not the published record. Publishing it starts the
+   installer workflow; confirm that run finished and that the installer is on the release
+   before calling the release done.
 10. Reset `dev` to `main` — `git checkout dev && git reset --hard main` and
     `git push --force-with-lease origin dev` — so `dev` starts the next version even with it.
 

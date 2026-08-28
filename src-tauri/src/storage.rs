@@ -18,9 +18,9 @@ use crate::domain::{
     ResetClassification, RetentionDiagnostics, TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot,
     UsageWindowSnapshot, WindowSource,
 };
-use crate::providers::ProviderKind;
 use crate::resets::{ResetTracker, WindowObservation, detect};
 use crate::sanitize::sanitize_error;
+use crate::{domain::SharedResetEvent, providers::ProviderKind};
 
 /// The Codex daily report aggregates every service tier into one row per model, so the
 /// tier dimension of `daily_usage` records that the row spans tiers rather than guessing
@@ -36,6 +36,12 @@ pub const LOCAL_DEVICE: &str = "local";
 /// The rollout scan skips files older than its previous run, with this much overlap so a
 /// window that reset across the boundary still has an earlier reading to compare against.
 const BACKFILL_OVERLAP_HOURS: i64 = 48;
+
+/// How long quota readings are kept at the granularity they arrived at, before they become
+/// the daily summaries that replace them. This is the window an unexplained reset can still
+/// be diagnosed in, and ninety days of readings cost single-digit megabytes; fourteen meant
+/// the samples behind a restart were usually gone by the time anyone asked about it.
+const SAMPLE_HISTORY_DAYS: i64 = 90;
 
 /// How many restarts the surfaces are given. They annotate the window running now and
 /// list the ones before it, neither of which needs the whole history.
@@ -85,6 +91,7 @@ pub struct DeviceImport<'a> {
     pub source_modified_at: i64,
     pub daily: &'a [DeviceUsageRow],
     pub hourly: &'a [DeviceUsageRow],
+    pub resets: &'a [SharedResetEvent],
 }
 
 /// Which of the two usage tables a device split is being read from, and the column its
@@ -754,6 +761,42 @@ impl Storage {
         ))
     }
 
+    /// The complete account-level set, including facts learned from another device. Each
+    /// independent export therefore converges even if the original observer is offline.
+    pub async fn load_reset_export(&self) -> Result<Vec<SharedResetEvent>> {
+        let rows = sqlx::query(
+            "SELECT provider_instances.provider, window_kind, window_duration_mins, anchored_at, \
+             new_resets_at, previous_resets_at, used_percent_before, early_by_seconds, \
+             classification, source, detected_at FROM limit_resets \
+             JOIN provider_instances ON provider_instances.id = limit_resets.provider_instance_id \
+             ORDER BY provider, window_duration_mins, new_resets_at",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                Some(SharedResetEvent {
+                    provider: row.try_get("provider").ok()?,
+                    window_kind: parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?,
+                    window_duration_mins: row.try_get("window_duration_mins").ok()?,
+                    anchored_at: row.try_get("anchored_at").ok()?,
+                    new_resets_at: row.try_get("new_resets_at").ok()?,
+                    previous_resets_at: row.try_get("previous_resets_at").ok()?,
+                    used_percent_before: row.try_get("used_percent_before").ok()?,
+                    early_by_seconds: row.try_get("early_by_seconds").ok()?,
+                    classification: match row.try_get::<String, _>("classification").ok()?.as_str()
+                    {
+                        "unplanned" => ResetClassification::Unplanned,
+                        _ => ResetClassification::Scheduled,
+                    },
+                    source: row.try_get("source").ok()?,
+                    detected_at: row.try_get("detected_at").ok()?,
+                })
+            })
+            .collect())
+    }
+
     async fn load_export_rows(&self, table: &str, bucket: &str) -> Result<Vec<DeviceUsageRow>> {
         let rows = sqlx::query(&format!(
             "SELECT provider_instances.provider AS provider, {table}.{bucket} AS bucket, model, \
@@ -841,6 +884,26 @@ impl Storage {
                 .await?;
                 written += 1;
             }
+        }
+        for reset in device.resets {
+            let Some(&provider_id) = providers.get(&reset.provider) else { continue };
+            if !matches!(reset.source.as_str(), "live" | "backfill") {
+                continue;
+            }
+            let event = LimitResetEvent {
+                window_kind: reset.window_kind,
+                window_label: reset.window_kind.window_label(Some(reset.window_duration_mins)),
+                window_duration_mins: reset.window_duration_mins,
+                anchored_at: reset.anchored_at,
+                new_resets_at: reset.new_resets_at,
+                previous_resets_at: reset.previous_resets_at,
+                used_percent_before: reset.used_percent_before,
+                tokens_in_window: None,
+                early_by_seconds: reset.early_by_seconds,
+                classification: reset.classification,
+            };
+            Self::insert_reset(&mut tx, provider_id, &event, &reset.source, &reset.detected_at)
+                .await?;
         }
         for &provider_id in providers.values() {
             Self::refresh_reset_tokens(&mut tx, provider_id).await?;
@@ -972,14 +1035,14 @@ impl Storage {
             "daily",
             "%Y-%m-%dT00:00:00",
             "%Y-%m-%dT23:59:59.999999999",
-            "-14 days",
+            &format!("-{SAMPLE_HISTORY_DAYS} days"),
             now,
         )
         .await?;
 
-        sqlx::query(
-            "DELETE FROM limit_samples WHERE datetime(observed_at) < datetime(?, '-14 days')",
-        )
+        sqlx::query(&format!(
+            "DELETE FROM limit_samples WHERE datetime(observed_at) < datetime(?, '-{SAMPLE_HISTORY_DAYS} days')"
+        ))
         .bind(now)
         .execute(&mut *tx)
         .await?;
@@ -2114,6 +2177,7 @@ mod tests {
                     source_modified_at: 1,
                     daily: &daily,
                     hourly: &[],
+                    resets: &[],
                 },
                 "2026-08-03T10:01:00Z",
             )
@@ -2164,6 +2228,7 @@ mod tests {
                     source_modified_at: 1,
                     daily: &daily,
                     hourly: &hourly,
+                    resets: &[],
                 },
                 "2026-08-01T10:01:00Z",
             )
@@ -2203,6 +2268,7 @@ mod tests {
                     source_modified_at: 1,
                     daily: &daily,
                     hourly: &[],
+                    resets: &[],
                 },
                 "2026-08-01T10:01:00Z",
             )

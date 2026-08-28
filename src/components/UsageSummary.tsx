@@ -239,6 +239,7 @@ export function UsageSummary({
     ),
   }));
   const quotaMarkers: ChartMarker[] = (quotaHistory?.resets ?? []).map((reset) => ({
+    id: `${reset.windowKind}-${reset.anchoredAt}`,
     bucket: toLocalDateString(new Date(reset.anchoredAt * 1_000)),
     label: `${reset.windowLabel} restarted (${reset.classification})`,
     tone: reset.classification === "unplanned" ? "warning" : "muted",

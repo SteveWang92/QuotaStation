@@ -36,10 +36,21 @@ export interface ChartSeries {
 
 /** A dated annotation drawn on the axis rather than in the data, such as a quota restart. */
 export interface ChartMarker {
+  id: string;
   /** The bucket key the annotation sits on. */
   bucket: string;
   label: string;
   tone: "muted" | "warning";
+}
+
+export function groupChartMarkers(markers: ChartMarker[]): Map<string, ChartMarker[]> {
+  const grouped = new Map<string, ChartMarker[]>();
+  for (const marker of markers) {
+    const bucket = grouped.get(marker.bucket);
+    if (bucket) bucket.push(marker);
+    else grouped.set(marker.bucket, [marker]);
+  }
+  return grouped;
 }
 
 interface TrendChartProps {
@@ -181,7 +192,7 @@ export function TrendChart({
     event.preventDefault();
   }
 
-  const markersByBucket = new Map(markers.map((marker) => [marker.bucket, marker]));
+  const markersByBucket = groupChartMarkers(markers);
   const tooltipRows =
     tooltipIndex === null
       ? []
@@ -240,13 +251,13 @@ export function TrendChart({
                 />
               ))}
               {buckets.map((bucket, index) => {
-                const marker = markersByBucket.get(bucket);
-                if (!marker) return null;
+                const bucketMarkers = markersByBucket.get(bucket);
+                if (!bucketMarkers) return null;
+                const tone = bucketMarkers.some((marker) => marker.tone === "warning")
+                  ? "warning"
+                  : "muted";
                 return (
-                  <g
-                    key={`marker-${bucket}`}
-                    className={`chart-marker chart-marker-${marker.tone}`}
-                  >
+                  <g key={`marker-${bucket}`} className={`chart-marker chart-marker-${tone}`}>
                     <line
                       x1={bands.center(index)}
                       x2={bands.center(index)}
@@ -402,11 +413,11 @@ export function TrendChart({
                   <b>{formatValue(totals[tooltipIndex])}</b>
                 </p>
               ) : null}
-              {markersByBucket.has(buckets[tooltipIndex]) ? (
-                <p className="chart-tooltip-note">
-                  {markersByBucket.get(buckets[tooltipIndex])!.label}
+              {markersByBucket.get(buckets[tooltipIndex])?.map((marker) => (
+                <p className="chart-tooltip-note" key={marker.id}>
+                  {marker.label}
                 </p>
-              ) : null}
+              ))}
             </div>
           ) : null}
         </div>

@@ -7,6 +7,30 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-29
+
+### Added
+
+- Reset history now synchronizes through the shared usage folder.
+- Diagnostics can be exported as a redacted JSON file from the Downloads folder.
+- An About section in the settings page giving the version, copyright, licence and where the source is.
+
+### Changed
+
+- Quota readings are kept for 90 days instead of 14, so the quota chart reaches further back at full detail.
+
+### Fixed
+
+- Concurrent Claude Code sessions no longer overwrite each other's notification titles.
+- Explorer selects the application log instead of opening the wrong folder when the path contains a space.
+- Failed settings reads and reset-note saves are shown instead of failing silently.
+- Malformed shared usage aggregates and reset events are rejected before they reach local storage.
+- Multiple quota restarts in the same chart bucket are all shown in its tooltip.
+- Quota reset history stays visible and reports the storage error when a reload fails.
+- Successful diagnostics reads no longer clear unrelated refresh or event errors.
+- The usage charts no longer dim and settle every time a background refresh runs behind them.
+- The release build no longer exits when an enabled taskbar status widget is repositioned.
+
 ## [0.5.0] - 2026-08-28
 
 ### Added
@@ -169,7 +193,8 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.2.0...v0.3.0

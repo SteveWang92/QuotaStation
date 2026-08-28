@@ -10,7 +10,7 @@ import type { AppSettings } from "../types";
  * three on is a handful of notifications a day rather than one per refresh.
  */
 export function QuotaNotifications() {
-  const settings = useAppSettings();
+  const { settings } = useAppSettings();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

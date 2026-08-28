@@ -15,7 +15,7 @@ import type { AppSettings, TaskbarDisplay, ThemePreference } from "../types";
  * reason went to the log. They belong beside the other preferences.
  */
 export function GeneralSettings() {
-  const settings = useAppSettings();
+  const { settings, error: settingsError, reload: reloadSettings } = useAppSettings();
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [shortcutCreated, setShortcutCreated] = useState(false);
@@ -177,6 +177,14 @@ export function GeneralSettings() {
             Where QuotaStation shows up on this machine. Nothing here reads a provider or leaves the
             local system.
           </p>
+          {settingsError ? (
+            <p className="provider-consent-error">Settings: {settingsError}</p>
+          ) : null}
+          {settingsError ? (
+            <button type="button" onClick={() => void reloadSettings()}>
+              Retry settings
+            </button>
+          ) : null}
           {error ? <p className="provider-consent-error">{error}</p> : null}
           <div className="consent-options">
             <label>

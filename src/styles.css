@@ -533,13 +533,15 @@ button { font: inherit; }
 .diagnostic-item small { grid-column: 1 / -1; color: var(--muted); line-height: 1.35; }
 .diagnostic-item .diagnostic-error { color: var(--danger-text); }
 .diagnostic-sources { display: flex; flex-direction: column; gap: 3px; padding-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.4; }
-.diagnostic-revisions { display: flex; align-items: center; gap: 20px; padding-top: 8px; color: var(--muted); font-size: 11px; }
+.diagnostic-revisions { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; padding-top: 8px; color: var(--muted); font-size: 11px; }
 .diagnostic-devices { display: flex; flex-direction: column; gap: 5px; padding: 7px 0 3px; }
 .diagnostic-devices h3 { margin: 0 0 2px; font-size: 12px; }
 .diagnostic-device-row { min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 10px; border: 1px solid var(--line-soft); border-radius: 4px; background: var(--field); font-size: 11px; }
 .diagnostic-device-row strong, .diagnostic-device-row small { color: var(--muted); font-weight: 560; }
-.diagnostic-log { margin-left: auto; height: 28px; padding: 0 10px; border: 1px solid var(--line-quiet); border-radius: 4px; color: var(--text-dim); background: transparent; cursor: pointer; font-size: 11px; }
+.diagnostic-log { height: 28px; padding: 0 10px; border: 1px solid var(--line-quiet); border-radius: 4px; color: var(--text-dim); background: transparent; cursor: pointer; font-size: 11px; }
 .diagnostic-log:hover { border-color: var(--line-hover); background: var(--hover); }
+.diagnostic-log:disabled { cursor: wait; opacity: 0.65; }
+.diagnostic-error { flex-basis: 100%; }
 .diagnostic-revisions code { color: var(--code-text); font-family: "Cascadia Mono", Consolas, monospace; }
 .spinning { animation: spin 900ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

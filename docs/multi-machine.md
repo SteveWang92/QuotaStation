@@ -19,6 +19,10 @@ Each device writes one JSON file containing only:
 - hourly and daily token totals, grouped by provider and model; and
 - the API-equivalent cost attached to each aggregate row.
 
+It also carries confirmed quota-window reset events. Resets are account-level facts, so every
+machine merges the event set and shows one combined history; the per-window token total is
+recalculated locally from the usage aggregates available on that machine.
+
 The files never contain project names, local paths, session IDs, prompts, account details,
 credentials, source code, or raw provider logs.
 

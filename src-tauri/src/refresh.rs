@@ -12,6 +12,7 @@ use crate::{
 
 const PROVIDER_FALLBACK: &str = "Provider refresh failed";
 const STORAGE_FALLBACK: &str = "Local storage write failed";
+const RESET_HISTORY_FALLBACK: &str = "Quota reset history unavailable";
 
 /// Refreshes every enabled provider at once. A provider that fails leaves the others
 /// untouched, so one broken client never blanks the whole display.
@@ -131,16 +132,23 @@ async fn apply_live(
                 .map(storage_error);
             // Reading the restarts back after the save keeps one owner of the detection,
             // so a restart recognised by this very save is already part of the snapshot.
-            let recent_resets =
-                state.storage.load_recent_resets(provider).await.unwrap_or_default();
+            let (recent_resets, reset_error) =
+                match state.storage.load_recent_resets(provider).await {
+                    Ok(resets) => (Some(resets), None),
+                    Err(error) => {
+                        (None, Some(sanitize_error(&error.to_string(), RESET_HISTORY_FALLBACK)))
+                    }
+                };
             state
                 .with_snapshot(provider, |snapshot| {
                     snapshot.plan_type = live.plan_type;
                     snapshot.limits = live.limits;
                     snapshot.earned_reset_count = live.earned_reset_count;
                     snapshot.earned_reset_expires_at = live.earned_reset_expires_at;
-                    snapshot.recent_resets = recent_resets;
-                    snapshot.live_error = save_error;
+                    if let Some(recent_resets) = recent_resets {
+                        snapshot.recent_resets = recent_resets;
+                    }
+                    snapshot.live_error = save_error.or(reset_error);
                     if snapshot.live_error.is_none() {
                         snapshot.last_live_success_at = Some(completed_at.clone());
                     }

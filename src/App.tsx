@@ -177,7 +177,9 @@ function Dashboard() {
   const [rangeLoading, setRangeLoading] = useState(false);
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [commandError, setCommandError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [historyEventError, setHistoryEventError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
   // Settings is a page rather than an overlay: it is read and worked through — a source
   // set up, then checked, then the restart history read — and a dialog over the dashboard
@@ -196,13 +198,25 @@ function Dashboard() {
   const deviceRef = useRef<string | null>(null);
   const rangeRequested = useRef(false);
 
+  /**
+   * Reads one range. A read the reader asked for holds the charts at reduced opacity while
+   * it runs, because they asked for something else and nothing else would say so. A
+   * background read — the reconciliation poll, a session file that just changed — is
+   * invisible until its data replaces what is on screen: Codex writes its logs while it
+   * works, and dimming the dashboard every couple of seconds for a reload nobody asked for
+   * is the flicker.
+   */
   const loadUsageRange = useCallback(
-    async (range: DateRangeSelection, rangeProvider: HistoryProvider, device: string | null) => {
+    async (
+      range: DateRangeSelection,
+      rangeProvider: HistoryProvider,
+      device: string | null,
+      options?: { background?: boolean },
+    ) => {
       let resolvedRange = resolveDateRange(range);
       activeRangeRef.current = resolvedRange;
       const requestId = ++rangeRequestId.current;
-      setRangeLoading(true);
-      setRangeError(null);
+      if (options?.background !== true) setRangeLoading(true);
       // The combined view names no provider, which the core reads as every provider at once.
       const provider = rangeProvider === "all" ? null : rangeProvider;
       try {
@@ -240,10 +254,13 @@ function Dashboard() {
           setUsageHours(usage.hours);
           setQuotaHistory(quota);
           setActiveRange(resolvedRange);
+          setRangeError(null);
         }
       } catch (error) {
         if (requestId === rangeRequestId.current) setRangeError(errorMessage(error));
       } finally {
+        // Whichever read arrives last owns the display, so it is also the one that releases
+        // the hold — a foreground read superseded by a background one never would.
         if (requestId === rangeRequestId.current) setRangeLoading(false);
       }
     },
@@ -253,9 +270,9 @@ function Dashboard() {
   const loadDiagnostics = useCallback(async () => {
     try {
       setDiagnostics(await invoke<DiagnosticsSnapshot>("get_diagnostics"));
-      setCommandError(null);
+      setDiagnosticsError(null);
     } catch (error) {
-      setCommandError(errorMessage(error));
+      setDiagnosticsError(errorMessage(error));
     }
   }, []);
 
@@ -275,9 +292,14 @@ function Dashboard() {
       // calendar preset notices that midnight has passed. Without it an idle machine keeps
       // yesterday's totals under a heading that reads "Today" until something else asks for
       // a range.
-      if (!rangeRequested.current || providerChanged || hasRolledOver(activeRangeRef.current)) {
+      const firstRead = !rangeRequested.current;
+      if (firstRead || providerChanged || hasRolledOver(activeRangeRef.current)) {
         rangeRequested.current = true;
-        void loadUsageRange(activeRangeRef.current, rangeProvider, deviceRef.current);
+        // Only a repeat read is silent. The first one has nothing on screen to keep still,
+        // and hiding it would show an empty range until it arrived.
+        void loadUsageRange(activeRangeRef.current, rangeProvider, deviceRef.current, {
+          background: !firstRead,
+        });
       }
     },
     [loadDiagnostics, loadUsageRange],
@@ -322,13 +344,13 @@ function Dashboard() {
     try {
       // refresh_now publishes the new snapshot through the shared subscription.
       await invoke("refresh_now");
-      setCommandError(null);
+      setRefreshError(null);
       await Promise.all([
         loadUsageRange(activeRangeRef.current, providerRef.current, deviceRef.current),
         loadDiagnostics(),
       ]);
     } catch (error) {
-      setCommandError(errorMessage(error));
+      setRefreshError(errorMessage(error));
     } finally {
       setRefreshing(false);
     }
@@ -339,14 +361,16 @@ function Dashboard() {
     let stopListening = () => {};
     void listen("history-updated", () => {
       rangeRequested.current = true;
-      void loadUsageRange(activeRangeRef.current, providerRef.current, deviceRef.current);
+      void loadUsageRange(activeRangeRef.current, providerRef.current, deviceRef.current, {
+        background: true,
+      });
     })
       .then((unlisten) => {
         if (disposed) unlisten();
         else stopListening = unlisten;
       })
       .catch((error) => {
-        if (!disposed) setCommandError(errorMessage(error));
+        if (!disposed) setHistoryEventError(errorMessage(error));
       });
     return () => {
       disposed = true;
@@ -357,7 +381,7 @@ function Dashboard() {
   const showClaudeSettings = workspace.providers.some(
     (provider) => provider.provider === "claude" && !provider.remoteUsageOnly,
   );
-  const interfaceError = snapshotError ?? commandError;
+  const interfaceError = snapshotError ?? refreshError ?? historyEventError ?? diagnosticsError;
   // The panel is behind a control now, so anything wrong inside it has to be visible from
   // outside it; otherwise a failed acquisition path is only found by looking for it.
   // Every quota window on display right now, in the vocabulary the dismissed early-restart
