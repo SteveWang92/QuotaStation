@@ -37,6 +37,12 @@ pub const LOCAL_DEVICE: &str = "local";
 /// window that reset across the boundary still has an earlier reading to compare against.
 const BACKFILL_OVERLAP_HOURS: i64 = 48;
 
+/// How long quota readings are kept at the granularity they arrived at, before they become
+/// the daily summaries that replace them. This is the window an unexplained reset can still
+/// be diagnosed in, and ninety days of readings cost single-digit megabytes; fourteen meant
+/// the samples behind a restart were usually gone by the time anyone asked about it.
+const SAMPLE_HISTORY_DAYS: i64 = 90;
+
 /// How many restarts the surfaces are given. They annotate the window running now and
 /// list the ones before it, neither of which needs the whole history.
 const RECENT_RESET_LIMIT: i64 = 8;
@@ -972,14 +978,14 @@ impl Storage {
             "daily",
             "%Y-%m-%dT00:00:00",
             "%Y-%m-%dT23:59:59.999999999",
-            "-14 days",
+            &format!("-{SAMPLE_HISTORY_DAYS} days"),
             now,
         )
         .await?;
 
-        sqlx::query(
-            "DELETE FROM limit_samples WHERE datetime(observed_at) < datetime(?, '-14 days')",
-        )
+        sqlx::query(&format!(
+            "DELETE FROM limit_samples WHERE datetime(observed_at) < datetime(?, '-{SAMPLE_HISTORY_DAYS} days')"
+        ))
         .bind(now)
         .execute(&mut *tx)
         .await?;

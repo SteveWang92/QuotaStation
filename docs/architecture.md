@@ -141,8 +141,10 @@ The schema covers provider instances, current limits and samples, normalized dai
 aggregates, the hourly usage of the recent window, refresh runs, quota rollups, and quota
 reset events. Event-level storage and a database-resident
 pricing catalogue are not part of it: the Codex parser reports daily aggregates and
-carries its own embedded pricing map. Five-minute quota samples are retained for 14 days,
-then converted directly into daily summaries retained indefinitely. Usage is stored a second
+carries its own embedded pricing map. Five-minute quota samples are retained for 90 days,
+then converted directly into daily summaries retained indefinitely. That is long enough that
+an unexplained reset can still be examined against the readings around it months later, and
+costs single-digit megabytes. Usage is stored a second
 time at hourly resolution, because a range of a day or three says nothing as one column per
 day; those rows are retained for 14 days and then dropped rather than rolled up, since the
 daily rows already hold everything they summarise. Rollups preserve

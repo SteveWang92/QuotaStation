@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Changed
+
+- Quota readings are kept for 90 days instead of 14, so the quota chart reaches further back at full detail.
+
 ## [0.5.0] - 2026-08-28
 
 ### Added
