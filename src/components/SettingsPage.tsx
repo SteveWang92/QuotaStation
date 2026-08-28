@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { DiagnosticsSnapshot, ProviderSnapshot } from "../types";
+import { AboutPanel } from "./AboutPanel";
 import { ClaudeFinishedNotifications, ClaudeStatusLine } from "./ClaudeStatusLine";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { GeneralSettings } from "./GeneralSettings";
@@ -20,6 +21,7 @@ const SECTIONS = [
   { id: "sources", label: "Quota sources" },
   { id: "resets", label: "Reset history" },
   { id: "diagnostics", label: "Diagnostics" },
+  { id: "about", label: "About" },
 ] as const;
 
 /**
@@ -117,6 +119,10 @@ export function SettingsPage({
             providers={providers}
             interfaceError={interfaceError}
           />
+        </section>
+        <section id="about" aria-label="About">
+          <h3 className="settings-section-heading">About</h3>
+          <AboutPanel appVersion={diagnostics.appVersion} buildCommit={diagnostics.buildCommit} />
         </section>
       </div>
     </div>
