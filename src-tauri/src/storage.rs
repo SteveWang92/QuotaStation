@@ -48,11 +48,14 @@ const RESET_COLUMNS: &str = "window_kind, window_duration_mins, anchored_at, new
     used_percent_before, tokens_in_window, early_by_seconds, classification";
 
 /// The restart before this one of the same window, which is where the window this one
-/// closed began. `NULL` for the first restart recorded of a window.
+/// closed began. `NULL` for the first restart recorded of a window. A window is identified
+/// by its duration rather than its slot, because Codex moves one between primary and
+/// secondary: matching on the slot pairs a weekly restart with a five-hour one and shortens
+/// the window it closed to a few hours.
 const RESET_PREVIOUS_ANCHOR: &str = "( \
       SELECT previous.anchored_at FROM limit_resets AS previous \
       WHERE previous.provider_instance_id = limit_resets.provider_instance_id \
-      AND previous.window_kind = limit_resets.window_kind \
+      AND previous.window_duration_mins = limit_resets.window_duration_mins \
       AND previous.anchored_at < limit_resets.anchored_at \
       ORDER BY previous.anchored_at DESC LIMIT 1)";
 
@@ -2652,6 +2655,88 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].anchored_at, second, "the newest restart is listed first");
         assert_eq!(events[0].tokens_in_window, Some(500));
+    }
+
+    /// Codex moves a window between the primary and secondary slot, so the restart before
+    /// this one is the one of the same length rather than the one in the same slot. Pairing
+    /// by slot hands the weekly window the five-hour restart that happened in between and
+    /// reports a couple of hours of work as everything the week carried.
+    #[tokio::test]
+    async fn a_weekly_window_is_paired_with_the_weekly_restart_before_it() {
+        let (storage, _database) = open_storage().await;
+        let (_, week_first) = yesterday_at(4);
+        let (early, _) = yesterday_at(5);
+        let (_, five_hour) = yesterday_at(9);
+        let (late, _) = yesterday_at(10);
+        let (_, week_second) = yesterday_at(11);
+        let window = |observed_at, kind, used_percent, window_duration_mins, resets_at| {
+            WindowObservation { observed_at, kind, used_percent, window_duration_mins, resets_at }
+        };
+        storage
+            .backfill_resets(
+                CODEX,
+                &[
+                    // The weekly window starts in the secondary slot and comes back in the
+                    // primary one, with a five-hour restart of its own in between.
+                    window(
+                        week_first - 600,
+                        LimitKind::Secondary,
+                        60.0,
+                        10_080,
+                        week_first + 1_200,
+                    ),
+                    window(
+                        week_first + 600,
+                        LimitKind::Secondary,
+                        1.0,
+                        10_080,
+                        week_first + 604_800,
+                    ),
+                    window(five_hour - 600, LimitKind::Primary, 80.0, 300, five_hour + 1_200),
+                    window(five_hour + 600, LimitKind::Primary, 2.0, 300, five_hour + 18_000),
+                    window(
+                        week_second - 600,
+                        LimitKind::Primary,
+                        70.0,
+                        10_080,
+                        week_second + 1_200,
+                    ),
+                    window(
+                        week_second + 600,
+                        LimitKind::Primary,
+                        3.0,
+                        10_080,
+                        week_second + 604_800,
+                    ),
+                ],
+                "2026-08-20T12:00:00Z",
+            )
+            .await
+            .expect("record the restarts");
+        let date = jiff::Zoned::now().date().yesterday().expect("a previous day").to_string();
+        storage
+            .save_history(
+                CODEX,
+                &HistorySnapshot {
+                    days: vec![day(&date, "gpt-5-codex", 500)],
+                    hours: vec![hour(&early, "gpt-5-codex", 200), hour(&late, "gpt-5-codex", 300)],
+                },
+                "Australia/Sydney",
+                "2026-08-20T12:00:00Z",
+            )
+            .await
+            .expect("save history");
+
+        let events = storage.load_recent_resets(CODEX).await.expect("load resets");
+        let weekly = events
+            .iter()
+            .find(|event| event.anchored_at == week_second)
+            .expect("the second weekly restart");
+        assert_eq!(
+            weekly.tokens_in_window,
+            Some(500),
+            "the week runs from the weekly restart, not from the five-hour one inside it",
+        );
     }
 
     /// A restart that went unrecorded leaves a gap far longer than the window it closed, and
