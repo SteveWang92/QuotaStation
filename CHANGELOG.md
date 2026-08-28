@@ -9,7 +9,7 @@ on `main`, with the matching section below as its notes.
 
 ### Added
 
-- Reset history now synchronizes through the shared usage folder and Codex status-line layout can be managed from Settings.
+- Reset history now synchronizes through the shared usage folder.
 
 ### Changed
 
@@ -19,7 +19,6 @@ on `main`, with the matching section below as its notes.
 
 - The usage charts no longer dim and settle every time a background refresh runs behind them.
 - The release build no longer exits when an enabled taskbar status widget is repositioned.
-- Opening Settings no longer exits when the Codex config has no `[tui]` section.
 
 ## [0.5.0] - 2026-08-28
 
