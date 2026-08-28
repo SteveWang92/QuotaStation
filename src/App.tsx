@@ -290,10 +290,13 @@ function Dashboard() {
       // calendar preset notices that midnight has passed. Without it an idle machine keeps
       // yesterday's totals under a heading that reads "Today" until something else asks for
       // a range.
-      if (!rangeRequested.current || providerChanged || hasRolledOver(activeRangeRef.current)) {
+      const firstRead = !rangeRequested.current;
+      if (firstRead || providerChanged || hasRolledOver(activeRangeRef.current)) {
         rangeRequested.current = true;
+        // Only a repeat read is silent. The first one has nothing on screen to keep still,
+        // and hiding it would show an empty range until it arrived.
         void loadUsageRange(activeRangeRef.current, rangeProvider, deviceRef.current, {
-          background: true,
+          background: !firstRead,
         });
       }
     },
