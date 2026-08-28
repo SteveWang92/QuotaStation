@@ -11,6 +11,10 @@ on `main`, with the matching section below as its notes.
 
 - Quota readings are kept for 90 days instead of 14, so the quota chart reaches further back at full detail.
 
+### Fixed
+
+- The usage charts no longer dim and settle every time a background refresh runs behind them.
+
 ## [0.5.0] - 2026-08-28
 
 ### Added

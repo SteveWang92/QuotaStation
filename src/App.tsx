@@ -196,13 +196,25 @@ function Dashboard() {
   const deviceRef = useRef<string | null>(null);
   const rangeRequested = useRef(false);
 
+  /**
+   * Reads one range. A read the reader asked for holds the charts at reduced opacity while
+   * it runs, because they asked for something else and nothing else would say so. A
+   * background read — the reconciliation poll, a session file that just changed — is
+   * invisible until its data replaces what is on screen: Codex writes its logs while it
+   * works, and dimming the dashboard every couple of seconds for a reload nobody asked for
+   * is the flicker.
+   */
   const loadUsageRange = useCallback(
-    async (range: DateRangeSelection, rangeProvider: HistoryProvider, device: string | null) => {
+    async (
+      range: DateRangeSelection,
+      rangeProvider: HistoryProvider,
+      device: string | null,
+      options?: { background?: boolean },
+    ) => {
       let resolvedRange = resolveDateRange(range);
       activeRangeRef.current = resolvedRange;
       const requestId = ++rangeRequestId.current;
-      setRangeLoading(true);
-      setRangeError(null);
+      if (options?.background !== true) setRangeLoading(true);
       // The combined view names no provider, which the core reads as every provider at once.
       const provider = rangeProvider === "all" ? null : rangeProvider;
       try {
@@ -240,10 +252,13 @@ function Dashboard() {
           setUsageHours(usage.hours);
           setQuotaHistory(quota);
           setActiveRange(resolvedRange);
+          setRangeError(null);
         }
       } catch (error) {
         if (requestId === rangeRequestId.current) setRangeError(errorMessage(error));
       } finally {
+        // Whichever read arrives last owns the display, so it is also the one that releases
+        // the hold — a foreground read superseded by a background one never would.
         if (requestId === rangeRequestId.current) setRangeLoading(false);
       }
     },
@@ -277,7 +292,9 @@ function Dashboard() {
       // a range.
       if (!rangeRequested.current || providerChanged || hasRolledOver(activeRangeRef.current)) {
         rangeRequested.current = true;
-        void loadUsageRange(activeRangeRef.current, rangeProvider, deviceRef.current);
+        void loadUsageRange(activeRangeRef.current, rangeProvider, deviceRef.current, {
+          background: true,
+        });
       }
     },
     [loadDiagnostics, loadUsageRange],
@@ -339,7 +356,9 @@ function Dashboard() {
     let stopListening = () => {};
     void listen("history-updated", () => {
       rangeRequested.current = true;
-      void loadUsageRange(activeRangeRef.current, providerRef.current, deviceRef.current);
+      void loadUsageRange(activeRangeRef.current, providerRef.current, deviceRef.current, {
+        background: true,
+      });
     })
       .then((unlisten) => {
         if (disposed) unlisten();
