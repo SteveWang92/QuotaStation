@@ -63,7 +63,7 @@ and the SQLite layer, including that migrations apply and that a history refresh
 only the days it parsed:
 
 ```powershell
-cargo test --manifest-path src-tauri/Cargo.toml
+npm run test:core
 ```
 
 Check the renderer's formatting, import order, and lint rules. `npm run format` writes what
@@ -78,8 +78,14 @@ warning as an error, and `cargo fmt --manifest-path src-tauri/Cargo.toml` writes
 formatting:
 
 ```powershell
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+npm run fmt:core
+npm run lint:core
+```
+
+Run every renderer and core gate together before a release pull request with:
+
+```powershell
+npm run verify
 ```
 
 Both suites and both lint gates, plus the renderer build, run on a Windows runner for the
@@ -94,11 +100,11 @@ but the result cannot be run. Each row states what lands on disk and what it is 
 | Command | Produces | Use it for |
 | --- | --- | --- |
 | `npm run build` | `dist/` — the compiled renderer only | Type-checking and bundling the interface. Produces no executable |
-| `cargo check --manifest-path src-tauri/Cargo.toml` | Nothing on disk | Confirming the core compiles, faster than a build |
+| `npm run check:core` | Nothing on disk | Confirming the core compiles, faster than a build |
 | `npm run tauri dev` | A running application, plus a **dev-server-bound** `src-tauri/target/debug/quotastation.exe` | Development and diagnosis. See the caution below |
-| `npm run tauri -- build --debug --no-bundle` | `src-tauri/target/debug/quotastation.exe`, standalone | A runnable build with debug assertions and symbols |
-| `npm run tauri build -- --no-bundle` | `src-tauri/target/release/quotastation.exe`, standalone | The optimized application, run straight from `target/` |
-| `npm run tauri -- build --bundles nsis` | An NSIS installer under `src-tauri/target/release/bundle/nsis/` | Distribution only, as part of an explicitly requested release |
+| `npm run build:debug` | `src-tauri/target/debug/quotastation.exe`, standalone | A runnable build with debug assertions and symbols |
+| `npm run build:release` | `src-tauri/target/release/quotastation.exe`, standalone | The optimized application, run straight from `target/` |
+| `npm run build:installer` | An NSIS installer under `src-tauri/target/release/bundle/nsis/` | Distribution only, as part of an explicitly requested release |
 
 `src-tauri/target/release/quotastation.exe` is the copy the application is actually run
 from between releases, so it is the one a finished change is rebuilt and relaunched as. The
