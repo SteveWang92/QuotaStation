@@ -2,8 +2,9 @@
 
 ## Supported versions
 
-QuotaStation has not published a release yet. Supported-version information will be added
-with the first public release.
+Only the most recent released version receives fixes. Released versions are the `vX.Y.Z`
+tags on `main`, listed on the [releases page](https://github.com/SteveWang92/QuotaStation/releases);
+older versions are not patched, so upgrade before reporting a problem with one of them.
 
 ## Reporting a vulnerability
 

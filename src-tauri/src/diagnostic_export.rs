@@ -214,7 +214,7 @@ mod tests {
             retention: RetentionDiagnostics {
                 status: "pending".to_string(),
                 last_completed_at: None,
-                error: Some("Private computer at C:\\Users\\Steve".to_string()),
+                error: Some("Private computer at C:\\Users\\owner".to_string()),
             },
             shared_folder: SharedFolderDiagnostics::default(),
             devices: vec![DeviceDiagnostics {
@@ -235,7 +235,7 @@ mod tests {
         let json = serde_json::to_string(&export).expect("serialize export");
         assert!(!json.contains("secret-device-id"));
         assert!(!json.contains("Private computer"));
-        assert!(!json.contains("C:\\Users\\Steve"));
+        assert!(!json.contains("C:\\Users\\owner"));
         assert!(!json.contains("devices"));
     }
 }
