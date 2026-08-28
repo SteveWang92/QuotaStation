@@ -21,7 +21,7 @@ use crate::settings::AppSettings;
 
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -466,10 +466,26 @@ fn reveal_log_file() -> Result<(), String> {
     let path = log::log_path().ok_or_else(|| "No application data directory.".to_string())?;
     // Selecting the file rather than opening it: the log is read with whatever the user
     // prefers, and a missing file still lands them in the right folder.
-    std::process::Command::new("explorer.exe")
-        .arg(format!("/select,{}", path.display()))
-        .spawn()
-        .map_err(|error| error.to_string())?;
+    select_in_explorer(&path).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Shows a file selected in Explorer.
+///
+/// Explorer parses its own raw command line and ignores a `/select,` token that starts
+/// with a quote. Rust quotes a whole argument that contains a space, which a user profile
+/// name or a typed filename easily does, so the path is quoted inside the argument here
+/// instead.
+fn select_in_explorer(path: &Path) -> std::io::Result<()> {
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.raw_arg(format!("/select,\"{}\"", path.display()));
+    }
+    #[cfg(not(windows))]
+    command.arg(format!("/select,{}", path.display()));
+    command.spawn()?;
     Ok(())
 }
 
@@ -712,9 +728,7 @@ async fn export_diagnostics(
 /// Reveals the export the user just created without opening its contents.
 #[tauri::command]
 fn reveal_export_file(path: String) -> Result<(), String> {
-    std::process::Command::new("explorer.exe")
-        .arg(format!("/select,{}", path))
-        .spawn()
+    select_in_explorer(Path::new(&path))
         .map_err(|_| "The exported file could not be shown in Explorer.".to_string())?;
     Ok(())
 }
