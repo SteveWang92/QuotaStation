@@ -178,6 +178,32 @@ set `QUOTASTATION_CODEX_EXECUTABLE` in the launching shell. Do not put machine-s
 paths into committed files; any local configuration file must contain `.local` in its
 filename.
 
+## Demonstration data
+
+A screenshot of QuotaStation is a screenshot of somebody's quota and somebody's working day,
+which is not something to publish. `--demo` starts the application against a fictional
+fortnight instead:
+
+```powershell
+cargo run --example seed_demo --manifest-path src-tauri/Cargo.toml
+src-tauri\target\release\quotastation.exe --demo
+```
+
+The seeder writes `quotastation-demo.db` and `settings-demo.json` beside the real pair in the
+application data directory, through the same storage code the application writes with, so a
+seeded database is always one the current schema can open. Re-running it replaces the
+demonstration rather than adding to it, and the data is generated from a fixed seed, so a
+screenshot can be retaken later and match.
+
+A demo instance reads no provider at all: no refresh, no session watcher, no polling. That is
+the point — the first refresh would replace the seeded readings with this machine's real
+usage seconds after the window opened. It also stays out of the single-instance handover, so
+it can run beside the real application, and it writes to its own database and settings file,
+so nothing it does touches the history being kept.
+
+Every surface is fed from it, including the tray, the quick panel and the taskbar widget,
+because all three draw the same snapshot the core restored at startup.
+
 ## Local data
 
 Normalized data is stored in the application data directory at:

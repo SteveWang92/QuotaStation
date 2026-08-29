@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Added
+
+- A `--demo` start shows a fictional workspace, so a screenshot of the application exposes nobody's usage.
+
 ## [0.6.0] - 2026-08-29
 
 ### Added
