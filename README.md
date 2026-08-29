@@ -1,5 +1,7 @@
 # QuotaStation
 
+[![CI](https://github.com/SteveWang92/QuotaStation/actions/workflows/ci.yml/badge.svg)](https://github.com/SteveWang92/QuotaStation/actions/workflows/ci.yml)
+
 Local-first AI usage, quota, reset, and cost monitoring for Windows.
 
 QuotaStation is an open-source Windows application that brings live subscription
@@ -28,6 +30,22 @@ What it does today:
 - Redacted acquisition, watcher, retention, and pricing diagnostics
 - Local-first storage with no prompt or source-code upload, and no network request of its own
 
+## Install
+
+Download the latest `QuotaStation_X.Y.Z_x64-setup.exe` from the
+[releases page](https://github.com/SteveWang92/QuotaStation/releases/latest) and run it. It
+installs for the current user and needs no administrator rights.
+
+QuotaStation runs on Windows 10 or later on x64 with the WebView2 runtime, which Windows 11
+supplies, and reports on the supported clients already installed and signed in on that
+machine: the Codex CLI on `PATH`, and Claude Code. It reads what those clients write locally
+and changes nothing about them.
+
+The installer is unsigned, so Windows SmartScreen warns about each new version until enough
+people have downloaded it; **More info** then **Run anyway** dismisses the warning.
+[Development](docs/development.md#packaging-and-distribution) explains why QuotaStation
+carries no code-signing certificate.
+
 ## Principles
 
 - **Local first:** usage data and history remain on the user's computer.
@@ -54,5 +72,7 @@ consumes one normalized provider model owned by the core. See
 [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 ## License
+
+Copyright (C) 2026 Steve Wang.
 
 QuotaStation is licensed under the [GNU Affero General Public License v3.0 only](LICENSE).
