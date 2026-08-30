@@ -512,6 +512,22 @@ fn reveal_log_file() -> Result<(), String> {
     Ok(())
 }
 
+/// Opens QuotaStation's data directory without returning its machine-specific path to the
+/// renderer. The directory already exists by the time Settings can be opened.
+#[tauri::command]
+fn open_data_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let path = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    open_in_explorer(&path).map_err(|error| error.to_string())
+}
+
+/// Opens the public release page in the default browser. The URL is fixed in the core so
+/// the renderer cannot turn this narrow action into an arbitrary shell launch.
+#[tauri::command]
+fn open_latest_release() -> Result<(), String> {
+    open_with_explorer("https://github.com/SteveWang92/QuotaStation/releases/latest")
+        .map_err(|error| error.to_string())
+}
+
 /// Shows a file selected in Explorer.
 ///
 /// Explorer parses its own raw command line and ignores a `/select,` token that starts
@@ -528,6 +544,15 @@ fn select_in_explorer(path: &Path) -> std::io::Result<()> {
     #[cfg(not(windows))]
     command.arg(format!("/select,{}", path.display()));
     command.spawn()?;
+    Ok(())
+}
+
+fn open_in_explorer(path: &Path) -> std::io::Result<()> {
+    open_with_explorer(path.as_os_str())
+}
+
+fn open_with_explorer(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
+    std::process::Command::new("explorer.exe").arg(target).spawn()?;
     Ok(())
 }
 
@@ -1469,6 +1494,8 @@ pub fn run() {
             reveal_export_file,
             get_log_available,
             reveal_log_file,
+            open_data_folder,
+            open_latest_release,
             get_claude_status_line,
             set_claude_status_line,
             get_claude_notifications,

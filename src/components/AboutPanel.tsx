@@ -1,3 +1,7 @@
+import { invoke } from "@tauri-apps/api/core";
+import { useState } from "react";
+import { errorMessage } from "../errors";
+
 /**
  * What the AGPL calls Appropriate Legal Notices: the program's name and version, its
  * copyright, the license it is offered under, the absence of a warranty, and where the
@@ -16,6 +20,17 @@ export function AboutPanel({
   appVersion: string;
   buildCommit: string;
 }) {
+  const [openError, setOpenError] = useState<string | null>(null);
+
+  const open = async (command: "open_data_folder" | "open_latest_release") => {
+    setOpenError(null);
+    try {
+      await invoke(command);
+    } catch (cause) {
+      setOpenError(errorMessage(cause));
+    }
+  };
+
   return (
     <section className="provider-consent" aria-label="About QuotaStation">
       <div className="provider-consent-body">
@@ -39,6 +54,15 @@ export function AboutPanel({
           Installing a newer release keeps your settings and history. Uninstalling keeps them too
           unless you select <strong>Delete app data</strong> in the uninstaller.
         </p>
+        {openError ? <p className="provider-consent-error">{openError}</p> : null}
+      </div>
+      <div className="about-actions">
+        <button type="button" onClick={() => void open("open_data_folder")}>
+          Open data folder
+        </button>
+        <button type="button" onClick={() => void open("open_latest_release")}>
+          View latest release
+        </button>
       </div>
     </section>
   );

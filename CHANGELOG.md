@@ -10,6 +10,7 @@ on `main`, with the matching section below as its notes.
 ### Added
 
 - A `--demo` option fills the application with fictional data for screenshots and demonstrations.
+- The About section can open the local data folder and the latest release page.
 
 ### Changed
 
