@@ -65,7 +65,8 @@
     "longDescription": "QuotaStation tracks Codex and Claude Code quotas and local usage without uploading private session data.",
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "windows/installer-hooks.nsh"
       }
     }
   }

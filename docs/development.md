@@ -150,6 +150,14 @@ been checked. Managed Windows policies may block that choice. Nothing in the bui
 bypass the warning; the installer is built by GitHub Actions from the source tag attached to
 the same release.
 
+Installing a newer version keeps the application data and external integrations in place. On
+a full uninstall, the NSIS pre-uninstall hook runs the installed executable with
+`--uninstall-cleanup`; that mode removes only QuotaStation's own Claude Code status line and
+`Stop` hook, then exits before Tauri starts. NSIS owns the Windows startup entry and shortcuts
+and removes them itself. The uninstaller leaves `%APPDATA%\me.stevewang.quotastation` in place
+unless the user selects **Delete app data**, so reinstalling normally restores the previous
+history and settings.
+
 ## Application icon
 
 `src-tauri/icons/` holds the square `app-icon.png` master artwork, the crisp

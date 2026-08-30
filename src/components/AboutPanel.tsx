@@ -35,6 +35,10 @@ export function AboutPanel({
           The reused open-source components, their pinned revisions and their licenses are listed in{" "}
           <code>THIRD_PARTY_NOTICES.md</code> in that repository.
         </p>
+        <p>
+          Installing a newer release keeps your settings and history. Uninstalling keeps them too
+          unless you select <strong>Delete app data</strong> in the uninstaller.
+        </p>
       </div>
     </section>
   );

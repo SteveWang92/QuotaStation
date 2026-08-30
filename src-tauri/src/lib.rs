@@ -40,6 +40,37 @@ use domain::{
 use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
 
+/// The NSIS uninstaller's private entry point. It is deliberately not a general cleanup
+/// command: upgrades must keep every integration, and a normal launch must never change
+/// another program's settings.
+const UNINSTALL_CLEANUP_ARG: &str = "--uninstall-cleanup";
+
+/// Removes the external commands QuotaStation registered in Claude Code, and reports an
+/// exit code only when this process was started by the uninstaller.
+///
+/// Both removers inspect the current Claude Code settings and delete only commands carrying
+/// QuotaStation's own arguments. A malformed or concurrently changed file fails visibly to
+/// NSIS instead of replacing the file or disturbing another hook.
+pub fn run_uninstall_cleanup() -> Option<i32> {
+    if !std::env::args_os().any(|argument| argument == UNINSTALL_CLEANUP_ARG) {
+        return None;
+    }
+    let mut failed = false;
+    for (name, result) in [
+        ("Claude Code status line", statusline::remove()),
+        ("Claude Code notification hook", notifications::remove()),
+    ] {
+        match result {
+            Ok(()) => log::write(format!("uninstall removed the {name}")),
+            Err(error) => {
+                failed = true;
+                log::write(format!("uninstall could not remove the {name}: {error:#}"));
+            }
+        }
+    }
+    Some(if failed { 1 } else { 0 })
+}
+
 /// Gives this machine an identity in a shared usage folder if it has not got one yet.
 ///
 /// Generated once and then kept for good: another machine stores this machine's aggregates

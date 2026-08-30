@@ -49,6 +49,11 @@ that the download came from this repository. Some managed computers may block un
 entirely. [Development](docs/development.md#packaging-and-distribution) explains the signing
 decision.
 
+Install a newer release over the existing one to update without losing settings or history.
+Uninstalling removes QuotaStation's shortcuts, Windows startup entry, and the Claude Code
+status line or notification hook it installed. Local history and settings are kept by default;
+select **Delete app data** in the uninstaller if you want those removed too.
+
 ## Privacy
 
 - Usage history, quota readings, settings, and logs stay on the local computer.

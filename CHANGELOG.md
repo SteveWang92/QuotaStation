@@ -11,6 +11,10 @@ on `main`, with the matching section below as its notes.
 
 - A `--demo` option fills the application with fictional data for screenshots and demonstrations.
 
+### Changed
+
+- Uninstalling removes QuotaStation's Claude Code integrations while keeping local history and settings unless their deletion is selected.
+
 ## [0.6.0] - 2026-08-29
 
 ### Added
