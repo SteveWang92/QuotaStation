@@ -38,10 +38,20 @@
 
   // Nothing in this repository formats these, so saving must not hand them to whichever
   // extension happens to claim them. The documentation in particular is wrapped by hand.
-  "[markdown]": { "editor.formatOnSave": false },
+  "[markdown]": {
+    "editor.formatOnSave": false,
+    "files.trimTrailingWhitespace": false
+  },
   "[yaml]": { "editor.formatOnSave": false },
   "[toml]": { "editor.formatOnSave": false },
   "[sql]": { "editor.formatOnSave": false },
+
+  // Match .gitattributes and .editorconfig without depending on an extension. Markdown
+  // is exempt from the trim: two trailing spaces are a hard line break there.
+  "files.eol": "
+",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
 
   // The TypeScript version the build uses, so the editor reports the same errors CI does.
   "typescript.tsdk": "node_modules/typescript/lib"
