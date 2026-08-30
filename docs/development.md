@@ -81,6 +81,13 @@ npm run fmt:core
 npm run lint:core
 ```
 
+`.vscode/settings.json` and `.vscode/extensions.json` are committed so an editor formats
+this repository the way the gates do: Biome for the interface, resolved from `node_modules`
+rather than a global install, and rustfmt through rust-analyzer for the core. They also
+switch a globally installed Prettier off for this workspace and stop format-on-save from
+touching Markdown, YAML, TOML and SQL, none of which anything here formats — the
+documentation is wrapped by hand. Nothing else under `.vscode/` is shared.
+
 Run every interface and core check together before a release pull request with:
 
 ```powershell

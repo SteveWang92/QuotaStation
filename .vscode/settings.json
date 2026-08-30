@@ -1,0 +1,48 @@
+{
+  // Shared workspace settings, committed so that every editor formats this repository the
+  // way its gates do. Without them a globally installed Prettier claims these files and
+  // rewrites what `npm run lint` then rejects.
+
+  // Biome is the interface formatter, linter and import sorter. The extension resolves the
+  // binary from node_modules, so it is the version pinned in package.json rather than
+  // whatever is installed globally.
+  "editor.defaultFormatter": "biomejs.biome",
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.biome": "explicit",
+    "source.organizeImports.biome": "explicit"
+  },
+
+  // Prettier is not a dependency here and disagrees with this repository on purpose: it
+  // reflows the hand-wrapped documentation and expands the stylesheet's one-rule-per-line
+  // layout. A globally installed Prettier extension is switched off for this workspace.
+  "prettier.enable": false,
+
+  // Named per language as well, because a language-specific default set in a user profile
+  // beats a workspace-wide one.
+  "[typescript]": { "editor.defaultFormatter": "biomejs.biome" },
+  "[typescriptreact]": { "editor.defaultFormatter": "biomejs.biome" },
+  "[javascript]": { "editor.defaultFormatter": "biomejs.biome" },
+  "[json]": { "editor.defaultFormatter": "biomejs.biome" },
+  "[jsonc]": { "editor.defaultFormatter": "biomejs.biome" },
+  // The stylesheet is linted but deliberately not formatted; `biome.jsonc` says why. Biome
+  // honours that, so saving leaves it as written instead of expanding it.
+  "[css]": { "editor.defaultFormatter": "biomejs.biome" },
+
+  // The core is formatted by rustfmt through rust-analyzer, which reads rustfmt.toml.
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.formatOnSave": true
+  },
+  "rust-analyzer.linkedProjects": ["src-tauri/Cargo.toml"],
+
+  // Nothing in this repository formats these, so saving must not hand them to whichever
+  // extension happens to claim them. The documentation in particular is wrapped by hand.
+  "[markdown]": { "editor.formatOnSave": false },
+  "[yaml]": { "editor.formatOnSave": false },
+  "[toml]": { "editor.formatOnSave": false },
+  "[sql]": { "editor.formatOnSave": false },
+
+  // The TypeScript version the build uses, so the editor reports the same errors CI does.
+  "typescript.tsdk": "node_modules/typescript/lib"
+}
