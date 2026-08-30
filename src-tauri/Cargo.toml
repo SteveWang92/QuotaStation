@@ -1,6 +1,6 @@
 [package]
 name = "quotastation"
-version = "0.6.0"
+version = "1.0.0"
 description = "Windows app for tracking AI coding quotas, usage, reset times, and estimated API costs"
 authors = ["Steve Wang <contact@stevewang.me>"]
 edition = "2024"
