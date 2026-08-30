@@ -61,8 +61,8 @@
     "icon": ["icons/icon.ico"],
     "publisher": "Steve Wang",
     "copyright": "Copyright © 2026 Steve Wang",
-    "shortDescription": "Local-first AI quota and usage monitoring",
-    "longDescription": "QuotaStation monitors Codex quota windows and local usage history without uploading private session data.",
+    "shortDescription": "AI coding quota and usage monitoring for Windows",
+    "longDescription": "QuotaStation tracks Codex and Claude Code quotas and local usage without uploading private session data.",
     "windows": {
       "nsis": {
         "installMode": "currentUser"

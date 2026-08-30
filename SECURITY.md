@@ -16,8 +16,8 @@ Include a concise description, affected component, reproduction conditions, and 
 Remove credentials, account identifiers, prompts, source code, and private paths from the
 report. You can expect an acknowledgement within seven days.
 
-## Security boundary
+## What QuotaStation can access
 
-QuotaStation is intended to read usage and entitlement information without modifying
-provider accounts. Credential material must remain in the provider's client or operating
-system credential store and must not be written to QuotaStation history or diagnostics.
+QuotaStation reads usage and quota information without changing provider accounts.
+Credentials stay in the provider client or operating-system credential store and are never
+written to QuotaStation history or diagnostics.

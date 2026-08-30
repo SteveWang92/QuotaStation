@@ -8,7 +8,7 @@ body:
     id: problem
     attributes:
       label: Problem
-      description: What monitoring or analysis need is not currently met?
+      description: What are you trying to monitor or understand that QuotaStation does not support?
     validations:
       required: true
   - type: textarea
@@ -34,4 +34,4 @@ body:
     id: privacy
     attributes:
       label: Privacy or compatibility considerations
-      description: Note any credential, local-data, provider-interface, or licensing concerns.
+      description: Note any concerns about credentials, local data, provider APIs, or licenses.

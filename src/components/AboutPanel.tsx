@@ -1,6 +1,6 @@
 /**
  * What the AGPL calls Appropriate Legal Notices: the program's name and version, its
- * copyright, the licence it is offered under, the absence of a warranty, and where the
+ * copyright, the license it is offered under, the absence of a warranty, and where the
  * corresponding source is. Section 5(d) requires an interactive program to display these,
  * and a desktop application has nowhere to display them but a surface like this one.
  *
@@ -29,10 +29,10 @@ export function AboutPanel({
           no warranty, to the extent permitted by law.
         </p>
         <p>
-          Source code and the full licence text: <code>github.com/SteveWang92/QuotaStation</code>
+          Source code and the full license text: <code>github.com/SteveWang92/QuotaStation</code>
         </p>
         <p>
-          The reused open-source components, their pinned revisions and their licences are listed in{" "}
+          The reused open-source components, their pinned revisions and their licenses are listed in{" "}
           <code>THIRD_PARTY_NOTICES.md</code> in that repository.
         </p>
       </div>

@@ -1,6 +1,6 @@
 ## Outcome
 
-<!-- What user-visible or maintainability outcome does this change deliver? -->
+<!-- What changes for users or maintainers? -->
 
 ## Scope
 
@@ -12,4 +12,4 @@
 
 ## Privacy and compatibility
 
-<!-- Note credential, local-data, provider-interface, migration, or license implications. -->
+<!-- Note any effect on credentials, local data, provider APIs, migrations, or licenses. -->

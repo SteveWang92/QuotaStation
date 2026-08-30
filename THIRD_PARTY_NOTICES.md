@@ -1,6 +1,6 @@
 # Third-party notices
 
-QuotaStation includes source code from the following project.
+QuotaStation includes source code and data from the projects below.
 
 ## ccusage
 
@@ -12,11 +12,9 @@ QuotaStation includes source code from the following project.
 - Copyright: Copyright (c) 2025 ryoppippi
 - Local use: Codex and Claude Code session discovery, parsing, replay/fork deduplication,
   aggregation, service-tier interpretation, and cost calculation
-- Local modifications: each adapter exposes narrow read-only functions for its resolved usage
-  directories and whether they contain session records, so QuotaStation's watcher and provider
-  detection follow the exact same discovery rules as the parser; the Claude adapter also
-  reports its existing daily parse grouped by local hour, so the hourly and daily views of the
-  same sessions are produced by one load, one deduplication and one accumulator
+- Local modifications: the adapters expose read-only helpers for locating usage directories
+  and checking whether they contain session records. The Claude adapter also groups its daily
+  results by local hour, allowing one parse to produce both hourly and daily history
 
 The vendored subset omits upstream tests and `insta` snapshot fixtures because they are not
 part of QuotaStation's dependency build. They remain available from the pinned upstream
@@ -26,8 +24,8 @@ The complete upstream MIT license is preserved at `vendor/ccusage/LICENSE`.
 
 QuotaStation reuses ccusage's build-time pricing integration, and supplies the catalog from
 the vendored snapshot described below instead of ccusage's optional downloader. The pinned
-source revision is exposed in the UI for provenance. Updating the reviewed ccusage revision
-also updates this price-source pin without maintaining model prices by hand.
+source revision is shown in Diagnostics. Updating the reviewed ccusage revision also updates
+the pricing revision without maintaining model prices by hand.
 
 QuotaStation does not include ccusage telemetry, credential handling, or upload behavior.
 
@@ -59,9 +57,9 @@ directory that license carves out, so the MIT terms apply to it.
 - Copyright: Copyright (c) 2025 Craig Constable
 - Local use: locating the Windows taskbar and notification area, converting the Tauri status
   window into a non-activating taskbar child, and positioning it beside the notification area
-- Local modifications: provider, credential, polling, rendering, settings, update, localization,
-  and native tray implementations are excluded; QuotaStation renders its shared normalized
-  snapshot through the existing Tauri React surface
+- Local modifications: provider, credential, polling, rendering, settings, update,
+  localization, and tray code are excluded. QuotaStation uses only the Windows taskbar
+  integration with its existing Tauri and React interface
 
 The upstream MIT license text is reproduced below:
 

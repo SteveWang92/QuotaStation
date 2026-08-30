@@ -1,148 +1,130 @@
 # Multi-machine usage
 
-QuotaStation can combine usage parsed on two or more Windows machines. Each machine still
-reads its own provider session logs, then exchanges only normalized aggregates through a
-folder that a file-sync tool keeps in step. The dashboard combines every device by default
-and can filter the whole usage panel to one device.
+QuotaStation can combine usage from two or more Windows computers. Each computer reads its
+own local session files and writes hourly and daily totals to a folder managed by a file-sync
+tool. Every computer can then show the combined history or filter it by device.
 
-Live quota is different from usage. A provider's quota can be read only on a machine where
-that provider's local client exposes it. A provider contributed only by another device still
-has usage, charts, model totals, and costs on this machine, but its quota remains available
-only on the source device.
+Live quota is not shared in the same way. A computer can show current quota only when the
+provider's client supplies it on that computer. Usage imported from another device still
+appears in charts, model totals, and cost estimates, but it does not create a live quota
+reading.
 
 ## What is shared
 
-Each device writes one JSON file containing only:
+Each device writes one JSON file containing:
 
-- the stable device ID and its display name;
-- the aggregation time zone and parser revision;
-- hourly and daily token totals, grouped by provider and model; and
-- the API-equivalent cost attached to each aggregate row.
+- a randomly generated device ID and the display name chosen in Settings;
+- the time zone and parser version used to calculate the totals;
+- hourly and daily token totals grouped by provider and model;
+- the estimated API cost for each row; and
+- confirmed quota reset events.
 
-It also carries confirmed quota-window reset events. Resets are account-level facts, so every
-machine merges the event set and shows one combined history; the per-window token total is
-recalculated locally from the usage aggregates available on that machine.
-
-The files never contain project names, local paths, session IDs, prompts, account details,
+The file never contains project names, local paths, session IDs, prompts, account details,
 credentials, source code, or raw provider logs.
 
-Each machine writes only its own file and reads the files written by the others. There is no
-QuotaStation server, no primary machine, and no shared file that two devices both edit, so
-QuotaStation itself has no merge conflict to resolve. A file aggregated in a different time
-zone is refused rather than added to buckets that describe different local hours.
+Each computer writes only its own file and reads the files written by the others. There is no
+QuotaStation server or primary computer, and two devices never edit the same file. A file made
+in a different time zone is skipped because its hourly rows describe different local hours.
 
-## Files the sync tool adds
+Reset events describe the provider account rather than one device, so every computer merges
+them into one history. The estimated token total for each reset window is recalculated from
+the usage available on the computer reading the file.
 
-A sync client sometimes writes a second copy of a file it was uploading when the file
-changed again, naming it after the original with a marker such as `# Edit conflict … #`
-added. QuotaStation ignores every name that is not exactly `usage-<device id>.json`, so such
-a copy changes no total and reports no error. It is a stale duplicate of a file QuotaStation
-rewrites in full on every refresh, and deleting it is safe at any time; nothing else in the
-folder ever needs to be edited or merged by hand.
+## Files created by sync tools
 
-Give each machine its own installation rather than copying QuotaStation's application data
-across. The device identity is written on first start, and two machines carrying the same
-identity would overwrite one file instead of publishing two.
+A sync tool may create a conflict copy when a file changes during upload. QuotaStation reads
+only names in the exact form `usage-<device id>.json`, so conflict copies do not change the
+totals or cause an error. They are stale duplicates and can be deleted safely.
+
+Install QuotaStation separately on each computer. Do not copy its application-data directory
+between them. The device ID is created on first start; copying it would make two computers
+overwrite the same shared file.
 
 ## Configure QuotaStation
 
-On every machine:
+On each computer:
 
 1. Open **Settings** and find **Shared usage folder**.
-2. Enter a display name for that machine.
-3. Choose the corresponding local folder managed by the selected sync tool. The picker opens
-   at the user's Documents folder when no folder has been chosen yet. The paths on the two
-   machines do not need to be textually identical.
+2. Enter a name that identifies the computer.
+3. Choose the local folder managed by the sync tool. The local path can be different on each
+   computer.
 4. Refresh QuotaStation after the folder exists. Export and import then run automatically
-   after history refreshes.
+   after each history refresh.
 
-Leaving the folder path blank disables sharing without changing the usage already stored on
-that machine.
+Clearing the folder setting disables sharing. Usage already imported into the local database
+is left in place.
 
-## Choose a sync method
+## Choose one sync method
 
-Use exactly one sync tool for the shared folder:
+Use one sync tool for the shared folder:
 
-- **Proton Drive** is the recommended choice when the machines are rarely or never online
-  together. Each machine can upload to Proton's cloud storage and shut down before the other
-  downloads the change.
-- **Syncthing** is the cloud-free choice when the machines regularly overlap online. It
-  transfers directly between them, so they must be online at the same time at some point.
+- **Proton Drive** works well when the computers are rarely online together. One can upload a
+  change and shut down before the other downloads it.
+- **Syncthing** transfers directly between computers and does not keep a central cloud copy.
+  The computers must be online at the same time occasionally.
 
-Both use accounts or device identities that are independent of the Windows sign-in account.
+Both services use their own account or device identity, independent of the Windows account.
 
-## Option A — Proton Drive
+## Option A: Proton Drive
 
-Proton Drive Free includes 5 GB and supports a Windows desktop application. QuotaStation's
-aggregate files use only a tiny fraction of that allowance. Proton Drive encrypts file
-contents and names end to end.
+1. Download the Windows app from the
+   [official Proton Drive page](https://proton.me/drive/download) and install it on each
+   computer.
+2. Sign in to the same Proton Account on each computer.
+3. In File Explorer, create a `QuotaStation` folder under `Proton Drive\My files` and wait for
+   it to appear on the other computers.
+4. Right-click the folder on each computer and choose **Always keep on this device**. This
+   prevents an online-only placeholder from hiding a file from QuotaStation.
+5. Select the local `QuotaStation` folder in QuotaStation's **Shared usage folder** setting.
+6. Leave Proton Drive's start-with-Windows setting enabled so pending changes transfer the
+   next time each computer starts.
 
-1. Download the app from the
-   [official Proton Drive page](https://proton.me/drive/download) and install it on both
-   machines.
-2. Sign in to the same Proton Account on both machines. This account is separate from the
-   Windows sign-in account.
-3. In File Explorer, create a `QuotaStation` folder under
-   `Proton Drive\My files`. Wait for it to appear on the other machine.
-4. On both machines, right-click that folder and select **Always keep on this device**. This
-   prevents an online-only placeholder from hiding an aggregate file from QuotaStation.
-5. Select that local `QuotaStation` folder in QuotaStation's **Shared usage folder**
-   setting on both machines.
-6. Leave Proton Drive's start-with-Windows setting enabled so each machine uploads or
-   downloads pending files whenever it next starts.
+Proton Drive encrypts file contents and names end to end. The computers do not need to be
+online together. A managed computer may still require IT approval before Proton Drive can be
+installed.
 
-The machines do not need to overlap online. One can upload and shut down; Proton stores the
-encrypted copy until the other machine next connects. Proton distributes a Windows installer,
-so a managed computer whose policy blocks software installation may still require IT approval.
+## Option B: Syncthing
 
-## Option B — Syncthing
+Download the base Windows build from the
+[official Syncthing downloads page](https://syncthing.net/downloads/). It is a portable
+archive: extract it to a permanent folder and run `syncthing.exe`. It does not require
+administrator access.
 
-Download Syncthing from its [official downloads page](https://syncthing.net/downloads/). The
-base Windows build is a portable archive: extract it into a folder where it can stay and run
-`syncthing.exe`. This does not require an installer or administrator access.
-
-1. Start Syncthing once on both machines and open its local web interface.
-2. On one machine, copy its device ID from **Actions > Show ID**. Add that ID as a remote
-   device on the other machine, then repeat in the opposite direction.
-3. Add a new empty folder on one machine and share it with the other device. Accept that
-   folder on the second machine and choose a local path there.
-4. Wait until Syncthing reports the folder as up to date, then enter each local path in
+1. Start Syncthing once on each computer and open its local web interface.
+2. On one computer, copy its device ID from **Actions > Show ID** and add it as a remote device
+   on the other. Repeat this for every pair of computers that should connect.
+3. Add a new empty folder on one computer and share it with the other devices.
+4. Accept the folder on each device and choose its local path.
+5. Wait until Syncthing reports the folder as up to date, then select each local path in
    QuotaStation's **Shared usage folder** setting.
 
-Syncthing does not store the folder on a central server. The two machines exchange files
-directly, and public discovery and relay services only help them find and reach each other.
-Relay traffic remains end-to-end encrypted. Both machines do not need to stay online all the
-time, but they must be online at the same time at some point for pending changes to transfer;
-an offline machine catches up the next time they overlap.
+Syncthing sends files directly between the devices. Discovery and relay services help them
+connect, but relay traffic remains encrypted between the devices. No server, port forwarding,
+static IP address, or private relay is normally required. If a managed firewall blocks
+Syncthing, allow the Windows firewall prompt or ask the network administrator.
 
-No server, port forwarding, static IP address, or private relay is normally required. Device
-IDs must be exchanged and the folder accepted on both machines as described above. Global
-discovery, NAT traversal, and relaying are enabled by default; if a managed firewall blocks
-Syncthing, allow the Windows firewall prompt or ask the network administrator to permit it.
-
-For automatic startup without administrator access, create a shortcut in:
+To start the portable build automatically without administrator access, create a shortcut in:
 
 ```text
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
 ```
 
-Set the shortcut target to the extracted executable followed by the documented background
-arguments:
+Set its target to the extracted executable followed by:
 
 ```text
 C:\path\to\syncthing.exe --no-console --no-browser
 ```
 
-This starts Syncthing at user logon without opening a console or browser. The procedure and
-the alternative `shell:startup` path are maintained in the
-[official Syncthing autostart documentation](https://docs.syncthing.net/users/autostart.html#run-at-user-log-on-using-the-startup-folder).
+This starts Syncthing at user login without opening a console or browser. The
+[official Syncthing autostart guide](https://docs.syncthing.net/users/autostart.html#run-at-user-log-on-using-the-startup-folder)
+also documents the `shell:startup` shortcut.
 
-## Do not layer sync tools
+## Do not combine sync tools
 
-Do not let two sync clients manage the same shared folder. In particular:
+Do not let two sync tools manage the same folder. In particular:
 
 - do not add the Proton Drive folder to Syncthing; and
-- do not put the Syncthing folder inside Proton Drive, OneDrive, Dropbox, Google Drive, or
-  another cloud-sync folder.
+- do not place the Syncthing folder inside Proton Drive, OneDrive, Dropbox, Google Drive, or
+  another synced folder.
 
-Two sync engines watching the same files can race and create conflicting copies.
+Two tools writing the same files can race and create unnecessary conflict copies.
