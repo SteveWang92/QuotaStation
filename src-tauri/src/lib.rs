@@ -4,6 +4,7 @@ mod diagnostic_export;
 mod git;
 mod log;
 mod refresh;
+mod reinstall;
 mod sanitize;
 mod session_watcher;
 mod summary;
@@ -50,11 +51,13 @@ const UNINSTALL_CLEANUP_ARG: &str = "--uninstall-cleanup";
 ///
 /// Both removers inspect the current Claude Code settings and delete only commands carrying
 /// QuotaStation's own arguments. A malformed or concurrently changed file fails visibly to
-/// NSIS instead of replacing the file or disturbing another hook.
+/// NSIS instead of replacing the file or disturbing another hook. What was on is written
+/// down first, so a reinstall puts the same integrations back — see [`reinstall`].
 pub fn run_uninstall_cleanup() -> Option<i32> {
     if !std::env::args_os().any(|argument| argument == UNINSTALL_CLEANUP_ARG) {
         return None;
     }
+    reinstall::record_uninstall();
     let mut failed = false;
     for (name, result) in [
         ("Claude Code status line", statusline::remove()),
@@ -1395,6 +1398,7 @@ pub fn run() {
                 show_main(app.handle());
             }
             if !demo {
+                reinstall::restore_after_reinstall(app.handle());
                 autostart::refresh_logon_entry(app.handle());
                 watch_for_finished_turns(app.handle().clone());
             }

@@ -52,7 +52,8 @@ export function AboutPanel({
         </p>
         <p>
           Installing a newer release keeps your settings and history. Uninstalling keeps them too
-          unless you select <strong>Delete app data</strong> in the uninstaller.
+          unless you select <strong>Delete app data</strong> in the uninstaller, and reinstalling
+          then puts back the startup entry and the Claude Code integrations you had switched on.
         </p>
         {openError ? <p className="provider-consent-error">{openError}</p> : null}
       </div>

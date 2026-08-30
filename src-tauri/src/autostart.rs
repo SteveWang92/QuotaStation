@@ -13,6 +13,25 @@
 /// Starts QuotaStation to the tray with no dashboard window.
 pub const BACKGROUND_ARG: &str = "--background";
 
+/// The name Windows keys the logon entry on.
+///
+/// The autostart plugin writes the entry under Tauri's package name and the NSIS
+/// uninstaller deletes `${PRODUCTNAME}`; both are `productName` in `tauri.conf.json`. The
+/// uninstall path runs before Tauri does and cannot ask it, so the name is repeated here.
+#[cfg(windows)]
+pub const LOGON_ENTRY_NAME: &str = "QuotaStation";
+
+/// Whether the logon entry exists and starts *this* executable.
+///
+/// Two copies of QuotaStation can exist on one machine and they share the single entry
+/// name, so an entry naming the other copy is not this one's to record or restore.
+#[cfg(windows)]
+pub fn logon_entry_is_ours() -> bool {
+    let Some(command) = registered_command(LOGON_ENTRY_NAME) else { return false };
+    let Ok(executable) = std::env::current_exe() else { return false };
+    command.contains(&executable.display().to_string())
+}
+
 /// Whether this process was asked to start without a window.
 pub fn requested() -> bool {
     std::env::args_os().any(|argument| argument == BACKGROUND_ARG)

@@ -54,6 +54,11 @@ Uninstalling removes QuotaStation's shortcuts, Windows startup entry, and the Cl
 status line or notification hook it installed. Local history and settings are kept by default;
 select **Delete app data** in the uninstaller if you want those removed too.
 
+Because they are kept, reinstalling comes back to the same history and settings, and the
+first start puts back whichever of the startup entry, status line and notification hook were
+switched on when you uninstalled. That happens once, after an uninstall; QuotaStation never
+changes Claude Code's settings on an ordinary start.
+
 ## Privacy
 
 - Usage history, quota readings, settings, and logs stay on the local computer.

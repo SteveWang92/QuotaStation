@@ -158,6 +158,16 @@ and removes them itself. The uninstaller leaves `%APPDATA%\me.stevewang.quotasta
 unless the user selects **Delete app data**, so reinstalling normally restores the previous
 history and settings.
 
+Those three integrations live outside that directory, so keeping the data alone would leave a
+reinstall showing them switched off. Before removing anything, `--uninstall-cleanup` writes
+`restore-integrations.json` beside the database, recording which of them were actually on; the
+next start reads that note once, re-registers what it names, and deletes it. It records the
+state at uninstall rather than mirroring the settings because a mirror cannot tell a user who
+turned an integration off from an uninstaller that took it away, and it gives up rather than
+retries — a status line another program has claimed in the meantime is the user's to sort out.
+Selecting **Delete app data** removes the note with everything else, which is correct: an
+uninstall that keeps nothing has nothing to restore.
+
 ## Application icon
 
 `src-tauri/icons/` holds the square `app-icon.png` master artwork, the crisp

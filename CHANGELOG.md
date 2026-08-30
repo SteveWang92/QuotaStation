@@ -15,6 +15,7 @@ on `main`, with the matching section below as its notes.
 ### Changed
 
 - Uninstalling removes QuotaStation's Claude Code integrations while keeping local history and settings unless their deletion is selected.
+- Reinstalling after an uninstall switches the startup entry and Claude Code integrations back on if they were on before.
 
 ## [0.6.0] - 2026-08-29
 
