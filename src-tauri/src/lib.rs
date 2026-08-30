@@ -42,8 +42,8 @@ use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
 
 /// The NSIS uninstaller's private entry point. It is deliberately not a general cleanup
-/// command: upgrades must keep every integration, and a normal launch must never change
-/// another program's settings.
+/// command: the updater's `/UPDATE` uninstall keeps every integration, and a normal launch
+/// must never change another program's settings.
 const UNINSTALL_CLEANUP_ARG: &str = "--uninstall-cleanup";
 
 /// Removes the external commands QuotaStation registered in Claude Code, and reports an

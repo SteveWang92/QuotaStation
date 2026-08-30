@@ -157,23 +157,24 @@ been checked. Managed Windows policies may block that choice. Nothing in the bui
 bypass the warning; the installer is built by GitHub Actions from the source tag attached to
 the same release.
 
-Installing a newer version keeps the application data and external integrations in place. On
-a full uninstall, the NSIS pre-uninstall hook runs the installed executable with
-`--uninstall-cleanup`; that mode removes only QuotaStation's own Claude Code status line and
-`Stop` hook, then exits before Tauri starts. NSIS owns the Windows startup entry and shortcuts
-and removes them itself. The uninstaller leaves `%APPDATA%\me.stevewang.quotastation` in place
-unless the user selects **Delete app data**, so reinstalling normally restores the previous
-history and settings.
+Installing a newer version keeps the application data, and restores the external integrations
+on its first start. On an uninstall, the NSIS pre-uninstall hook runs the installed executable
+with `--uninstall-cleanup`; that mode removes only QuotaStation's own Claude Code status line
+and `Stop` hook, then exits before Tauri starts. A newly downloaded installer replacing an
+existing copy uninstalls it the same way, so it takes that path too. NSIS owns the Windows
+startup entry and shortcuts and removes them itself. The uninstaller leaves
+`%APPDATA%\me.stevewang.quotastation` in place unless the user selects **Delete app data**, so
+reinstalling normally restores the previous history and settings.
 
 Those three integrations live outside that directory, so keeping the data alone would leave a
-reinstall showing them switched off. Before removing anything, `--uninstall-cleanup` writes
-`restore-integrations.json` beside the database, recording which of them were actually on; the
-next start reads that note once, re-registers what it names, and deletes it. It records the
-state at uninstall rather than mirroring the settings because a mirror cannot tell a user who
-turned an integration off from an uninstaller that took it away, and it gives up rather than
-retries — a status line another program has claimed in the meantime is the user's to sort out.
-Selecting **Delete app data** removes the note with everything else, which is correct: an
-uninstall that keeps nothing has nothing to restore.
+reinstall or an upgrade showing them switched off. Before removing anything,
+`--uninstall-cleanup` writes `restore-integrations.json` beside the database, recording which
+of them were actually on; the next start reads that note once, re-registers what it names, and
+deletes it. It records the state at uninstall rather than mirroring the settings because a
+mirror cannot tell a user who turned an integration off from an uninstaller that took it away,
+and it gives up rather than retries — a status line another program has claimed in the
+meantime is the user's to sort out. Selecting **Delete app data** removes the note with
+everything else, which is correct: an uninstall that keeps nothing has nothing to restore.
 
 ## Application icon
 
