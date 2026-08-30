@@ -228,12 +228,16 @@ async fn seed_quota(storage: &Storage, profile: &Profile, now: &Zoned) -> Result
     while current <= latest {
         current += five_hours;
     }
+    let mut weekly_current = weekly_anchor + week;
+    while weekly_current <= latest {
+        weekly_current += week;
+    }
     let live = live_snapshot(
         profile,
         source,
         latest,
         (profile.headline.0, current),
-        (profile.headline.1, weekly_anchor + week),
+        (profile.headline.1, weekly_current),
     );
     storage.save_live(profile.provider, &live, &stamp(latest)?).await?;
     Ok(())
