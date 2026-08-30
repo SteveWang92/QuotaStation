@@ -4,7 +4,7 @@ use anyhow::Result;
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    AppState,
+    AppState, demo,
     domain::WorkspaceSnapshot,
     providers::{self, ProviderKind},
     sanitize::sanitize_error,
@@ -15,7 +15,9 @@ const STORAGE_FALLBACK: &str = "Local storage write failed";
 const RESET_HISTORY_FALLBACK: &str = "Quota reset history unavailable";
 
 /// Refreshes every enabled provider at once. A provider that fails leaves the others
-/// untouched, so one broken client never blanks the whole display.
+/// untouched, so one broken client never blanks the whole display. A demo instance reads no
+/// provider at all — the two readers below decline, and every caller still republishes the
+/// seeded snapshot, so a refresh a screenshot session performs by hand changes nothing.
 pub async fn refresh_all(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSnapshot {
     let _publish_guard = state.refresh_publish_lock.lock().await;
     // A client can be installed, or signed in for the first time, while this is running.
@@ -49,6 +51,9 @@ pub async fn refresh_history(app: &AppHandle, state: &Arc<AppState>) {
 }
 
 async fn refresh_live_for(state: &Arc<AppState>, providers: &[ProviderKind]) {
+    if demo::requested() {
+        return;
+    }
     let _guard = state.live_refresh_lock.lock().await;
     let started_at = now();
     for &provider in providers {
@@ -63,6 +68,9 @@ async fn refresh_live_for(state: &Arc<AppState>, providers: &[ProviderKind]) {
 }
 
 async fn refresh_history_for(state: &Arc<AppState>, providers: &[ProviderKind]) {
+    if demo::requested() {
+        return;
+    }
     let _guard = state.history_refresh_lock.lock().await;
     let started_at = now();
     for &provider in providers {

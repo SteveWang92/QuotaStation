@@ -7,13 +7,25 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-30
+
+### Added
+
+- A `--demo` option fills the application with fictional data for screenshots and demonstrations.
+- The About section can open the local data folder and the latest release page.
+
+### Changed
+
+- Uninstalling removes QuotaStation's Claude Code integrations while keeping local history and settings unless their deletion is selected.
+- Reinstalling after an uninstall switches the startup entry and Claude Code integrations back on if they were on before.
+
 ## [0.6.0] - 2026-08-29
 
 ### Added
 
 - Reset history now synchronizes through the shared usage folder.
-- Diagnostics can be exported as a redacted JSON file from the Downloads folder.
-- An About section in the settings page giving the version, copyright, licence and where the source is.
+- Diagnostics can be exported as a JSON file that leaves out private data.
+- An About section in Settings shows the version, copyright, license, warranty notice, and source location.
 
 ### Changed
 
@@ -24,7 +36,7 @@ on `main`, with the matching section below as its notes.
 - Concurrent Claude Code sessions no longer overwrite each other's notification titles.
 - Explorer selects the application log instead of opening the wrong folder when the path contains a space.
 - Failed settings reads and reset-note saves are shown instead of failing silently.
-- Malformed shared usage aggregates and reset events are rejected before they reach local storage.
+- Invalid shared usage totals and reset events are rejected before they reach local storage.
 - Multiple quota restarts in the same chart bucket are all shown in its tooltip.
 - Quota reset history stays visible and reports the storage error when a reload fails.
 - Successful diagnostics reads no longer clear unrelated refresh or event errors.
@@ -35,18 +47,18 @@ on `main`, with the matching section below as its notes.
 
 ### Added
 
-- An All usage range that runs from the earliest recorded usage through today.
+- An All range that runs from the earliest recorded usage through today.
 - The reset history says how many tokens were spent inside each window that reset.
 - Usage from multiple machines can be combined, inspected by device, and filtered across the history dashboard.
 - The shared usage folder can be chosen with the native Windows folder picker, or typed as a path that QuotaStation offers to create.
-- A "Last 24 hours" range that reads the rolling day rather than the calendar one.
+- A "Last 24 hours" range that covers the previous 24 hours rather than the current calendar day.
 - Codex reports when the first of its earned resets expires.
 - The settings page lists every quota-window restart ever recorded.
 
 ### Changed
 
 - Earned reset details now use two compact rows so the countdown and exact expiry remain readable.
-- Settings is a page opened from beside Refresh rather than a dialog over the dashboard.
+- Settings now opens as a full page from the button beside Refresh.
 - The provider panels show the last restart of each window instead of the whole history.
 - An early-restart note can be acknowledged, and comes back at the next restart.
 
@@ -130,17 +142,17 @@ on `main`, with the matching section below as its notes.
 - Clock times are written on a 24-hour clock everywhere.
 - Settings and diagnostics are one taller scrolling page instead of two tabs.
 - Each quota window's source and observation time moved to the diagnostics section.
-- Installing the Claude Code status line now asks in a confirmation instead of a long note.
+- Installing the Claude Code status line now uses a short confirmation dialog.
 - The status bar keeps only the settings button; each provider panel already states its own status.
 - Start with Windows, the taskbar status and the desktop shortcut moved into settings.
 
 ### Removed
 
-- Status text, provider names and a model count that each appeared twice on a surface.
+- Status text, provider names and a model count that each appeared twice in the same view.
 
 ### Fixed
 
-- Each quota window is coloured by its own reading rather than the provider's loudest one.
+- Each quota window is colored by its own reading rather than the provider's most urgent one.
 - Claude Code's status line omits stale cross-provider quota instead of presenting it as current.
 - The status line's one-row form never shows another provider's quota where Claude's own would be read.
 - Removing the Claude completion hook preserves other handlers in the same Stop group.
@@ -168,32 +180,31 @@ anything leaving the computer.
 - **Usage history.** Daily token and API-equivalent cost totals per provider, with today,
   3-, 7- and 30-day presets and a custom range, broken down by model and by input, output,
   cached input and reasoning tokens. Costs are priced from a catalog pinned at build time.
-- **Quota reset history.** Codex restarts a window whenever its server decides to, not only
-  when the published expiry falls due. Those restarts are recognised, classified as
+- **Quota reset history.** Codex can restart a window before or at its published expiry. Those
+  restarts are recognized, classified as
   scheduled or unplanned, and kept after the samples behind them have aged out.
-- **Three surfaces over one snapshot.** A tray icon with a quick panel, an optional widget
-  docked into the Windows taskbar that sizes itself to the number of providers, and a
-  dashboard. All three draw from the same normalized snapshot, so they can never disagree.
-- **Stated data provenance.** Every quota window records which source produced it and when
-  it was observed, and goes stale on a deadline appropriate to that source. A reading that
-  cannot be confirmed is shown as unknown rather than as zero, and a failed read names its
-  reason on the provider panel.
-- **Diagnostics.** Per-acquisition-path status, session-watcher health, retention state, and
-  parser and pricing catalog revisions, plus a bounded local activity log.
-- **Local storage.** A SQLite database in the application data directory, holding normalized
-  samples and daily summaries under a retention policy that runs at startup and every 24
-  hours. Daily aggregation follows a per-provider timezone and rebuilds when it changes.
+- **Tray, taskbar, and dashboard.** A tray icon with a quick panel, an optional widget in the
+  Windows taskbar, and a full dashboard all show the same quota and usage data.
+- **Source and freshness details.** Every quota window records where it came from and when it
+  was read. Old data is marked stale, an unavailable reading is shown as unknown rather than
+  zero, and a failed read explains what happened.
+- **Diagnostics.** Diagnostics show the status of each data source, session-file watching,
+  data cleanup, and the parser and pricing versions, with a size-limited local activity log.
+- **Local storage.** A SQLite database in the application data directory stores quota samples
+  and daily usage totals. Data cleanup runs at startup and every 24 hours, and daily totals
+  follow the Windows time zone.
 
 ### Security
 
 - Provider credentials, prompts, session content, and filesystem paths are redacted before
   any failure reaches the renderer, the database, or the activity log.
-- All file, process, provider protocol, and database access stays in the Rust core; the
-  renderer receives only normalized data over narrow commands.
+- All file, process, provider protocol, and database access stays in the Rust core. The
+  interface receives only the processed data it needs through Tauri commands.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.6.0...v1.0.0
 [0.6.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.3.0...v0.4.0

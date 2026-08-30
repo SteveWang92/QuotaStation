@@ -1,8 +1,18 @@
 {
   "name": "quotastation",
   "private": true,
-  "version": "0.6.0",
+  "version": "1.0.0",
+  "description": "Windows app for tracking AI coding quotas, usage, reset times, and estimated API costs",
   "license": "AGPL-3.0-only",
+  "author": "Steve Wang <contact@stevewang.me>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SteveWang92/QuotaStation.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SteveWang92/QuotaStation/issues"
+  },
+  "homepage": "https://github.com/SteveWang92/QuotaStation#readme",
   "type": "module",
   "scripts": {
     "dev": "vite",

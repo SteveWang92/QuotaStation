@@ -1,7 +1,7 @@
 # Development
 
-QuotaStation is a Windows-first Tauri 2 application with a Rust core and a
-React/TypeScript renderer.
+QuotaStation is a Tauri 2 Windows application with a Rust core and a React/TypeScript
+interface.
 
 ## Prerequisites
 
@@ -9,7 +9,7 @@ React/TypeScript renderer.
 - Node.js `24.18.1` and npm
 - Stable Rust with the `x86_64-pc-windows-msvc` toolchain
 - Visual Studio Build Tools with the C++ desktop workload
-- The official Codex CLI installed globally and signed in
+- The official Codex CLI, when testing Codex quota collection
 
 Install the Codex CLI globally when it is not already available:
 
@@ -26,7 +26,7 @@ npm install
 
 ## Run locally
 
-Start the complete desktop application with the Tauri development server:
+Start the complete desktop application with Tauri's development server:
 
 ```powershell
 npm run tauri dev
@@ -39,18 +39,17 @@ attached, so they print nothing to a terminal; what they and the status-line bri
 recorded in `quotastation.log` instead (see Local data), and this mode is for everything
 that log does not answer.
 
-For renderer-only work, start Vite without the Rust host:
+For interface-only work, start Vite without the Rust host:
 
 ```powershell
 npm run dev
 ```
 
-The renderer-only mode cannot call the Tauri commands that acquire or persist provider
-data.
+This mode cannot call the Tauri commands that read or store provider data.
 
 ## Build and verify
 
-Run the renderer tests. They cover the shared formatting, date-range, and error helpers.
+Run the interface tests. They cover the shared formatting, date-range, and error helpers.
 They assert structure rather than exact formatted text, so the single locale constant in
 `src/format.ts` can change when the interface gains a language choice:
 
@@ -66,7 +65,7 @@ only the days it parsed:
 npm run test:core
 ```
 
-Check the renderer's formatting, import order, and lint rules. `npm run format` writes what
+Check the interface formatting, import order, and lint rules. `npm run format` writes what
 the check reports; the rules this project turns off, and why, are listed in `biome.jsonc`:
 
 ```powershell
@@ -82,13 +81,20 @@ npm run fmt:core
 npm run lint:core
 ```
 
-Run every renderer and core gate together before a release pull request with:
+`.vscode/settings.json` and `.vscode/extensions.json` are committed so an editor formats
+this repository the way the gates do: Biome for the interface, resolved from `node_modules`
+rather than a global install, and rustfmt through rust-analyzer for the core. They also
+switch a globally installed Prettier off for this workspace and stop format-on-save from
+touching Markdown, YAML, TOML and SQL, none of which anything here formats — the
+documentation is wrapped by hand. Nothing else under `.vscode/` is shared.
+
+Run every interface and core check together before a release pull request with:
 
 ```powershell
 npm run verify
 ```
 
-Both suites and both lint gates, plus the renderer build, run on a Windows runner for every
+Both test suites and both lint checks, plus the interface build, run on a Windows runner for every
 pull request into `dev`, for the `dev` to `main` release pull request, and for every push to
 `main`; see `.github/workflows/ci.yml`. A commit pushed straight to `dev` is not covered, so
 run the gates above locally before pushing one.
@@ -100,7 +106,7 @@ but the result cannot be run. Each row states what lands on disk and what it is 
 
 | Command | Produces | Use it for |
 | --- | --- | --- |
-| `npm run build` | `dist/` — the compiled renderer only | Type-checking and bundling the interface. Produces no executable |
+| `npm run build` | `dist/` — the compiled interface only | Type-checking and bundling the interface. Produces no executable |
 | `npm run check:core` | Nothing on disk | Confirming the core compiles, faster than a build |
 | `npm run tauri dev` | A running application, plus a **dev-server-bound** `src-tauri/target/debug/quotastation.exe` | Development and diagnosis. See the caution below |
 | `npm run build:debug` | `src-tauri/target/debug/quotastation.exe`, standalone | A runnable build with debug assertions and symbols |
@@ -112,7 +118,7 @@ from between releases, so it is the one a finished change is rebuilt and relaunc
 debug forms are for diagnosing a specific problem.
 
 Both `--no-bundle` forms embed `dist/` into the executable, so the file needs nothing beside
-it and runs from wherever it sits. The build runs `npm run build` first, so the renderer is
+it and runs from wherever it sits. The build runs `npm run build` first, so the interface is
 always current. Windows 11 supplies the WebView2 runtime these builds require.
 
 ⚠️ `npm run tauri dev` writes its own `quotastation.exe` to the same `target/debug/` path,
@@ -144,12 +150,31 @@ built by hand: publishing a `vX.Y.Z` release runs `.github/workflows/release.yml
 builds the installer from the published tag and attaches it to that release.
 
 The installer and the executable inside it are **unsigned**. A code-signing certificate is a
-recurring cost QuotaStation deliberately does not carry, so Windows SmartScreen warns the
-first people to download each new version until it has seen enough of them; the warning is
-dismissed through **More info** → **Run anyway**. Nothing in the build works around that
-warning, and no unsigned-warning workaround should be added: the honest answer is that the
-build is reproducible from this repository and its source is the tag the installer was built
-from.
+recurring cost QuotaStation deliberately does not carry, so Microsoft Defender SmartScreen may
+warn that a new release is unrecognized. On systems that allow unsigned applications, the
+warning can be dismissed through **More info** → **Run anyway** after the download source has
+been checked. Managed Windows policies may block that choice. Nothing in the build attempts to
+bypass the warning; the installer is built by GitHub Actions from the source tag attached to
+the same release.
+
+Installing a newer version keeps the application data, and restores the external integrations
+on its first start. On an uninstall, the NSIS pre-uninstall hook runs the installed executable
+with `--uninstall-cleanup`; that mode removes only QuotaStation's own Claude Code status line
+and `Stop` hook, then exits before Tauri starts. A newly downloaded installer replacing an
+existing copy uninstalls it the same way, so it takes that path too. NSIS owns the Windows
+startup entry and shortcuts and removes them itself. The uninstaller leaves
+`%APPDATA%\me.stevewang.quotastation` in place unless the user selects **Delete app data**, so
+reinstalling normally restores the previous history and settings.
+
+Those three integrations live outside that directory, so keeping the data alone would leave a
+reinstall or an upgrade showing them switched off. Before removing anything,
+`--uninstall-cleanup` writes `restore-integrations.json` beside the database, recording which
+of them were actually on; the next start reads that note once, re-registers what it names, and
+deletes it. It records the state at uninstall rather than mirroring the settings because a
+mirror cannot tell a user who turned an integration off from an uninstaller that took it away,
+and it gives up rather than retries — a status line another program has claimed in the
+meantime is the user's to sort out. Selecting **Delete app data** removes the note with
+everything else, which is correct: an uninstall that keeps nothing has nothing to restore.
 
 ## Application icon
 
@@ -178,15 +203,36 @@ set `QUOTASTATION_CODEX_EXECUTABLE` in the launching shell. Do not put machine-s
 paths into committed files; any local configuration file must contain `.local` in its
 filename.
 
+## Demonstration data
+
+A normal QuotaStation screenshot contains private quota and usage data. `--demo` opens the
+application with a fictional data set that is safe to publish:
+
+```powershell
+cargo run --example seed_demo --manifest-path src-tauri/Cargo.toml
+src-tauri\target\release\quotastation.exe --demo
+```
+
+The seeder writes `quotastation-demo.db` and `settings-demo.json` beside the real files in the
+application data directory. It uses the application's normal storage code, so the generated
+database always matches the current schema. Running it again replaces the demo data. A fixed
+seed keeps later screenshots consistent.
+
+A demo instance does not read any provider, watch session files, or refresh in the background.
+It runs beside the normal application and uses separate database and settings files, so it
+cannot replace or expose real history.
+
+The same fictional data appears in the dashboard, tray, quick panel, and taskbar widget.
+
 ## Local data
 
-Normalized data is stored in the application data directory at:
+QuotaStation stores its processed data at:
 
 ```text
 %APPDATA%\me.stevewang.quotastation\quotastation.db
 ```
 
-The database contains normalized usage, limits, refresh state, and pricing provenance. It
+The database contains usage totals, quota readings, refresh results, and the pricing source. It
 does not store prompts, source code, raw session records, credentials, or full source paths.
 
 The same directory holds `quotastation.log`. Built executables are windowed applications with
@@ -196,7 +242,7 @@ answered a refresh, how many windows it carried, and why a read failed. It recor
 content and no credential, rolls over at 512 KB into `quotastation.log.1`, and the
 Diagnostics tab's **Show activity log** button reveals it.
 
-Historical range changes query the normalized rows in SQLite — daily, or hourly for a range
+Changing the selected history range queries the stored SQLite rows — daily, or hourly for a range
 short enough to be drawn that way; they do not trigger a new parse of the Codex session logs.
 
 What is retained and for how long, how daily buckets follow the system time zone, and why
@@ -204,30 +250,28 @@ each rule is what it is are all in
 [Architecture — Local database](architecture.md#local-database). Retention runs at startup
 and every 24 hours, never during a refresh, and never issues `VACUUM`.
 
-See [Multi-machine usage](multi-machine.md) for aggregate sharing and Syncthing setup.
+See [Multi-machine usage](multi-machine.md) for sharing totals between computers.
 
-## Refresh lifecycle and diagnostics
+## Refresh and diagnostics
 
-Which source may answer for which provider, and why, belongs to
-[Architecture — Provider adapters](architecture.md#provider-adapters). What matters when
-running the application locally:
+The [architecture guide](architecture.md#provider-data) explains where each provider's data
+comes from. When running the application locally:
 
 - Live quota refreshes at startup, on manual refresh, every five minutes for Codex and every
   ten minutes for Claude Code, and immediately whenever Claude Code's session logs change.
-- History refreshes at startup and on manual refresh. A recursive watcher debounces `.jsonl`
-  changes for two seconds, and a full reconciliation every fifteen minutes recovers missed
-  filesystem notifications. A complete refresh publishes one finished workspace snapshot;
-  its history event then updates an open range without exposing intermediate data.
+- History refreshes at startup and on manual refresh. A recursive watcher waits two seconds
+  after `.jsonl` changes settle, and a full scan every fifteen minutes recovers missed Windows
+  file notifications. The interface updates after the complete refresh rather than showing
+  partially updated totals.
 - The Claude Code status-line bridge is installed from the settings page, which registers
   `quotastation.exe --claude-statusline` as that command. Readings then arrive from terminal
   sessions only; the settings card says so when every running session is desktop-hosted.
-- The settings page's Diagnostics section reads normalized refresh records and in-memory
-  watcher health. The header control that opens it is marked whenever an acquisition path, the
-  watcher, or the command channel has failed, so nothing wrong hides behind an unopened page.
+- The Diagnostics section shows recent refresh results and file-watcher health. Its Settings
+  button is marked whenever a provider source, watcher, or command fails.
 - Diagnostics show the seven-character source commit beside the application version. The
   Rust build watches the active Git ref, so rebuilding after a commit refreshes that value.
 
-## Pricing catalog lifecycle
+## Updating pricing data
 
 QuotaStation reuses ccusage's pricing build integration instead of maintaining a manual GPT
 price list.

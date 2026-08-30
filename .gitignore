@@ -29,7 +29,12 @@ release/
 
 # Editors and operating systems
 .idea/
-.vscode/
+# Two files under .vscode/ are shared on purpose: they point every contributor's
+# editor at this repository's own Biome and rustfmt instead of a global formatter.
+# Everything else there is personal.
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
 .DS_Store
 Thumbs.db
 Desktop.ini

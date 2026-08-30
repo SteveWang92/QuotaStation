@@ -1,21 +1,28 @@
 mod alerts;
 mod autostart;
 mod diagnostic_export;
-mod domain;
 mod git;
 mod log;
-mod providers;
 mod refresh;
-mod resets;
+mod reinstall;
 mod sanitize;
 mod session_watcher;
-mod settings;
-mod storage;
 mod summary;
 mod sync;
 mod taskbar;
 mod terminal;
 mod theme;
+
+// The application is the only consumer of this library, with one exception: the
+// `seed_demo` example fills the demonstration database described in `demo`, and writes it
+// through the same storage, domain and settings code the application itself uses rather
+// than through a second copy of the schema. These modules are public for that example.
+pub mod demo;
+pub mod domain;
+pub mod providers;
+pub mod resets;
+pub mod settings;
+pub mod storage;
 
 use crate::settings::AppSettings;
 
@@ -33,6 +40,39 @@ use domain::{
 };
 use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
+
+/// The NSIS uninstaller's private entry point. It is deliberately not a general cleanup
+/// command: the updater's `/UPDATE` uninstall keeps every integration, and a normal launch
+/// must never change another program's settings.
+const UNINSTALL_CLEANUP_ARG: &str = "--uninstall-cleanup";
+
+/// Removes the external commands QuotaStation registered in Claude Code, and reports an
+/// exit code only when this process was started by the uninstaller.
+///
+/// Both removers inspect the current Claude Code settings and delete only commands carrying
+/// QuotaStation's own arguments. A malformed or concurrently changed file fails visibly to
+/// NSIS instead of replacing the file or disturbing another hook. What was on is written
+/// down first, so a reinstall puts the same integrations back — see [`reinstall`].
+pub fn run_uninstall_cleanup() -> Option<i32> {
+    if !std::env::args_os().any(|argument| argument == UNINSTALL_CLEANUP_ARG) {
+        return None;
+    }
+    reinstall::record_uninstall();
+    let mut failed = false;
+    for (name, result) in [
+        ("Claude Code status line", statusline::remove()),
+        ("Claude Code notification hook", notifications::remove()),
+    ] {
+        match result {
+            Ok(()) => log::write(format!("uninstall removed the {name}")),
+            Err(error) => {
+                failed = true;
+                log::write(format!("uninstall could not remove the {name}: {error:#}"));
+            }
+        }
+    }
+    Some(if failed { 1 } else { 0 })
+}
 
 /// Gives this machine an identity in a shared usage folder if it has not got one yet.
 ///
@@ -114,6 +154,11 @@ impl AppState {
     /// Which provider clients have left usage records on this machine. These are the only
     /// providers the live reader, history parser and filesystem watcher may touch.
     fn local_providers() -> Vec<ProviderKind> {
+        // A demo instance reads no provider, so nothing about this machine may decide which
+        // ones it shows: it answers for every provider the seeded database describes.
+        if demo::requested() {
+            return ProviderKind::ALL.to_vec();
+        }
         ProviderKind::ALL.into_iter().filter(|provider| provider.is_installed()).collect()
     }
 
@@ -470,6 +515,22 @@ fn reveal_log_file() -> Result<(), String> {
     Ok(())
 }
 
+/// Opens QuotaStation's data directory without returning its machine-specific path to the
+/// renderer. The directory already exists by the time Settings can be opened.
+#[tauri::command]
+fn open_data_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let path = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    open_in_explorer(&path).map_err(|error| error.to_string())
+}
+
+/// Opens the public release page in the default browser. The URL is fixed in the core so
+/// the renderer cannot turn this narrow action into an arbitrary shell launch.
+#[tauri::command]
+fn open_latest_release() -> Result<(), String> {
+    open_with_explorer("https://github.com/SteveWang92/QuotaStation/releases/latest")
+        .map_err(|error| error.to_string())
+}
+
 /// Shows a file selected in Explorer.
 ///
 /// Explorer parses its own raw command line and ignores a `/select,` token that starts
@@ -486,6 +547,15 @@ fn select_in_explorer(path: &Path) -> std::io::Result<()> {
     #[cfg(not(windows))]
     command.arg(format!("/select,{}", path.display()));
     command.spawn()?;
+    Ok(())
+}
+
+fn open_in_explorer(path: &Path) -> std::io::Result<()> {
+    open_with_explorer(path.as_os_str())
+}
+
+fn open_with_explorer(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
+    std::process::Command::new("explorer.exe").arg(target).spawn()?;
     Ok(())
 }
 
@@ -1239,14 +1309,20 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+    let mut builder = tauri::Builder::default();
+    // Single instance is how a second launch reaches the running dashboard instead of
+    // starting a rival tray icon. A demo is the one launch that has to stand beside the
+    // real application rather than hand over to it, so it stays out of that arrangement.
+    if !demo::requested() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A second launch is how an already-running QuotaStation is asked for its
             // dashboard, unless that launch was itself a background one.
             if !args.iter().any(|argument| argument == autostart::BACKGROUND_ARG) {
                 show_main(app);
             }
-        }))
+        }));
+    }
+    builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
@@ -1263,8 +1339,14 @@ pub fn run() {
                 }
             ));
             let app_data_dir = app.path().app_data_dir()?;
-            let database_path = app_data_dir.join("quotastation.db");
-            let settings_path = app_data_dir.join("settings.json");
+            let demo = demo::requested();
+            if demo {
+                log::write("started as a demonstration; no provider will be read");
+            }
+            let database_path =
+                app_data_dir.join(if demo { demo::DATABASE_FILE } else { "quotastation.db" });
+            let settings_path =
+                app_data_dir.join(if demo { demo::SETTINGS_FILE } else { "settings.json" });
             let settings = ensure_device_identity(&settings_path, settings::load(&settings_path));
             let device_name =
                 settings.device_name.clone().unwrap_or_else(settings::default_device_name);
@@ -1315,33 +1397,42 @@ pub fn run() {
             } else {
                 show_main(app.handle());
             }
-            autostart::refresh_logon_entry(app.handle());
-            watch_for_finished_turns(app.handle().clone());
+            if !demo {
+                reinstall::restore_after_reinstall(app.handle());
+                autostart::refresh_logon_entry(app.handle());
+                watch_for_finished_turns(app.handle().clone());
+            }
             apply_theme(app.handle(), state.settings().theme);
             watch_for_system_theme_changes(app.handle().clone());
             if state.settings().taskbar_widget_enabled {
                 set_taskbar_widget_visible(app.handle(), true);
             }
-            if session_watcher::start(app.handle().clone(), state.clone()).is_err() {
-                tauri::async_runtime::block_on(async {
-                    let mut diagnostics = state.watcher_diagnostics.write().await;
-                    diagnostics.status = "unavailable".to_string();
-                    diagnostics.error = Some(
-                        "Session watching is unavailable; periodic reconciliation remains active."
-                            .to_string(),
-                    );
+            // Everything below reads a provider, so a demo start does none of it: the seeded
+            // readings are what it exists to show, and the first refresh would replace them
+            // with this machine's real usage.
+            if !demo {
+                if session_watcher::start(app.handle().clone(), state.clone()).is_err() {
+                    tauri::async_runtime::block_on(async {
+                        let mut diagnostics = state.watcher_diagnostics.write().await;
+                        diagnostics.status = "unavailable".to_string();
+                        diagnostics.error = Some(
+                            "Session watching is unavailable; periodic reconciliation remains active."
+                                .to_string(),
+                        );
+                    });
+                }
+                let app_handle = app.handle().clone();
+                let refresh_state = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    refresh::refresh_all(&app_handle, &refresh_state).await;
+                });
+                let backfill_state = app.state::<Arc<AppState>>().inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = backfill_resets(&backfill_state).await {
+                        log::write(format!("quota reset backfill failed: {error:#}"));
+                    }
                 });
             }
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                refresh::refresh_all(&app_handle, &state).await;
-            });
-            let backfill_state = app.state::<Arc<AppState>>().inner().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) = backfill_resets(&backfill_state).await {
-                    log::write(format!("quota reset backfill failed: {error:#}"));
-                }
-            });
             let retention_storage = app.state::<Arc<AppState>>().storage.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
@@ -1364,31 +1455,33 @@ pub fn run() {
                     }
                 }
             });
-            // Each provider polls on its own interval: a local process tolerates a
-            // frequent read, a rate-limited remote endpoint does not.
-            for provider in ProviderKind::ALL {
+            if !demo {
+                // Each provider polls on its own interval: a local process tolerates a
+                // frequent read, a rate-limited remote endpoint does not.
+                for provider in ProviderKind::ALL {
+                    let app_handle = app.handle().clone();
+                    let live_state = app.state::<Arc<AppState>>().inner().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let mut interval = tokio::time::interval(provider.live_refresh_interval());
+                        interval.tick().await;
+                        loop {
+                            interval.tick().await;
+                            refresh::refresh_live_for_provider(&app_handle, &live_state, provider)
+                                .await;
+                        }
+                    });
+                }
                 let app_handle = app.handle().clone();
-                let live_state = app.state::<Arc<AppState>>().inner().clone();
+                let history_state = app.state::<Arc<AppState>>().inner().clone();
                 tauri::async_runtime::spawn(async move {
-                    let mut interval = tokio::time::interval(provider.live_refresh_interval());
+                    let mut interval = tokio::time::interval(Duration::from_secs(900));
                     interval.tick().await;
                     loop {
                         interval.tick().await;
-                        refresh::refresh_live_for_provider(&app_handle, &live_state, provider)
-                            .await;
+                        refresh::refresh_history(&app_handle, &history_state).await;
                     }
                 });
             }
-            let app_handle = app.handle().clone();
-            let history_state = app.state::<Arc<AppState>>().inner().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(900));
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
-                    refresh::refresh_history(&app_handle, &history_state).await;
-                }
-            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1405,6 +1498,8 @@ pub fn run() {
             reveal_export_file,
             get_log_available,
             reveal_log_file,
+            open_data_folder,
+            open_latest_release,
             get_claude_status_line,
             set_claude_status_line,
             get_claude_notifications,

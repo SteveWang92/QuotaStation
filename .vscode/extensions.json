@@ -1,0 +1,5 @@
+{
+  "recommendations": ["biomejs.biome", "rust-lang.rust-analyzer", "tauri-apps.tauri-vscode"],
+  // Prettier would fight the settings beside this file rather than fail loudly.
+  "unwantedRecommendations": ["esbenp.prettier-vscode"]
+}

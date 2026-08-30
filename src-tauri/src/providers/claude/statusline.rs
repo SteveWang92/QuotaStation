@@ -786,6 +786,14 @@ pub struct BridgeStatus {
     pub desktop_only_sessions: bool,
 }
 
+/// Whether the status line Claude Code runs is QuotaStation's own.
+///
+/// [`bridge_status`] answers this too, but it also scans the session logs for the
+/// interface's sake; the uninstall path wants the one fact and none of that work.
+pub fn installed() -> bool {
+    configured_command().as_deref().is_some_and(is_bridge_command)
+}
+
 pub fn bridge_status() -> BridgeStatus {
     let configured = configured_command();
     let ours = configured.as_deref().is_some_and(is_bridge_command);
