@@ -128,6 +128,27 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The state a test drives, over a throwaway database and with no window behind it.
+    /// Only the parts the refresh path reads are populated.
+    #[cfg(test)]
+    pub(crate) fn for_tests(storage: Storage) -> Self {
+        Self {
+            storage,
+            snapshots: RwLock::new(BTreeMap::new()),
+            refresh_publish_lock: Mutex::new(()),
+            live_refresh_lock: Mutex::new(()),
+            history_refresh_lock: Mutex::new(()),
+            watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
+            shared_folder_diagnostics: RwLock::new(SharedFolderDiagnostics::default()),
+            quick_panel_focus_lost_at: StdMutex::new(None),
+            quick_panel_toggled_at: StdMutex::new(None),
+            quick_panel_shown_at: StdMutex::new(None),
+            settings: StdMutex::new(AppSettings::default()),
+            detected_providers: StdMutex::new(Vec::new()),
+            settings_path: PathBuf::new(),
+        }
+    }
+
     fn settings(&self) -> AppSettings {
         self.settings.lock().map(|settings| settings.clone()).unwrap_or_default()
     }

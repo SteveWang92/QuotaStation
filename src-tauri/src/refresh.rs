@@ -242,3 +242,277 @@ fn storage_error(error: anyhow::Error) -> String {
 fn now() -> String {
     jiff::Timestamp::now().to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{
+        Freshness, HistoryDay, HistorySnapshot, LimitKind, LimitWindow, LiveSnapshot, ModelUsage,
+        ModelUsageRow, ProviderSnapshot, QuotaLevel, TokenUsage, WindowSource,
+    };
+    use crate::storage::test_support::{TempDatabase, open_storage};
+
+    const CODEX: ProviderKind = ProviderKind::Codex;
+
+    async fn state() -> (Arc<AppState>, TempDatabase) {
+        let (storage, database) = open_storage().await;
+        (Arc::new(AppState::for_tests(storage)), database)
+    }
+
+    fn window(used_percent: f64) -> LimitWindow {
+        LimitWindow {
+            kind: LimitKind::Primary,
+            label: "5-hour".to_string(),
+            used_percent: Some(used_percent),
+            window_duration_mins: Some(300),
+            resets_at: Some(1_800_000_000),
+            source: WindowSource::AppServer,
+            observed_at: 1_799_000_000,
+            freshness: Freshness::Fresh,
+            status_level: QuotaLevel::Healthy,
+        }
+    }
+
+    fn usage(total: u64) -> TokenUsage {
+        TokenUsage { input: total, cache_read: 0, output: 0, reasoning: 0, total }
+    }
+
+    fn day(date: &str, total: u64, cost_usd: f64) -> HistoryDay {
+        HistoryDay {
+            date: date.to_string(),
+            usage: usage(total),
+            models: vec![ModelUsage { model: "gpt-5".to_string(), tokens: total, percent: 100.0 }],
+            cost_usd,
+            model_rows: vec![ModelUsageRow {
+                model: "gpt-5".to_string(),
+                input: total,
+                cache_read: 0,
+                output: 0,
+                reasoning: 0,
+                total,
+                cost_usd,
+            }],
+        }
+    }
+
+    fn today() -> String {
+        jiff::Zoned::now().date().to_string()
+    }
+
+    async fn snapshot_of(state: &Arc<AppState>) -> ProviderSnapshot {
+        state.read_snapshot(CODEX, Clone::clone).await
+    }
+
+    /// What the settings page reports for one acquisition path, as its status and error.
+    async fn diagnostics_for(state: &Arc<AppState>, path: &str) -> (String, Option<String>) {
+        let entry = state
+            .storage
+            .load_acquisition_diagnostics(CODEX)
+            .await
+            .expect("load diagnostics")
+            .into_iter()
+            .find(|entry| entry.acquisition_path == path)
+            .expect("the refresh recorded this path");
+        (entry.status, entry.error)
+    }
+
+    #[tokio::test]
+    async fn a_failed_quota_read_keeps_the_last_windows_on_screen() {
+        let (state, _database) = state().await;
+        state
+            .with_snapshot(CODEX, |snapshot| {
+                snapshot.limits = vec![window(42.0)];
+                snapshot.plan_type = Some("Plus".to_string());
+                snapshot.last_live_success_at = Some("2026-08-30T01:00:00Z".to_string());
+            })
+            .await;
+
+        apply_live(&state, CODEX, "2026-08-31T01:00:00Z", Err(anyhow::anyhow!("connection reset")))
+            .await;
+
+        let snapshot = snapshot_of(&state).await;
+        assert_eq!(snapshot.limits.len(), 1, "the reading before the failure is still displayed");
+        assert_eq!(snapshot.limits[0].used_percent, Some(42.0));
+        assert_eq!(snapshot.plan_type.as_deref(), Some("Plus"));
+        assert_eq!(snapshot.live_error.as_deref(), Some("connection reset"));
+        assert_eq!(
+            snapshot.last_live_success_at.as_deref(),
+            Some("2026-08-30T01:00:00Z"),
+            "a failure does not count as a success",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_never_reports_a_local_path() {
+        let (state, _database) = state().await;
+
+        apply_live(
+            &state,
+            CODEX,
+            "2026-08-31T01:00:00Z",
+            Err(anyhow::anyhow!("cannot read C:\\Users\\example\\.codex\\auth.json")),
+        )
+        .await;
+
+        let message = snapshot_of(&state).await.live_error.expect("the failure is reported");
+        assert_eq!(message, "cannot read <path>");
+    }
+
+    #[tokio::test]
+    async fn a_successful_quota_read_replaces_the_windows_and_clears_the_failure() {
+        let (state, _database) = state().await;
+        state
+            .with_snapshot(CODEX, |snapshot| {
+                snapshot.limits = vec![window(42.0)];
+                snapshot.live_error = Some("connection reset".to_string());
+            })
+            .await;
+
+        apply_live(
+            &state,
+            CODEX,
+            "2026-08-31T01:00:00Z",
+            Ok(LiveSnapshot {
+                plan_type: Some("Pro".to_string()),
+                limits: vec![window(61.0)],
+                earned_reset_count: Some(2),
+                earned_reset_expires_at: Some(1_800_100_000),
+            }),
+        )
+        .await;
+
+        let snapshot = snapshot_of(&state).await;
+        assert_eq!(snapshot.limits[0].used_percent, Some(61.0));
+        assert_eq!(snapshot.plan_type.as_deref(), Some("Pro"));
+        assert_eq!(snapshot.earned_reset_count, Some(2));
+        assert_eq!(snapshot.live_error, None);
+        assert!(snapshot.last_live_success_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn every_quota_read_is_recorded_against_its_acquisition_path() {
+        let (state, _database) = state().await;
+
+        apply_live(&state, CODEX, "2026-08-31T01:00:00Z", Err(anyhow::anyhow!("connection reset")))
+            .await;
+        let (status, error) = diagnostics_for(&state, &CODEX.live_path()).await;
+        assert_eq!(error.as_deref(), Some("connection reset"));
+        assert_ne!(status, "ok", "a failed read is not reported as a healthy one");
+
+        apply_live(
+            &state,
+            CODEX,
+            "2026-08-31T01:05:00Z",
+            Ok(LiveSnapshot {
+                plan_type: None,
+                limits: vec![window(10.0)],
+                earned_reset_count: None,
+                earned_reset_expires_at: None,
+            }),
+        )
+        .await;
+        let (_, error) = diagnostics_for(&state, &CODEX.live_path()).await;
+        assert_eq!(error, None, "the next successful read clears the recorded failure");
+    }
+
+    #[tokio::test]
+    async fn todays_row_becomes_the_totals_the_surfaces_show() {
+        let (state, _database) = state().await;
+
+        apply_history(
+            &state,
+            CODEX,
+            "2026-08-31T01:00:00Z",
+            Ok((
+                HistorySnapshot {
+                    days: vec![day("2026-08-29", 500, 0.05), day(&today(), 1_200, 0.42)],
+                    hours: Vec::new(),
+                },
+                "Australia/Sydney".to_string(),
+            )),
+        )
+        .await;
+
+        let snapshot = snapshot_of(&state).await;
+        assert_eq!(snapshot.today.total, 1_200, "yesterday's row is not what today shows");
+        assert_eq!(snapshot.api_equivalent_cost_usd, Some(0.42));
+        assert_eq!(snapshot.models.len(), 1);
+        assert_eq!(snapshot.history_error, None);
+        assert!(snapshot.last_history_success_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_day_with_no_usage_yet_shows_no_cost() {
+        let (state, _database) = state().await;
+
+        apply_history(
+            &state,
+            CODEX,
+            "2026-08-31T01:00:00Z",
+            Ok((
+                HistorySnapshot { days: vec![day(&today(), 0, 0.0)], hours: Vec::new() },
+                "Australia/Sydney".to_string(),
+            )),
+        )
+        .await;
+
+        assert_eq!(snapshot_of(&state).await.api_equivalent_cost_usd, None);
+    }
+
+    #[tokio::test]
+    async fn a_new_day_starts_the_totals_again() {
+        let (state, _database) = state().await;
+        state
+            .with_snapshot(CODEX, |snapshot| {
+                snapshot.today = usage(1_200);
+                snapshot.api_equivalent_cost_usd = Some(0.42);
+                snapshot.models =
+                    vec![ModelUsage { model: "gpt-5".to_string(), tokens: 1_200, percent: 100.0 }];
+            })
+            .await;
+
+        apply_history(
+            &state,
+            CODEX,
+            "2026-08-31T01:00:00Z",
+            Ok((
+                HistorySnapshot { days: vec![day("2026-08-29", 500, 0.05)], hours: Vec::new() },
+                "Australia/Sydney".to_string(),
+            )),
+        )
+        .await;
+
+        let snapshot = snapshot_of(&state).await;
+        assert_eq!(snapshot.today.total, 0, "yesterday's total does not carry into today");
+        assert_eq!(snapshot.api_equivalent_cost_usd, None);
+        assert!(snapshot.models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_history_read_keeps_the_totals_already_parsed() {
+        let (state, _database) = state().await;
+        state
+            .with_snapshot(CODEX, |snapshot| {
+                snapshot.today = usage(1_200);
+                snapshot.last_history_success_at = Some("2026-08-30T01:00:00Z".to_string());
+            })
+            .await;
+
+        apply_history(
+            &state,
+            CODEX,
+            "2026-08-31T01:00:00Z",
+            Err(anyhow::anyhow!("session log unreadable")),
+        )
+        .await;
+
+        let snapshot = snapshot_of(&state).await;
+        assert_eq!(snapshot.today.total, 1_200);
+        assert_eq!(snapshot.history_error.as_deref(), Some("session log unreadable"));
+        assert_eq!(
+            snapshot.last_history_success_at.as_deref(),
+            Some("2026-08-30T01:00:00Z"),
+            "a failure does not count as a success",
+        );
+    }
+}

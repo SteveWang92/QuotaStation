@@ -1728,24 +1728,22 @@ impl Storage {
     }
 }
 
+/// A throwaway database for a test, shared with the other modules whose tests need one.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use super::*;
-
-    const CODEX: ProviderKind = ProviderKind::Codex;
-    use crate::domain::{HistoryDay, HistoryHour, LimitWindow, LiveSnapshot};
+    use super::Storage;
 
     /// Each test owns a database file in the temporary directory and removes it, along
     /// with the write-ahead files SQLite may leave beside it, when it finishes.
-    struct TempDatabase {
-        path: std::path::PathBuf,
+    pub(crate) struct TempDatabase {
+        pub(crate) path: std::path::PathBuf,
         directory: Option<std::path::PathBuf>,
     }
 
     impl TempDatabase {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             static COUNTER: AtomicU32 = AtomicU32::new(0);
             let name = format!(
                 "quotastation-{}-{}.db",
@@ -1755,7 +1753,7 @@ mod tests {
             Self { path: std::env::temp_dir().join(name), directory: None }
         }
 
-        fn in_unicode_directory() -> Self {
+        pub(crate) fn in_unicode_directory() -> Self {
             static COUNTER: AtomicU32 = AtomicU32::new(0);
             let directory = std::env::temp_dir().join(format!(
                 "QuotaStation 数据 {} {}",
@@ -1779,11 +1777,20 @@ mod tests {
         }
     }
 
-    async fn open_storage() -> (Storage, TempDatabase) {
+    pub(crate) async fn open_storage() -> (Storage, TempDatabase) {
         let database = TempDatabase::new();
         let storage = Storage::open(&database.path).await.expect("open storage");
         (storage, database)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{TempDatabase, open_storage};
+    use super::*;
+
+    const CODEX: ProviderKind = ProviderKind::Codex;
+    use crate::domain::{HistoryDay, HistoryHour, LimitWindow, LiveSnapshot};
 
     #[tokio::test]
     async fn opens_database_in_unicode_directory_with_spaces() {
