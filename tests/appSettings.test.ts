@@ -121,4 +121,20 @@ describe("shared settings record", () => {
 
     expect(savedRecords()).toEqual([{ ...STORED, notifyQuotaResets: false }]);
   });
+
+  it("reads again by itself, so a card opened before the core answered can still save", async () => {
+    vi.useFakeTimers();
+    // What a window created before the core finished its setup is told, which is a refusal
+    // that passes on its own — and until a read lands, every card that writes is refused.
+    invoke.mockRejectedValueOnce("state not managed");
+    const settings = await loadModule();
+    await settings.reloadAppSettings();
+
+    acceptSaves();
+    await vi.advanceTimersByTimeAsync(300);
+    await settings.saveAppSettings({ notifyQuotaResets: false });
+
+    expect(savedRecords()).toEqual([{ ...STORED, notifyQuotaResets: false }]);
+    vi.useRealTimers();
+  });
 });

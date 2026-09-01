@@ -3,6 +3,9 @@ import { useEffect, useState } from "react";
 import { errorMessage } from "./errors";
 import type { AppSettings } from "./types";
 
+const FIRST_RETRY_MS = 250;
+const MAX_RETRY_MS = 5_000;
+
 /**
  * One copy of the settings for the whole window.
  *
@@ -14,6 +17,8 @@ let current: AppSettings | null = null;
 let loadError: string | null = null;
 let loading: Promise<unknown> | null = null;
 let saveQueue: Promise<void> = Promise.resolve();
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let retryDelay = FIRST_RETRY_MS;
 export interface AppSettingsState {
   settings: AppSettings | null;
   error: string | null;
@@ -35,6 +40,7 @@ function notify() {
 function publish(next: AppSettings) {
   current = next;
   loadError = null;
+  retryDelay = FIRST_RETRY_MS;
   notify();
 }
 
@@ -49,6 +55,16 @@ export async function reloadAppSettings(): Promise<void> {
     .catch((cause) => {
       loadError = errorMessage(cause);
       notify();
+      // The window exists before the core has state to answer with, so the first read of a
+      // freshly launched window can be rejected for a reason that passes on its own. Until
+      // one lands there is no record to change, and every card that writes one is refused.
+      if (retryTimer === undefined) {
+        retryTimer = setTimeout(() => {
+          retryTimer = undefined;
+          void reloadAppSettings();
+        }, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
+      }
     })
     .finally(() => {
       loading = null;

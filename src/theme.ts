@@ -22,11 +22,24 @@ export function applyTheme(theme: ThemeSnapshot, isTaskbarWidget: boolean): void
  * it from an effect would leave the first paint in the wrong theme.
  */
 export function watchTheme(isTaskbarWidget: boolean): void {
-  void invoke<ThemeSnapshot>("get_theme").then((theme) => applyTheme(theme, isTaskbarWidget));
+  // Tauri creates the windows before the core finishes its setup, so this first read can be
+  // rejected while there is still no state to answer it — which a window that asked once
+  // would wear as the wrong palette until something else changed the theme.
+  const read = (delay: number) => {
+    void invoke<ThemeSnapshot>("get_theme")
+      .then((theme) => applyTheme(theme, isTaskbarWidget))
+      .catch(() => {
+        setTimeout(() => read(Math.min(delay * 2, MAX_THEME_RETRY_MS)), delay);
+      });
+  };
+  read(FIRST_THEME_RETRY_MS);
   void listen<ThemeSnapshot>("theme-changed", ({ payload }) => {
     applyTheme(payload, isTaskbarWidget);
   });
 }
+
+const FIRST_THEME_RETRY_MS = 250;
+const MAX_THEME_RETRY_MS = 5_000;
 
 /**
  * What a level is drawn in, as the token rather than the colour.
