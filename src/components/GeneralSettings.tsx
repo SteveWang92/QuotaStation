@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import { saveAppSettings, useAppSettings } from "../appSettings";
 import { errorMessage } from "../errors";
-import type { AppSettings, TaskbarDisplay, ThemePreference } from "../types";
+import type { AppSettings, ProviderChoice, TaskbarDisplay, ThemePreference } from "../types";
 
 /**
  * How the application sits on the machine: whether Windows starts it, whether it draws the
@@ -20,6 +20,7 @@ export function GeneralSettings() {
   const [busy, setBusy] = useState(false);
   const [shortcutCreated, setShortcutCreated] = useState(false);
   const [displays, setDisplays] = useState<TaskbarDisplay[]>([]);
+  const [providers, setProviders] = useState<ProviderChoice[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [sharingError, setSharingError] = useState<string | null>(null);
   // The folder can be typed as well as browsed for, so it is edited locally and only saved
@@ -31,6 +32,7 @@ export function GeneralSettings() {
   useEffect(() => {
     void invoke<boolean>("get_autostart").then(setAutostart);
     void invoke<TaskbarDisplay[]>("get_taskbar_displays").then(setDisplays);
+    void invoke<ProviderChoice[]>("get_provider_choices").then(setProviders);
   }, []);
 
   const changeAutostart = useCallback(async (enabled: boolean) => {
@@ -38,6 +40,30 @@ export function GeneralSettings() {
     setError(null);
     try {
       setAutostart(await invoke<boolean>("set_autostart", { enabled }));
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  /**
+   * Switching a provider's quota off stops QuotaStation starting its client to ask for a
+   * percentage and takes the percentages off every surface, which is what makes a client
+   * that cannot answer go quiet. Its usage history is untouched and keeps being collected
+   * and shown.
+   */
+  const changeQuotaTracked = useCallback(async (provider: string, tracked: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      // Built from the saved list rather than the one this render read, so two switches
+      // flipped in quick succession do not undo each other.
+      await saveAppSettings((saved) => ({
+        quotaDisabledProviders: tracked
+          ? saved.quotaDisabledProviders.filter((disabled) => disabled !== provider)
+          : [...saved.quotaDisabledProviders.filter((disabled) => disabled !== provider), provider],
+      }));
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -168,6 +194,8 @@ export function GeneralSettings() {
     }
   }, []);
 
+  const quotaDisabled = settings?.quotaDisabledProviders ?? [];
+
   return (
     <>
       <section className="provider-consent" aria-label="Application settings">
@@ -217,6 +245,21 @@ export function GeneralSettings() {
               />
               Show the quota status in the taskbar
             </label>
+            {/* One switch per provider whose client is here: off stops the quota being
+                read and drawn, and leaves the usage history alone. */}
+            {providers.map((choice) => (
+              <label key={choice.provider}>
+                <input
+                  type="checkbox"
+                  checked={!quotaDisabled.includes(choice.provider)}
+                  disabled={busy || settings === null}
+                  onChange={(event) =>
+                    void changeQuotaTracked(choice.provider, event.target.checked)
+                  }
+                />
+                Track {choice.displayName} quota
+              </label>
+            ))}
             {/* Offered only where there is a choice: one display makes the row pure noise. */}
             {displays.length > 1 ? (
               <label>

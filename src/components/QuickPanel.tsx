@@ -18,15 +18,21 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
           {snapshot.compactStatus.label}
         </span>
       </header>
-      <QuotaSection
-        compact
-        provider={snapshot.provider}
-        providerName={snapshot.displayName}
-        limits={snapshot.limits}
-        earnedResetCount={snapshot.earnedResetCount}
-        earnedResetExpiresAt={snapshot.earnedResetExpiresAt}
-        resets={snapshot.recentResets}
-      />
+      {snapshot.signInRequired ? (
+        <p className="quick-provider-note">
+          Signed out — sign in with the {snapshot.displayName} client again.
+        </p>
+      ) : (
+        <QuotaSection
+          compact
+          provider={snapshot.provider}
+          providerName={snapshot.displayName}
+          limits={snapshot.limits}
+          earnedResetCount={snapshot.earnedResetCount}
+          earnedResetExpiresAt={snapshot.earnedResetExpiresAt}
+          resets={snapshot.recentResets}
+        />
+      )}
       <section className="quick-usage" aria-label={`${snapshot.displayName} usage today`}>
         <div>
           <span>Today</span>
@@ -79,6 +85,9 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const shell = useReportedHeight();
+  // The panel is the quota glance, so a provider whose quota is switched off has no column
+  // here at all, exactly as it has no panel on the dashboard and no slot in the widget.
+  const providers = workspace.providers.filter((snapshot) => !snapshot.quotaDisabled);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -108,14 +117,16 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
           <RefreshCw aria-hidden="true" className={refreshing ? "spinning" : ""} />
         </button>
       </header>
-      <div className={`quick-providers${workspace.providers.length <= 1 ? " single" : ""}`}>
-        {workspace.providers.length > 0 ? (
-          workspace.providers.map((snapshot) => (
+      <div className={`quick-providers${providers.length <= 1 ? " single" : ""}`}>
+        {providers.length > 0 ? (
+          providers.map((snapshot) => (
             <ProviderColumn key={snapshot.provider} snapshot={snapshot} />
           ))
-        ) : loaded ? (
+        ) : !loaded ? null : workspace.providers.length > 0 ? (
+          <p className="quick-provider-note">Quota tracking is off for every provider.</p>
+        ) : (
           <ProviderSetup compact />
-        ) : null}
+        )}
       </div>
       {failure ? <p className="quick-freshness failed">{failure}</p> : null}
       <button

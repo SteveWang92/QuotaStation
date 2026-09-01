@@ -87,7 +87,9 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
 
 export function TaskbarWidget({ initialWorkspace }: { initialWorkspace: WorkspaceSnapshot }) {
   const { workspace } = useSnapshot(initialWorkspace);
-  const providers = workspace.providers;
+  // The widget shows quota and nothing else, so a provider whose quota is switched off
+  // takes no slot in it rather than reserving one that can only say "unavailable".
+  const providers = workspace.providers.filter((provider) => !provider.quotaDisabled);
 
   useEffect(() => {
     // Rust owns the slot width and reserves the existing two-provider capacity. Passing only
@@ -106,7 +108,9 @@ export function TaskbarWidget({ initialWorkspace }: { initialWorkspace: Workspac
       {providers.length > 0 ? (
         providers.map((snapshot) => <ProviderColumn key={snapshot.provider} snapshot={snapshot} />)
       ) : (
-        <span className="taskbar-unavailable">No provider detected</span>
+        <span className="taskbar-unavailable">
+          {workspace.providers.length > 0 ? "Quota tracking off" : "No provider detected"}
+        </span>
       )}
     </main>
   );

@@ -183,6 +183,35 @@ impl AppState {
         ProviderKind::ALL.into_iter().filter(|provider| provider.is_installed()).collect()
     }
 
+    /// Whether this provider's quota is tracked: read from its client and drawn beside it.
+    ///
+    /// Switching it off is about the quota alone. The usage history is parsed from files
+    /// that are already on disk and costs nothing to keep reading, so it carries on — what
+    /// stops is starting the client to ask for a percentage nobody wants to see.
+    fn quota_tracked(settings: &AppSettings, provider: ProviderKind) -> bool {
+        !settings.quota_disabled_providers.iter().any(|key| key == provider.key())
+    }
+
+    /// How many columns the quick panel draws: every provider on display whose quota is
+    /// tracked. Quota is what that panel is, so one switched off takes no column there and
+    /// the window opens at the width of the columns that remain.
+    fn quota_column_count(&self) -> usize {
+        let settings = self.settings();
+        self.enabled_providers()
+            .into_iter()
+            .filter(|provider| Self::quota_tracked(&settings, *provider))
+            .count()
+    }
+
+    /// The providers whose live quota may be read right now.
+    fn quota_providers(&self) -> Vec<ProviderKind> {
+        let settings = self.settings();
+        Self::local_providers()
+            .into_iter()
+            .filter(|provider| Self::quota_tracked(&settings, *provider))
+            .collect()
+    }
+
     /// Refreshes the display list from local clients plus every provider represented by
     /// imported usage. Remote snapshots are reloaded after each import so today's compact
     /// totals move with the history tab instead of waiting for a restart.
@@ -202,6 +231,7 @@ impl AppState {
             snapshot.earned_reset_expires_at = None;
             snapshot.recent_resets.clear();
             snapshot.live_error = None;
+            snapshot.sign_in_required = false;
             snapshot.resolve_derived_state();
             remote.push((provider, snapshot));
         }
@@ -214,6 +244,19 @@ impl AppState {
             providers.clone_from(&enabled);
         }
         Ok(())
+    }
+
+    /// How long to wait before reading this provider's quota again.
+    ///
+    /// A signed-out provider answers the same way every time until someone signs in with
+    /// its own client, so it is asked once an hour instead of starting a client process on
+    /// the ordinary interval for a refusal already on display.
+    async fn live_refresh_delay(&self, provider: ProviderKind) -> Duration {
+        if self.read_snapshot(provider, |snapshot| snapshot.sign_in_required).await {
+            providers::SIGNED_OUT_REFRESH_INTERVAL
+        } else {
+            provider.live_refresh_interval()
+        }
     }
 
     async fn with_snapshot(
@@ -238,6 +281,7 @@ impl AppState {
     /// never reaches the renderer with a status that disagrees with its own errors.
     async fn workspace_snapshot(&self) -> WorkspaceSnapshot {
         let local = Self::local_providers();
+        let settings = self.settings();
         let snapshots = self.snapshots.read().await;
         let providers = self
             .enabled_providers()
@@ -248,12 +292,15 @@ impl AppState {
                     .cloned()
                     .unwrap_or_else(|| ProviderSnapshot::new(provider));
                 snapshot.remote_usage_only = !local.contains(&provider);
-                if snapshot.remote_usage_only {
+                snapshot.quota_disabled =
+                    !snapshot.remote_usage_only && !Self::quota_tracked(&settings, provider);
+                if snapshot.remote_usage_only || snapshot.quota_disabled {
                     snapshot.limits.clear();
                     snapshot.earned_reset_count = None;
                     snapshot.earned_reset_expires_at = None;
                     snapshot.recent_resets.clear();
                     snapshot.live_error = None;
+                    snapshot.sign_in_required = false;
                 }
                 snapshot.resolve_derived_state();
                 snapshot
@@ -479,6 +526,27 @@ fn set_taskbar_widget_size(app: tauri::AppHandle, provider_count: u32) -> Result
     .map_err(|error| error.to_string())
 }
 
+/// A provider whose quota this machine could read, for the switch that decides whether it
+/// does. Only a provider with a client here can be asked for a quota at all.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderChoice {
+    provider: ProviderKind,
+    display_name: String,
+}
+
+#[tauri::command]
+fn get_provider_choices() -> Vec<ProviderChoice> {
+    ProviderKind::ALL
+        .into_iter()
+        .filter(|provider| demo::requested() || provider.is_installed())
+        .map(|provider| ProviderChoice {
+            provider,
+            display_name: provider.display_name().to_string(),
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn get_app_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
     state.settings()
@@ -493,6 +561,7 @@ async fn set_app_settings(
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
     let previous = state.settings();
+    let quota_changed = previous.quota_disabled_providers != settings.quota_disabled_providers;
     let taskbar_changed = previous.taskbar_widget_enabled != settings.taskbar_widget_enabled;
     let display_changed = previous.taskbar_widget_display != settings.taskbar_widget_display;
     let theme_changed = previous.theme != settings.theme;
@@ -506,6 +575,24 @@ async fn set_app_settings(
     }
     if theme_changed {
         apply_theme(&app, updated.theme);
+    }
+    if quota_changed {
+        // Switching quota off has to clear it from the surfaces now rather than at the next
+        // scheduled read, and switching it back on has nothing in memory to draw until
+        // something reads it, so the snapshot is republished here and the read that fills a
+        // returning provider runs behind it.
+        refresh::republish(&app, state.inner()).await;
+        let returning = ProviderKind::ALL.into_iter().filter(|provider| {
+            !AppState::quota_tracked(&previous, *provider)
+                && AppState::quota_tracked(&updated, *provider)
+        });
+        for provider in returning.collect::<Vec<_>>() {
+            let app_handle = app.clone();
+            let refresh_state = state.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                refresh::refresh_live_for_provider(&app_handle, &refresh_state, provider).await;
+            });
+        }
     }
     if taskbar_changed {
         set_taskbar_widget_visible(&app, updated.taskbar_widget_enabled);
@@ -760,10 +847,18 @@ async fn collect_diagnostics(
     state: &AppState,
 ) -> Result<DiagnosticsSnapshot, String> {
     let mut acquisitions = Vec::new();
+    let settings = state.settings();
     for provider in AppState::local_providers() {
-        acquisitions.extend(state.storage.load_acquisition_diagnostics(provider).await.map_err(
-            |error| sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable"),
-        )?);
+        let rows = state.storage.load_acquisition_diagnostics(provider).await.map_err(|error| {
+            sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
+        })?;
+        // A path nothing uses any more has no status worth reporting: leaving the last
+        // failed quota read here would keep the panel asking to be looked at for a source
+        // the user switched off.
+        let tracked = AppState::quota_tracked(&settings, provider);
+        let live_path = provider.live_path();
+        acquisitions
+            .extend(rows.into_iter().filter(|row| tracked || row.acquisition_path != live_path));
     }
     let retention =
         state.storage.load_retention_diagnostics().await.map_err(|error| {
@@ -1048,7 +1143,7 @@ fn toggle_quick_panel_beside(
     let frame = quick_panel_frame(&panel);
     let current_height = panel.outer_size().map(|size| size.height).unwrap_or(QUICK_PANEL_HEIGHT);
     let requested_size = quick_panel_size(
-        state.enabled_providers().len(),
+        state.quota_column_count(),
         current_height,
         panel.scale_factor().unwrap_or(1.0),
         frame,
@@ -1483,10 +1578,8 @@ pub fn run() {
                     let app_handle = app.handle().clone();
                     let live_state = app.state::<Arc<AppState>>().inner().clone();
                     tauri::async_runtime::spawn(async move {
-                        let mut interval = tokio::time::interval(provider.live_refresh_interval());
-                        interval.tick().await;
                         loop {
-                            interval.tick().await;
+                            tokio::time::sleep(live_state.live_refresh_delay(provider).await).await;
                             refresh::refresh_live_for_provider(&app_handle, &live_state, provider)
                                 .await;
                         }
@@ -1532,6 +1625,7 @@ pub fn run() {
             get_theme,
             get_app_settings,
             set_app_settings,
+            get_provider_choices,
             get_autostart,
             set_autostart,
             shared_folder_exists,

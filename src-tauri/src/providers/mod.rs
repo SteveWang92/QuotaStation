@@ -118,6 +118,32 @@ impl ProviderKind {
     }
 }
 
+/// The provider answered, and its answer was that this machine is no longer signed in.
+///
+/// This is a state to report rather than a failure to retry into: every read gives the same
+/// answer until someone signs in with the provider's own client, so the surfaces say so
+/// plainly instead of showing a read failure, and the scheduler asks far less often.
+#[derive(Debug)]
+pub struct SignInRequired(pub ProviderKind);
+
+impl std::fmt::Display for SignInRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} is signed out or its sign-in has expired", self.0.display_name())
+    }
+}
+
+impl std::error::Error for SignInRequired {}
+
+/// Whether a failed live read was the provider reporting an expired sign-in.
+pub fn is_sign_in_required(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<SignInRequired>().is_some()
+}
+
+/// How often a signed-out provider is asked again. The answer cannot change until someone
+/// signs in, and an hour finds that soon enough without starting a client process every
+/// five minutes for a reply already known.
+pub const SIGNED_OUT_REFRESH_INTERVAL: Duration = Duration::from_secs(3600);
+
 /// Two providers is not enough to justify an async trait and the dependency it needs, so
 /// acquisition dispatches on the kind instead.
 pub async fn read_live(kind: ProviderKind) -> Result<LiveSnapshot> {

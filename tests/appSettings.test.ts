@@ -17,6 +17,7 @@ const STORED: AppSettings = {
   deviceId: "device-1",
   deviceName: "Workshop",
   dismissedResetNotices: ["codex:primary:1800000000"],
+  quotaDisabledProviders: [],
   sharedUsageFolder: null,
 };
 

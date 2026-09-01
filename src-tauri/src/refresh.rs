@@ -56,7 +56,10 @@ async fn refresh_live_for(state: &Arc<AppState>, providers: &[ProviderKind]) {
     }
     let _guard = state.live_refresh_lock.lock().await;
     let started_at = now();
-    for &provider in providers {
+    // A provider whose quota is switched off is not asked for one. This is the single gate:
+    // every scheduler, watcher and manual refresh reaches the client through here.
+    let tracked = state.quota_providers();
+    for &provider in providers.iter().filter(|provider| tracked.contains(provider)) {
         state
             .with_snapshot(provider, |snapshot| {
                 snapshot.last_attempt_at = Some(started_at.clone());
@@ -110,6 +113,13 @@ pub async fn refresh_changed_provider(
     let _ = app.emit("history-updated", ());
 }
 
+/// Publishes the snapshot again after something other than a read changed what it holds —
+/// switching a provider off is the whole of it, and the columns have to go at once.
+pub async fn republish(app: &AppHandle, state: &Arc<AppState>) {
+    let _publish_guard = state.refresh_publish_lock.lock().await;
+    publish_snapshot(app, state).await;
+}
+
 async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSnapshot {
     let workspace = state.workspace_snapshot().await;
     let _ = app.emit("snapshot-updated", &workspace);
@@ -130,6 +140,7 @@ async fn apply_live(
     result: Result<crate::domain::LiveSnapshot>,
 ) {
     let completed_at = now();
+    let mut signed_out = None;
     match result {
         Ok(live) => {
             let save_error = state
@@ -157,18 +168,39 @@ async fn apply_live(
                         snapshot.recent_resets = recent_resets;
                     }
                     snapshot.live_error = save_error.or(reset_error);
+                    snapshot.sign_in_required = false;
                     if snapshot.live_error.is_none() {
                         snapshot.last_live_success_at = Some(completed_at.clone());
                     }
                 })
                 .await;
         }
+        // The provider answered that this machine is signed out. Nothing is broken, so the
+        // snapshot carries the state rather than an error and the surfaces ask for a
+        // sign-in instead of reporting a fault. The acquisition path still records the
+        // refusal, because the diagnostics panel is where a path that stopped answering
+        // has to be visible.
+        Err(error) if providers::is_sign_in_required(&error) => {
+            state
+                .with_snapshot(provider, |snapshot| {
+                    snapshot.sign_in_required = true;
+                    snapshot.live_error = None;
+                })
+                .await;
+            signed_out = Some(sanitize_error(&error.to_string(), PROVIDER_FALLBACK));
+        }
         Err(error) => {
             let message = sanitize_error(&error.to_string(), PROVIDER_FALLBACK);
-            state.with_snapshot(provider, |snapshot| snapshot.live_error = Some(message)).await;
+            state
+                .with_snapshot(provider, |snapshot| {
+                    snapshot.live_error = Some(message);
+                    snapshot.sign_in_required = false;
+                })
+                .await;
         }
     }
-    let error = state.read_snapshot(provider, |snapshot| snapshot.live_error.clone()).await;
+    let error =
+        state.read_snapshot(provider, |snapshot| snapshot.live_error.clone()).await.or(signed_out);
     let _ = state
         .storage
         .record_refresh(

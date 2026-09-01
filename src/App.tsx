@@ -387,6 +387,7 @@ function Dashboard() {
   // Every quota window on display right now, in the vocabulary the dismissed early-restart
   // notes are recorded in. Rewriting the record against these is what stops it growing:
   // a note for a window nobody is looking at any more can never be shown again either way.
+  const quotaProviders = workspace.providers.filter((provider) => !provider.quotaDisabled);
   const liveWindowKeys = workspace.providers.flatMap((provider) =>
     provider.limits.map((limit) => resetNoticeKey(provider.provider, limit.kind, limit.resetsAt)),
   );
@@ -440,8 +441,10 @@ function Dashboard() {
       ) : (
         <>
           {loaded && workspace.providers.length === 0 ? <ProviderSetup /> : null}
-          <div className={`provider-grid${workspace.providers.length <= 1 ? " single" : ""}`}>
-            {workspace.providers.map((provider) => (
+          {/* The grid is the quota display, so a provider whose quota is switched off has
+              no panel here at all. Its usage keeps its place in the history below. */}
+          <div className={`provider-grid${quotaProviders.length <= 1 ? " single" : ""}`}>
+            {quotaProviders.map((provider) => (
               <section key={provider.provider} className="provider-panel">
                 <header className="provider-panel-header">
                   <h2>{provider.displayName}</h2>
@@ -459,6 +462,15 @@ function Dashboard() {
                 {provider.remoteUsageOnly ? (
                   <p className="provider-quota-note">
                     Usage is synced from another device. Quota can only be read on that device.
+                  </p>
+                ) : provider.signInRequired ? (
+                  // Nothing here is broken and nothing is worth retrying quickly, so the
+                  // panel says what to do about it rather than showing windows it cannot
+                  // read or promising a retry that cannot succeed.
+                  <p className="provider-quota-note">
+                    {provider.displayName} is signed out, or its sign-in has expired. Sign in with
+                    its own client again and the quota comes back on its own — QuotaStation checks
+                    once an hour until then. You can also switch its quota off in Settings.
                   </p>
                 ) : (
                   <QuotaSection

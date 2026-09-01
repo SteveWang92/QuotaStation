@@ -14,7 +14,10 @@ use tokio::{
     time::{Duration, timeout},
 };
 
-use crate::domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, QuotaLevel, WindowSource};
+use crate::{
+    domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, QuotaLevel, WindowSource},
+    providers::{ProviderKind, SignInRequired, is_sign_in_required},
+};
 
 const CODEX_EXECUTABLE_OVERRIDE: &str = "QUOTASTATION_CODEX_EXECUTABLE";
 
@@ -49,6 +52,10 @@ where
     for executable in candidates {
         match attempt(executable).await {
             Ok(value) => return Ok(value),
+            // An expired sign-in is the account's answer, not this executable's: the next
+            // candidate reads the same credentials and would only bury that answer under
+            // whatever it fails with.
+            Err(error) if is_sign_in_required(&error) => return Err(error),
             Err(error) => last_error = Some(error),
         }
     }
@@ -182,12 +189,23 @@ async fn next_value(
 
 fn response_result(value: Value) -> Result<Value> {
     if let Some(error) = value.get("error") {
-        bail!(
-            "Codex app-server request failed: {}",
-            error.get("message").and_then(Value::as_str).unwrap_or("unknown error")
-        );
+        let message = error.get("message").and_then(Value::as_str).unwrap_or("unknown error");
+        if reports_expired_sign_in(message) {
+            return Err(anyhow::Error::new(SignInRequired(ProviderKind::Codex)));
+        }
+        bail!("Codex app-server request failed: {message}");
     }
     value.get("result").cloned().ok_or_else(|| anyhow!("Codex app-server response omitted result"))
+}
+
+/// Whether the app-server refused because the stored credentials are no longer good.
+///
+/// It reports this by relaying the backend's own 401, so the reply is a transport error
+/// carrying the upstream body rather than a code of its own: `token_expired` is what that
+/// body names the condition, and the status covers the wording changing around it.
+fn reports_expired_sign_in(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("token_expired") || message.contains("401 unauthorized")
 }
 
 fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
@@ -290,6 +308,22 @@ mod tests {
         .await
         .expect("second candidate succeeds");
         assert_eq!(snapshot.plan_type.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn an_expired_sign_in_is_told_apart_from_a_broken_read() {
+        let expired = json!({
+            "error": {
+                "code": -32603,
+                "message": "failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 401 Unauthorized; content-type=text/plain; body={\"error\":{\"code\":\"token_expired\"}}",
+            },
+            "id": 3,
+        });
+        let error = response_result(expired).expect_err("an expired sign-in is refused");
+        assert!(is_sign_in_required(&error), "it is reported as a sign-in rather than a fault");
+        let broken = json!({ "error": { "message": "internal error" }, "id": 3 });
+        let error = response_result(broken).expect_err("a broken read is still refused");
+        assert!(!is_sign_in_required(&error), "an ordinary failure stays an ordinary failure");
     }
 
     #[test]

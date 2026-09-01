@@ -165,6 +165,11 @@ details. See [Multi-machine usage](multi-machine.md) for the file contents and s
   does not leave history stale indefinitely.
 - Each provider data source fails independently. A failed source keeps its last successful
   result visible but marks it stale.
+- A provider that reports an expired sign-in is shown as signed out rather than failed, and
+  its quota is read once an hour until someone signs in with that client again.
+- A provider's quota can be switched off in Settings. Nothing then starts its client to
+  read a percentage and no surface draws one. Its usage history is unaffected: the session
+  files are parsed and watched as before, and the provider keeps its place in the charts.
 - A normal launch opens the dashboard. `--background` starts in the tray, which is how the
   Windows logon entry runs it.
 - A second launch hands control to the existing process instead of opening another database

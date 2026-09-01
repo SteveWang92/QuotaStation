@@ -84,12 +84,23 @@ impl CompactStatusLevel {
 /// The single status the tray icon, the taskbar accent, and the panel header show when
 /// several providers are on screen at once. It is the loudest provider's own status.
 pub fn aggregate_status(snapshots: &[ProviderSnapshot]) -> CompactStatus {
-    snapshots
-        .iter()
+    // A provider whose quota is switched off has no reading to contribute, and letting its
+    // status stand in would make the tray report the loudest thing nobody is watching.
+    let tracked = snapshots.iter().filter(|snapshot| !snapshot.quota_disabled);
+    tracked
         .map(|snapshot| &snapshot.compact_status)
         .max_by_key(|status| status.level.severity())
         .cloned()
-        .unwrap_or(CompactStatus::unavailable())
+        .unwrap_or_else(|| {
+            if snapshots.is_empty() {
+                CompactStatus::unavailable()
+            } else {
+                CompactStatus {
+                    level: CompactStatusLevel::Unavailable,
+                    label: "Quota tracking off".to_string(),
+                }
+            }
+        })
 }
 
 /// Declaration order is display order, and the ordering derives make it so wherever windows
@@ -273,6 +284,13 @@ pub struct ProviderSnapshot {
     pub last_live_success_at: Option<String>,
     pub last_history_success_at: Option<String>,
     pub live_error: Option<String>,
+    /// The provider is reachable and says this machine is signed out. It is not a read
+    /// failure — nothing here is broken and nothing is worth retrying quickly — so it is
+    /// carried separately from `live_error` and phrased as its own state everywhere.
+    pub sign_in_required: bool,
+    /// The user has switched this provider's quota off. Nothing reads it and no surface
+    /// draws it; everything below — today's totals, the history, the charts — is untouched.
+    pub quota_disabled: bool,
     pub history_error: Option<String>,
     pub parser_revision: String,
     pub pricing_catalog_revision: String,
@@ -300,6 +318,8 @@ impl ProviderSnapshot {
             last_live_success_at: None,
             last_history_success_at: None,
             live_error: None,
+            sign_in_required: false,
+            quota_disabled: false,
             history_error: None,
             parser_revision: CCUSAGE_REVISION.to_string(),
             pricing_catalog_revision: PRICING_CATALOG_REVISION.to_string(),
@@ -309,6 +329,17 @@ impl ProviderSnapshot {
     /// Quota freshness follows only from live acquisition and each window's own source
     /// timestamp. A successful history parse must never renew an older quota reading.
     pub fn resolve_derived_state(&mut self) {
+        // Quota nobody asked for is not quota that failed. Everything the surfaces draw
+        // from this snapshot below the quota block reads on unchanged.
+        if self.quota_disabled {
+            self.freshness = Freshness::Unavailable;
+            self.stale_age_seconds = None;
+            self.compact_status = CompactStatus {
+                level: CompactStatusLevel::Unavailable,
+                label: "Quota tracking off".to_string(),
+            };
+            return;
+        }
         if self.remote_usage_only {
             self.freshness = Freshness::Fresh;
             self.stale_age_seconds = None;
@@ -352,6 +383,15 @@ impl ProviderSnapshot {
             })
             .max()
             .or_else(|| self.last_live_success_at.as_deref().and_then(age_seconds));
+        // A signed-out provider has an answer rather than a fault, and saying which one it
+        // is stops every surface reading it as a source that broke.
+        if self.sign_in_required {
+            self.compact_status = CompactStatus {
+                level: CompactStatusLevel::Unavailable,
+                label: "Signed out".to_string(),
+            };
+            return;
+        }
         self.compact_status = if self.freshness == Freshness::Unavailable || self.limits.is_empty()
         {
             CompactStatus::unavailable()

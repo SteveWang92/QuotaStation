@@ -197,6 +197,11 @@ fn collect_failure(
 /// icon can never disagree about whether something is wrong. Errors reaching here have been
 /// sanitized by the core, so they are safe to show.
 fn failure_reason(provider: &ProviderSnapshot) -> Option<String> {
+    // Neither of these is a provider that cannot be read. One is waiting to be signed in
+    // again, which the dashboard and tray already say; the other is quota nobody asked for.
+    if provider.sign_in_required || provider.quota_disabled {
+        return None;
+    }
     match provider.compact_status.level {
         CompactStatusLevel::Unavailable | CompactStatusLevel::Stale => Some(
             provider
@@ -526,6 +531,31 @@ mod tests {
             pending(&mut announced, &workspace(broken), &settings).len(),
             1,
             "failing again after a recovery is a new failure"
+        );
+    }
+
+    #[test]
+    fn a_provider_with_no_quota_to_read_is_not_announced_as_a_read_failure() {
+        let mut announced = Announced::default();
+        let settings = AppSettings::default();
+
+        let mut signed_out = provider(Vec::new());
+        signed_out.sign_in_required = true;
+        signed_out.resolve_derived_state();
+        pending(&mut announced, &workspace(answering()), &settings);
+        assert!(
+            pending(&mut announced, &workspace(signed_out), &settings).is_empty(),
+            "a client waiting to be signed in again is not a source that broke"
+        );
+
+        let mut untracked = provider(Vec::new());
+        untracked.quota_disabled = true;
+        untracked.resolve_derived_state();
+        let mut announced = Announced::default();
+        pending(&mut announced, &workspace(answering()), &settings);
+        assert!(
+            pending(&mut announced, &workspace(untracked), &settings).is_empty(),
+            "quota nobody asked for cannot fail to arrive"
         );
     }
 

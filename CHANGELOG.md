@@ -7,6 +7,14 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Added
+
+- Settings can switch a provider's quota off, which stops QuotaStation reading and showing it while its usage history carries on.
+
+### Changed
+
+- A provider whose sign-in has expired is reported as signed out rather than as a failed read, and is checked hourly instead of on its usual interval.
+
 ## [1.0.0] - 2026-08-30
 
 ### Added

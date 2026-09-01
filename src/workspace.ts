@@ -33,6 +33,8 @@ export function emptySnapshot(
     lastLiveSuccessAt: null,
     lastHistorySuccessAt: null,
     liveError: null,
+    signInRequired: false,
+    quotaDisabled: false,
     historyError: null,
     parserRevision: "",
     pricingCatalogRevision: "",

@@ -599,6 +599,7 @@ button { font: inherit; }
 .quick-provider { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .quick-provider-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .quick-provider-header h2 { margin: 0; font-size: 13px; font-weight: 650; }
+.quick-provider-note { margin: 0; padding: 12px 13px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: var(--surface-inset); font-size: 11px; line-height: 1.5; }
 .quick-provider-header span { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .quota-section.compact { flex: none; border-color: var(--line); }
 .quota-section.compact .quota-row { min-height: 112px; grid-template-columns: minmax(0, 1fr) 86px; grid-template-areas: "label percent" "meter meter" "reset reset"; gap: 8px 14px; padding: 13px 15px; }
