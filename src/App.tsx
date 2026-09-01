@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowLeft, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { logActivity } from "./activity";
 import { hourlyUsageMatchesRange } from "./charts";
 import { ProviderSetup } from "./components/ProviderSetup";
 import { QuickPanel } from "./components/QuickPanel";
@@ -312,6 +313,7 @@ function Dashboard() {
 
   const selectProvider = useCallback(
     (provider: HistoryProvider) => {
+      logActivity(`history provider set to ${provider}`);
       providerRef.current = provider;
       deviceRef.current = null;
       setSelectedProvider(provider);
@@ -323,6 +325,7 @@ function Dashboard() {
 
   const selectDevice = useCallback(
     (device: string | null) => {
+      logActivity(`history device set to ${device === null ? "every device" : "one device"}`);
       deviceRef.current = device;
       setSelectedDevice(device);
       void loadUsageRange(activeRangeRef.current, providerRef.current, device);
@@ -332,6 +335,7 @@ function Dashboard() {
 
   const selectRange = useCallback(
     (range: DateRangeSelection) => {
+      logActivity(`history range set to ${range.preset}`);
       activeRangeRef.current = range;
       setActiveRange(range);
       void loadUsageRange(range, providerRef.current, deviceRef.current);
@@ -340,6 +344,7 @@ function Dashboard() {
   );
 
   const refresh = useCallback(async () => {
+    logActivity("refresh pressed on the dashboard");
     setRefreshing(true);
     try {
       // refresh_now publishes the new snapshot through the shared subscription.
@@ -417,7 +422,12 @@ function Dashboard() {
           <button
             type="button"
             className={diagnosticsAttention && !showSettings ? "attention" : ""}
-            onClick={() => setShowSettings((open) => !open)}
+            onClick={() =>
+              setShowSettings((open) => {
+                logActivity(open ? "settings closed" : "settings opened");
+                return !open;
+              })
+            }
           >
             {showSettings ? (
               <>

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use anyhow::Result;
 use tauri::{AppHandle, Emitter};
@@ -65,7 +65,9 @@ async fn refresh_live_for(state: &Arc<AppState>, providers: &[ProviderKind]) {
                 snapshot.last_attempt_at = Some(started_at.clone());
             })
             .await;
+        let began = Instant::now();
         let live = providers::read_live(provider).await;
+        crate::log::write(describe_live(provider, began, &live));
         apply_live(state, provider, &started_at, live).await;
     }
 }
@@ -82,7 +84,10 @@ async fn refresh_history_for(state: &Arc<AppState>, providers: &[ProviderKind]) 
                 snapshot.last_attempt_at = Some(started_at.clone());
             })
             .await;
-        apply_history(state, provider, &started_at, providers::read_history(provider).await).await;
+        let began = Instant::now();
+        let history = providers::read_history(provider).await;
+        crate::log::write(describe_history(provider, began, &history));
+        apply_history(state, provider, &started_at, history).await;
     }
     // The parse has just replaced this machine's rows. Publishing them and reading in what
     // the other machines published belongs to the same refresh, so the snapshot below
@@ -120,8 +125,72 @@ pub async fn republish(app: &AppHandle, state: &Arc<AppState>) {
     publish_snapshot(app, state).await;
 }
 
+/// What a live read came back with, in one line: the shape of the answer, how long the
+/// provider took to give it, and the reason when there was no answer at all.
+fn describe_live(
+    provider: ProviderKind,
+    began: Instant,
+    result: &Result<crate::domain::LiveSnapshot>,
+) -> String {
+    let took = began.elapsed().as_millis();
+    match result {
+        Ok(live) => format!(
+            "{} live read in {took}ms: {} window(s), plan {:?}, {:?} earned reset(s)",
+            provider.key(),
+            live.limits.len(),
+            live.plan_type,
+            live.earned_reset_count
+        ),
+        Err(error) if providers::is_sign_in_required(error) => {
+            format!("{} live read in {took}ms: signed out", provider.key())
+        }
+        Err(error) => format!("{} live read failed in {took}ms: {error:#}", provider.key()),
+    }
+}
+
+/// The same for a history parse, counted in what it produced rather than in what it read:
+/// the file names and their contents are exactly what must not reach this file.
+fn describe_history(
+    provider: ProviderKind,
+    began: Instant,
+    result: &Result<(crate::domain::HistorySnapshot, String)>,
+) -> String {
+    let took = began.elapsed().as_millis();
+    match result {
+        Ok((history, timezone)) => format!(
+            "{} history parsed in {took}ms: {} day(s) in {timezone}",
+            provider.key(),
+            history.days.len()
+        ),
+        Err(error) => format!("{} history parse failed in {took}ms: {error:#}", provider.key()),
+    }
+}
+
 async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSnapshot {
     let workspace = state.workspace_snapshot().await;
+    // One line for the state every surface is about to draw, which is what makes a window
+    // that drew something unexpected answerable from the log rather than from a guess.
+    crate::log::write(format!(
+        "snapshot published, {}: {}",
+        workspace.aggregate.label,
+        workspace
+            .providers
+            .iter()
+            .map(|provider| format!(
+                "{} {} window(s) {} today{}",
+                provider.provider.key(),
+                provider.limits.len(),
+                provider.today.total,
+                match (&provider.live_error, provider.sign_in_required, provider.quota_disabled) {
+                    (Some(error), _, _) => format!(" ({error})"),
+                    (None, true, _) => " (signed out)".to_string(),
+                    (None, false, true) => " (quota off)".to_string(),
+                    _ => String::new(),
+                }
+            ))
+            .collect::<Vec<_>>()
+            .join("; ")
+    ));
     let _ = app.emit("snapshot-updated", &workspace);
     // The event reaches this application's own windows and nothing else. The status-line
     // bridge is a separate process with no way to receive it, so the same snapshot is also

@@ -33,6 +33,9 @@ pub async fn read_live() -> Result<LiveSnapshot> {
 
 async fn read_live_inner() -> Result<LiveSnapshot> {
     let candidates = discover_codex_candidates()?;
+    // How many were found, never which: the answer is a list of executable paths, and a
+    // path is what this log exists not to carry.
+    crate::log::write(format!("codex app-server: {} candidate(s) found", candidates.len()));
     first_success(candidates, attempt_candidate).await
 }
 
@@ -40,7 +43,11 @@ async fn attempt_candidate(executable: PathBuf) -> Result<LiveSnapshot> {
     let mut child = spawn_app_server(&executable)?;
     let result = timeout(Duration::from_secs(4), exchange(&mut child)).await;
     let _ = child.kill().await;
-    result.context("Codex app-server candidate timed out")?
+    let result = result.context("Codex app-server candidate timed out")?;
+    if let Err(error) = &result {
+        crate::log::write(format!("codex app-server candidate declined: {error:#}"));
+    }
+    result
 }
 
 async fn first_success<T, F, Fut>(candidates: Vec<PathBuf>, mut attempt: F) -> Result<T>

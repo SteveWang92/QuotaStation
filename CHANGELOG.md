@@ -13,6 +13,7 @@ on `main`, with the matching section below as its notes.
 
 ### Changed
 
+- The activity log now records what the application did rather than only what failed, including window, settings, and renderer events, and keeps a longer history of it before rolling over.
 - A provider whose sign-in has expired is reported as signed out rather than as a failed read, and is checked hourly instead of on its usual interval.
 
 ## [1.0.0] - 2026-08-30

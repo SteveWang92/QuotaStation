@@ -301,7 +301,12 @@ pub fn run_bridge_if_requested() -> bool {
         crate::log::write("status line reported no rate limits; the stored reading stands");
     }
     record_session(input.as_ref());
-    println!("{}", status_line(&view_of(input.as_ref(), limits)));
+    let line = status_line(&view_of(input.as_ref(), limits));
+    // The line itself, because a status line that came out empty or wrong is the whole
+    // complaint and Claude Code keeps no record of what it was handed. It carries the same
+    // normalized quota vocabulary as every other line here and nothing from the session.
+    crate::log::write(format!("status line rendered {} char(s): {line}", line.chars().count()));
+    println!("{line}");
     true
 }
 

@@ -237,10 +237,17 @@ does not store prompts, source code, raw session records, credentials, or full s
 
 The same directory holds `quotastation.log`. Built executables are windowed applications with
 no console, and the status-line bridge is a process that lives for milliseconds inside Claude
-Code, so the log is the only place either of them can report what happened: which source
-answered a refresh, how many windows it carried, and why a read failed. It records no session
-content and no credential, rolls over at 512 KB into `quotastation.log.1`, and the
-Diagnostics tab's **Show activity log** button reveals it.
+Code, so the log is the only place any of them can report what happened. It is written to be
+read afterwards by someone who was not watching, so it records what worked as well as what
+did not: the application starting and what it found, every quota read and history parse with
+how long it took and what it produced, every snapshot published, each stored-data query the
+windows asked for, the status line each bridge run rendered, notifications raised, the
+shared folder exchange, session-file changes, which windows opened and closed, which
+settings changed, and any exception a window's own scripts threw. It records no session
+content, no credential, and no path — every line passes the same redaction the diagnostics
+panel uses. It rolls over at 4 MB into `quotastation.log.1`, which is the whole retention
+policy: two files, nothing dated, nothing swept on a timer. The Diagnostics tab's **Show
+activity log** button reveals it.
 
 Changing the selected history range queries the stored SQLite rows — daily, or hourly for a range
 short enough to be drawn that way; they do not trigger a new parse of the Codex session logs.

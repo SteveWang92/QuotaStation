@@ -183,8 +183,9 @@ details. See [Multi-machine usage](multi-machine.md) for the file contents and s
 - Credentials stay in the provider client or operating-system credential store.
 - Prompts, source code, raw sessions, account details, and complete paths are not collected.
 - Diagnostic export is an explicit user action and omits account and machine identifiers.
-- The activity log records which source answered and why a read failed, but no session content,
-  credential, or provider path. It rolls over at 512 KB.
+- The activity log records what the application did — reads, publications, queries, window
+  and settings changes, renderer failures — but no session content, credential, or provider
+  path. It is bounded by size alone: 4 MB, then one roll.
 - The pricing catalog is embedded at build time, so a clean build does not download it.
 
 ## Reused code

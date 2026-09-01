@@ -276,6 +276,7 @@ pub fn review(app: &tauri::AppHandle, workspace: &WorkspaceSnapshot) {
         pending(&mut record, workspace, &settings)
     };
     for alert in alerts {
+        crate::log::write(format!("notification raised: {} — {}", alert.title, alert.body));
         raise(app, &alert.title, &alert.body);
     }
 }

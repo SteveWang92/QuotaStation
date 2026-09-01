@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { logActivity } from "../activity";
 import { errorMessage } from "../errors";
 import { formatCurrency, formatNumber } from "../format";
 import { statusColor } from "../theme";
@@ -90,6 +91,7 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
   const providers = workspace.providers.filter((snapshot) => !snapshot.quotaDisabled);
 
   const refresh = useCallback(async () => {
+    logActivity("refresh pressed in the quick panel");
     setRefreshing(true);
     setRefreshError(null);
     try {
