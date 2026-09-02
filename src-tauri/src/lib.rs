@@ -194,12 +194,17 @@ impl AppState {
 
     /// How many columns the quick panel draws: every provider on display whose quota is
     /// tracked. Quota is what that panel is, so one switched off takes no column there and
-    /// the window opens at the width of the columns that remain.
+    /// the window opens at the width of the columns that remain. The switch only reaches a
+    /// provider this machine can read, exactly as `workspace_snapshot` resolves it — one
+    /// whose usage arrives from another device keeps its column and says so in it.
     fn quota_column_count(&self) -> usize {
         let settings = self.settings();
+        let local = Self::local_providers();
         self.enabled_providers()
             .into_iter()
-            .filter(|provider| Self::quota_tracked(&settings, *provider))
+            .filter(|provider| {
+                !local.contains(provider) || Self::quota_tracked(&settings, *provider)
+            })
             .count()
     }
 
@@ -715,8 +720,14 @@ async fn set_app_settings(
         // Switching quota off has to clear it from the surfaces now rather than at the next
         // scheduled read, and switching it back on has nothing in memory to draw until
         // something reads it, so the snapshot is republished here and the read that fills a
-        // returning provider runs behind it.
-        refresh::republish(&app, state.inner()).await;
+        // returning provider runs behind it. Both are spawned: the publish lock can be held
+        // by a scheduled history refresh for as long as the shared folder takes, and waiting
+        // for it here would leave every settings card disabled until that finished.
+        let publish_app = app.clone();
+        let publish_state = state.inner().clone();
+        tauri::async_runtime::spawn(async move {
+            refresh::republish(&publish_app, &publish_state).await;
+        });
         let returning = ProviderKind::ALL.into_iter().filter(|provider| {
             !AppState::quota_tracked(&previous, *provider)
                 && AppState::quota_tracked(&updated, *provider)

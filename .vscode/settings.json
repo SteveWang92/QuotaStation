@@ -48,8 +48,7 @@
 
   // Match .gitattributes and .editorconfig without depending on an extension. Markdown
   // is exempt from the trim: two trailing spaces are a hard line break there.
-  "files.eol": "
-",
+  "files.eol": "\n",
   "files.insertFinalNewline": true,
   "files.trimTrailingWhitespace": true,
 

@@ -16,7 +16,14 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
         {snapshot.shortName}
       </span>
       <div className="taskbar-windows">
-        {snapshot.limits.length > 0 ? (
+        {/* A signed-out provider keeps the last reading it managed, and the core deliberately
+            leaves it there. Drawing it here would show a percentage and a countdown that
+            stopped being true hours ago, so this slot says what the other two surfaces say. */}
+        {snapshot.signInRequired ? (
+          <span className="taskbar-unavailable" style={{ color: providerColor }}>
+            signed out
+          </span>
+        ) : snapshot.limits.length > 0 ? (
           snapshot.limits.map((limit) => {
             // Every window draws the same three fixed-width cells — badge, bar, reading — so
             // the bars of two windows, and of two providers, all start and end on the same
