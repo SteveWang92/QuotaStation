@@ -422,12 +422,10 @@ function Dashboard() {
           <button
             type="button"
             className={diagnosticsAttention && !showSettings ? "attention" : ""}
-            onClick={() =>
-              setShowSettings((open) => {
-                logActivity(open ? "settings closed" : "settings opened");
-                return !open;
-              })
-            }
+            onClick={() => {
+              logActivity(showSettings ? "settings closed" : "settings opened");
+              setShowSettings((open) => !open);
+            }}
           >
             {showSettings ? (
               <>
@@ -453,6 +451,12 @@ function Dashboard() {
           {loaded && workspace.providers.length === 0 ? <ProviderSetup /> : null}
           {/* The grid is the quota display, so a provider whose quota is switched off has
               no panel here at all. Its usage keeps its place in the history below. */}
+          {loaded && workspace.providers.length > 0 && quotaProviders.length === 0 ? (
+            <p className="provider-quota-note">
+              Quota tracking is off for every provider. Switch one back on in Settings to see its
+              quota here; the usage below is unaffected.
+            </p>
+          ) : null}
           <div className={`provider-grid${quotaProviders.length <= 1 ? " single" : ""}`}>
             {quotaProviders.map((provider) => (
               <section key={provider.provider} className="provider-panel">
