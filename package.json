@@ -1,7 +1,7 @@
 {
   "name": "quotastation",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Windows app for tracking AI coding quotas, usage, reset times, and estimated API costs",
   "license": "AGPL-3.0-only",
   "author": "Steve Wang <contact@stevewang.me>",
