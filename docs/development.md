@@ -245,7 +245,7 @@ windows asked for, the status line each bridge run rendered, notifications raise
 shared folder exchange, session-file changes, which windows opened and closed, which
 settings changed, and any exception a window's own scripts threw. It records no session
 content, no credential, and no path — every line passes the same redaction the diagnostics
-panel uses. It rolls over at 4 MB into `quotastation.log.1`, which is the whole retention
+panel uses. It rolls over at 16 MB into `quotastation.log.1`, which is the whole retention
 policy: two files, nothing dated, nothing swept on a timer. The Diagnostics tab's **Show
 activity log** button reveals it.
 

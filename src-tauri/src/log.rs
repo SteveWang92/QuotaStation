@@ -25,9 +25,11 @@ const LOG_FILE: &str = "quotastation.log";
 const PREVIOUS_LOG_FILE: &str = "quotastation.log.1";
 /// Beyond this the current file is rolled over and the roll before it is dropped. This pair
 /// is the whole retention policy: nothing is dated, nothing is swept on a timer, and the two
-/// files together cannot outgrow it. The allowance is what a fortnight of the detail above
-/// costs, and it is nothing beside the usage database in the same folder.
-const MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// files together cannot outgrow it. The size is measured rather than guessed: an active
+/// coding session costs around 200 KB an hour once every source above is recorded, so this
+/// holds roughly a fortnight of ordinary use and the roll behind it holds the fortnight
+/// before. It is still nothing beside the usage database in the same folder.
+const MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 pub fn log_path() -> Option<PathBuf> {
     crate::providers::claude::statusline::app_data_dir().map(|dir| dir.join(LOG_FILE))
