@@ -93,6 +93,13 @@ pub async fn run(state: &Arc<AppState>) -> SharedFolderDiagnostics {
     failures.extend(import_others(state, folder, &device_id).await);
 
     let completed_at = jiff::Timestamp::now().to_string();
+    // The folder itself is never named here: the whole point of the shared folder is that
+    // it lives wherever the user's sync client keeps it.
+    crate::log::write(if failures.is_empty() {
+        "shared usage folder exchanged".to_string()
+    } else {
+        format!("shared usage folder: {}", failures.join(" · "))
+    });
     if failures.is_empty() {
         SharedFolderDiagnostics {
             status: "succeeded".to_string(),

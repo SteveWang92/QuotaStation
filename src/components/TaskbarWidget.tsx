@@ -16,7 +16,14 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
         {snapshot.shortName}
       </span>
       <div className="taskbar-windows">
-        {snapshot.limits.length > 0 ? (
+        {/* A signed-out provider keeps the last reading it managed, and the core deliberately
+            leaves it there. Drawing it here would show a percentage and a countdown that
+            stopped being true hours ago, so this slot says what the other two surfaces say. */}
+        {snapshot.signInRequired ? (
+          <span className="taskbar-unavailable" style={{ color: providerColor }}>
+            signed out
+          </span>
+        ) : snapshot.limits.length > 0 ? (
           snapshot.limits.map((limit) => {
             // Every window draws the same three fixed-width cells — badge, bar, reading — so
             // the bars of two windows, and of two providers, all start and end on the same
@@ -87,7 +94,9 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
 
 export function TaskbarWidget({ initialWorkspace }: { initialWorkspace: WorkspaceSnapshot }) {
   const { workspace } = useSnapshot(initialWorkspace);
-  const providers = workspace.providers;
+  // The widget shows quota and nothing else, so a provider whose quota is switched off
+  // takes no slot in it rather than reserving one that can only say "unavailable".
+  const providers = workspace.providers.filter((provider) => !provider.quotaDisabled);
 
   useEffect(() => {
     // Rust owns the slot width and reserves the existing two-provider capacity. Passing only
@@ -106,7 +115,9 @@ export function TaskbarWidget({ initialWorkspace }: { initialWorkspace: Workspac
       {providers.length > 0 ? (
         providers.map((snapshot) => <ProviderColumn key={snapshot.provider} snapshot={snapshot} />)
       ) : (
-        <span className="taskbar-unavailable">No provider detected</span>
+        <span className="taskbar-unavailable">
+          {workspace.providers.length > 0 ? "Quota tracking off" : "No provider detected"}
+        </span>
       )}
     </main>
   );

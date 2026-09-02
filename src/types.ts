@@ -106,6 +106,16 @@ export interface ProviderSnapshot {
   lastHistorySuccessAt: string | null;
   /** Why each read last failed, named on the provider panel so a stale reading says why. */
   liveError: string | null;
+  /**
+   * The provider is answering and says this machine is signed out. It is a state rather
+   * than a failure, so the panel asks for a sign-in instead of reporting a broken source.
+   */
+  signInRequired: boolean;
+  /**
+   * The user switched this provider's quota off. No percentage is read or drawn; the usage
+   * history below it is unaffected and carries on being collected and shown.
+   */
+  quotaDisabled: boolean;
   historyError: string | null;
   parserRevision: string;
   pricingCatalogRevision: string;
@@ -271,6 +281,16 @@ export interface TaskbarDisplay {
   primary: boolean;
 }
 
+/**
+ * A provider whose quota this machine could read, for the switch that decides whether it
+ * does. A provider with its quota switched off still has to be offered, so this comes from
+ * the core rather than from the providers currently drawing a quota.
+ */
+export interface ProviderChoice {
+  provider: ProviderKey;
+  displayName: string;
+}
+
 export interface AppSettings {
   theme: ThemePreference;
   taskbarWidgetEnabled: boolean;
@@ -292,6 +312,11 @@ export interface AppSettings {
    * restart and never brings back the one already dismissed.
    */
   dismissedResetNotices: string[];
+  /**
+   * The providers whose quota is not tracked, by provider key. Nothing reads their quota
+   * and no surface draws it; their usage history is unaffected.
+   */
+  quotaDisabledProviders: string[];
   /** Folder whose aggregate-only usage files are exchanged with other devices. */
   sharedUsageFolder: string | null;
 }

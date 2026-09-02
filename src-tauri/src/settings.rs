@@ -73,6 +73,15 @@ pub struct AppSettings {
     /// the whole list against the windows currently in view, which is what keeps it short.
     #[serde(default)]
     pub dismissed_reset_notices: Vec<String>,
+    /// The providers whose quota is not tracked, by
+    /// [`crate::providers::ProviderKind::key`]. Nothing starts their client to read a
+    /// percentage and no surface draws one, so a client that cannot answer stops being
+    /// asked. Their usage history is unaffected: it is parsed from files already on disk
+    /// and keeps its place in the charts. Stored as plain keys so a file written by a
+    /// later version, naming a provider this one has never heard of, still loads every
+    /// other preference in it.
+    #[serde(default)]
+    pub quota_disabled_providers: Vec<String>,
     /// The folder this machine's aggregates are written to and the other machines' are
     /// read from — whatever folder a sync client already keeps in step. Unset is the
     /// ordinary single-machine case, where nothing is exported or read.
@@ -115,6 +124,7 @@ impl Default for AppSettings {
             device_id: None,
             device_name: None,
             dismissed_reset_notices: Vec::new(),
+            quota_disabled_providers: Vec::new(),
             shared_usage_folder: None,
         }
     }
@@ -249,6 +259,7 @@ mod tests {
             device_id: Some("18f3c".to_string()),
             device_name: Some("Workshop".to_string()),
             dismissed_reset_notices: vec!["codex:primary:1781654400".to_string()],
+            quota_disabled_providers: vec!["codex".to_string()],
             shared_usage_folder: Some("D:\\Sync\\QuotaStation".to_string()),
         };
         let encoded = serde_json::to_string(&settings).expect("encode");
@@ -283,6 +294,7 @@ mod tests {
             device_id: Some("18f3c".to_string()),
             device_name: Some("Workshop".to_string()),
             dismissed_reset_notices: vec!["codex:primary:1781654400".to_string()],
+            quota_disabled_providers: vec!["codex".to_string()],
             shared_usage_folder: Some("D:\\Sync\\QuotaStation".to_string()),
         };
         save(&path, &expected).expect("replace the settings");

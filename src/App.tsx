@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowLeft, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { logActivity } from "./activity";
 import { hourlyUsageMatchesRange } from "./charts";
 import { ProviderSetup } from "./components/ProviderSetup";
 import { QuickPanel } from "./components/QuickPanel";
@@ -312,6 +313,7 @@ function Dashboard() {
 
   const selectProvider = useCallback(
     (provider: HistoryProvider) => {
+      logActivity(`history provider set to ${provider}`);
       providerRef.current = provider;
       deviceRef.current = null;
       setSelectedProvider(provider);
@@ -323,6 +325,7 @@ function Dashboard() {
 
   const selectDevice = useCallback(
     (device: string | null) => {
+      logActivity(`history device set to ${device === null ? "every device" : "one device"}`);
       deviceRef.current = device;
       setSelectedDevice(device);
       void loadUsageRange(activeRangeRef.current, providerRef.current, device);
@@ -332,6 +335,7 @@ function Dashboard() {
 
   const selectRange = useCallback(
     (range: DateRangeSelection) => {
+      logActivity(`history range set to ${range.preset}`);
       activeRangeRef.current = range;
       setActiveRange(range);
       void loadUsageRange(range, providerRef.current, deviceRef.current);
@@ -340,6 +344,7 @@ function Dashboard() {
   );
 
   const refresh = useCallback(async () => {
+    logActivity("refresh pressed on the dashboard");
     setRefreshing(true);
     try {
       // refresh_now publishes the new snapshot through the shared subscription.
@@ -387,6 +392,7 @@ function Dashboard() {
   // Every quota window on display right now, in the vocabulary the dismissed early-restart
   // notes are recorded in. Rewriting the record against these is what stops it growing:
   // a note for a window nobody is looking at any more can never be shown again either way.
+  const quotaProviders = workspace.providers.filter((provider) => !provider.quotaDisabled);
   const liveWindowKeys = workspace.providers.flatMap((provider) =>
     provider.limits.map((limit) => resetNoticeKey(provider.provider, limit.kind, limit.resetsAt)),
   );
@@ -416,7 +422,10 @@ function Dashboard() {
           <button
             type="button"
             className={diagnosticsAttention && !showSettings ? "attention" : ""}
-            onClick={() => setShowSettings((open) => !open)}
+            onClick={() => {
+              logActivity(showSettings ? "settings closed" : "settings opened");
+              setShowSettings((open) => !open);
+            }}
           >
             {showSettings ? (
               <>
@@ -440,8 +449,16 @@ function Dashboard() {
       ) : (
         <>
           {loaded && workspace.providers.length === 0 ? <ProviderSetup /> : null}
-          <div className={`provider-grid${workspace.providers.length <= 1 ? " single" : ""}`}>
-            {workspace.providers.map((provider) => (
+          {/* The grid is the quota display, so a provider whose quota is switched off has
+              no panel here at all. Its usage keeps its place in the history below. */}
+          {loaded && workspace.providers.length > 0 && quotaProviders.length === 0 ? (
+            <p className="provider-quota-note">
+              Quota tracking is off for every provider. Switch one back on in Settings to see its
+              quota here; the usage below is unaffected.
+            </p>
+          ) : null}
+          <div className={`provider-grid${quotaProviders.length <= 1 ? " single" : ""}`}>
+            {quotaProviders.map((provider) => (
               <section key={provider.provider} className="provider-panel">
                 <header className="provider-panel-header">
                   <h2>{provider.displayName}</h2>
@@ -459,6 +476,15 @@ function Dashboard() {
                 {provider.remoteUsageOnly ? (
                   <p className="provider-quota-note">
                     Usage is synced from another device. Quota can only be read on that device.
+                  </p>
+                ) : provider.signInRequired ? (
+                  // Nothing here is broken and nothing is worth retrying quickly, so the
+                  // panel says what to do about it rather than showing windows it cannot
+                  // read or promising a retry that cannot succeed.
+                  <p className="provider-quota-note">
+                    {provider.displayName} is signed out, or its sign-in has expired. Sign in with
+                    its own client again and the quota comes back on its own — QuotaStation checks
+                    once an hour until then. You can also switch its quota off in Settings.
                   </p>
                 ) : (
                   <QuotaSection

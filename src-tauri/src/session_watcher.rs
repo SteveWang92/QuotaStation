@@ -116,6 +116,10 @@ fn report_reconcile(
     complete: bool,
     watched_location_count: usize,
 ) {
+    crate::log::write(format!(
+        "session watcher now covers {watched_location_count} location(s){}",
+        if complete { "" } else { ", with some it could not reach" }
+    ));
     let message = if complete {
         WatcherMessage::LocationsChanged(watched_location_count)
     } else {
@@ -162,6 +166,10 @@ async fn run_event_loop(
                     }
                 }
                 while let Some(provider) = pending.pop_first() {
+                    crate::log::write(format!(
+                        "{} session files changed; reparsing",
+                        provider.key()
+                    ));
                     refresh::refresh_changed_provider(&app, &state, provider).await;
                     // Parsing can take long enough for more writes to arrive. Fold those
                     // events into this batch instead of making every queued event open a

@@ -2,6 +2,10 @@
 //! storage failures must never carry filesystem layout or account details.
 
 const MAX_LEN: usize = 220;
+/// The activity log's allowance. It is read after the fact, by someone who has only the
+/// file to go on, so a line there can afford more than one a dialog has to fit — and a
+/// stack trace cut off at its first frame is a line that answers nothing.
+const MAX_LOG_LEN: usize = 800;
 
 /// Reduce a failure to a single redacted line suitable for display and storage.
 pub fn sanitize_error(error: &str, fallback: &str) -> String {
@@ -12,8 +16,22 @@ pub fn sanitize_error(error: &str, fallback: &str) -> String {
     truncate(&redact_paths(line))
 }
 
+/// Reduce an activity-log entry to one redacted line.
+///
+/// Unlike a displayed failure, the whole message is kept rather than its first line: a
+/// renderer stack or a multi-line provider error is exactly what the log exists to carry,
+/// so the breaks become separators instead of a reason to throw the rest away.
+pub fn sanitize_log(message: &str) -> String {
+    let joined = message.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>();
+    truncate_to(&redact_paths(&joined.join(" | ")), MAX_LOG_LEN)
+}
+
 fn truncate(line: &str) -> String {
-    match line.char_indices().nth(MAX_LEN) {
+    truncate_to(line, MAX_LEN)
+}
+
+fn truncate_to(line: &str, limit: usize) -> String {
+    match line.char_indices().nth(limit) {
         Some((index, _)) => format!("{}…", &line[..index]),
         None => line.to_string(),
     }
@@ -79,6 +97,16 @@ mod tests {
             "Storage failed",
         );
         assert_eq!(message, "<path> locked");
+    }
+
+    #[test]
+    fn a_log_entry_keeps_every_line_it_was_given() {
+        let message = super::sanitize_log(
+            "renderer failed
+  at render
+  at mount",
+        );
+        assert_eq!(message, "renderer failed | at render | at mount");
     }
 
     #[test]

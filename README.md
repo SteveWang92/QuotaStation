@@ -19,6 +19,7 @@ Windows taskbar.
 - Review hourly usage for recent ranges and daily usage for longer ranges.
 - Compare providers, models, token categories, devices, and the previous period.
 - Keep a history of scheduled and possible early quota resets.
+- Switch a provider's quota off to stop reading and showing it, keeping its usage history.
 - Export diagnostics that leave out credentials, account details, prompts, source code, and
   private file paths.
 - Combine totals from several Windows computers through a folder managed by Proton Drive,

@@ -128,6 +128,27 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The state a test drives, over a throwaway database and with no window behind it.
+    /// Only the parts the refresh path reads are populated.
+    #[cfg(test)]
+    pub(crate) fn for_tests(storage: Storage) -> Self {
+        Self {
+            storage,
+            snapshots: RwLock::new(BTreeMap::new()),
+            refresh_publish_lock: Mutex::new(()),
+            live_refresh_lock: Mutex::new(()),
+            history_refresh_lock: Mutex::new(()),
+            watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
+            shared_folder_diagnostics: RwLock::new(SharedFolderDiagnostics::default()),
+            quick_panel_focus_lost_at: StdMutex::new(None),
+            quick_panel_toggled_at: StdMutex::new(None),
+            quick_panel_shown_at: StdMutex::new(None),
+            settings: StdMutex::new(AppSettings::default()),
+            detected_providers: StdMutex::new(Vec::new()),
+            settings_path: PathBuf::new(),
+        }
+    }
+
     fn settings(&self) -> AppSettings {
         self.settings.lock().map(|settings| settings.clone()).unwrap_or_default()
     }
@@ -162,6 +183,40 @@ impl AppState {
         ProviderKind::ALL.into_iter().filter(|provider| provider.is_installed()).collect()
     }
 
+    /// Whether this provider's quota is tracked: read from its client and drawn beside it.
+    ///
+    /// Switching it off is about the quota alone. The usage history is parsed from files
+    /// that are already on disk and costs nothing to keep reading, so it carries on — what
+    /// stops is starting the client to ask for a percentage nobody wants to see.
+    fn quota_tracked(settings: &AppSettings, provider: ProviderKind) -> bool {
+        !settings.quota_disabled_providers.iter().any(|key| key == provider.key())
+    }
+
+    /// How many columns the quick panel draws: every provider on display whose quota is
+    /// tracked. Quota is what that panel is, so one switched off takes no column there and
+    /// the window opens at the width of the columns that remain. The switch only reaches a
+    /// provider this machine can read, exactly as `workspace_snapshot` resolves it — one
+    /// whose usage arrives from another device keeps its column and says so in it.
+    fn quota_column_count(&self) -> usize {
+        let settings = self.settings();
+        let local = Self::local_providers();
+        self.enabled_providers()
+            .into_iter()
+            .filter(|provider| {
+                !local.contains(provider) || Self::quota_tracked(&settings, *provider)
+            })
+            .count()
+    }
+
+    /// The providers whose live quota may be read right now.
+    fn quota_providers(&self) -> Vec<ProviderKind> {
+        let settings = self.settings();
+        Self::local_providers()
+            .into_iter()
+            .filter(|provider| Self::quota_tracked(&settings, *provider))
+            .collect()
+    }
+
     /// Refreshes the display list from local clients plus every provider represented by
     /// imported usage. Remote snapshots are reloaded after each import so today's compact
     /// totals move with the history tab instead of waiting for a restart.
@@ -181,6 +236,7 @@ impl AppState {
             snapshot.earned_reset_expires_at = None;
             snapshot.recent_resets.clear();
             snapshot.live_error = None;
+            snapshot.sign_in_required = false;
             snapshot.resolve_derived_state();
             remote.push((provider, snapshot));
         }
@@ -193,6 +249,19 @@ impl AppState {
             providers.clone_from(&enabled);
         }
         Ok(())
+    }
+
+    /// How long to wait before reading this provider's quota again.
+    ///
+    /// A signed-out provider answers the same way every time until someone signs in with
+    /// its own client, so it is asked once an hour instead of starting a client process on
+    /// the ordinary interval for a refusal already on display.
+    async fn live_refresh_delay(&self, provider: ProviderKind) -> Duration {
+        if self.read_snapshot(provider, |snapshot| snapshot.sign_in_required).await {
+            providers::SIGNED_OUT_REFRESH_INTERVAL
+        } else {
+            provider.live_refresh_interval()
+        }
     }
 
     async fn with_snapshot(
@@ -217,6 +286,7 @@ impl AppState {
     /// never reaches the renderer with a status that disagrees with its own errors.
     async fn workspace_snapshot(&self) -> WorkspaceSnapshot {
         let local = Self::local_providers();
+        let settings = self.settings();
         let snapshots = self.snapshots.read().await;
         let providers = self
             .enabled_providers()
@@ -227,12 +297,15 @@ impl AppState {
                     .cloned()
                     .unwrap_or_else(|| ProviderSnapshot::new(provider));
                 snapshot.remote_usage_only = !local.contains(&provider);
-                if snapshot.remote_usage_only {
+                snapshot.quota_disabled =
+                    !snapshot.remote_usage_only && !Self::quota_tracked(&settings, provider);
+                if snapshot.remote_usage_only || snapshot.quota_disabled {
                     snapshot.limits.clear();
                     snapshot.earned_reset_count = None;
                     snapshot.earned_reset_expires_at = None;
                     snapshot.recent_resets.clear();
                     snapshot.live_error = None;
+                    snapshot.sign_in_required = false;
                 }
                 snapshot.resolve_derived_state();
                 snapshot
@@ -244,7 +317,42 @@ impl AppState {
 
 #[tauri::command]
 async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<WorkspaceSnapshot, String> {
+    // Not logged: every window re-reads this on a timer, and a line per poll would bury
+    // the log in the one event that carries no information.
     Ok(state.workspace_snapshot().await)
+}
+
+/// One line for a stored-data query, so a dashboard that drew the wrong thing can be
+/// explained from the log rather than from a reproduction.
+fn log_query<T, E: std::fmt::Display>(
+    request: &str,
+    result: &Result<T, E>,
+    summarize: impl FnOnce(&T) -> String,
+) {
+    match result {
+        Ok(value) => log::write(format!("query {request}: {}", summarize(value))),
+        Err(error) => log::write(format!("query {request} failed: {error}")),
+    }
+}
+
+/// What a query was asked for, in the vocabulary the commands take it in.
+fn query_scope(provider: Option<ProviderKind>, device: Option<&str>) -> String {
+    format!(
+        "{} on {}",
+        provider.map_or("all providers", ProviderKind::key),
+        device.map_or("this device", |_| "one device"),
+    )
+}
+
+/// What the renderer did, in the renderer's own words.
+///
+/// Everything a window does starts there and reaches the core only as whichever command it
+/// ends in, so a window that drew nothing, or a script that threw before it drew anything,
+/// leaves no trace at all without this. It is the one way in, it writes to the same file as
+/// every other line, and what it is handed is redacted and truncated the same way.
+#[tauri::command]
+fn log_activity(detail: String) {
+    log::write(format!("ui: {detail}"));
 }
 
 #[tauri::command]
@@ -257,11 +365,17 @@ async fn get_usage_range(
     end_date: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<UsageRangeSnapshot, String> {
-    state
-        .storage
-        .load_usage_range(provider, device.as_deref(), &start_date, &end_date)
-        .await
-        .map_err(|error| error.to_string())
+    let result =
+        state.storage.load_usage_range(provider, device.as_deref(), &start_date, &end_date).await;
+    log_query(
+        &format!(
+            "daily usage {start_date}..{end_date} for {}",
+            query_scope(provider, device.as_deref())
+        ),
+        &result,
+        |range| format!("{} day(s), {} model(s)", range.days.len(), range.models.len()),
+    );
+    result.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -270,11 +384,13 @@ async fn get_usage_start_date(
     device: Option<String>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Option<String>, String> {
-    state
-        .storage
-        .load_usage_start_date(provider, device.as_deref())
-        .await
-        .map_err(|error| error.to_string())
+    let result = state.storage.load_usage_start_date(provider, device.as_deref()).await;
+    log_query(
+        &format!("earliest usage for {}", query_scope(provider, device.as_deref())),
+        &result,
+        |start| format!("{start:?}"),
+    );
+    result.map_err(|error| error.to_string())
 }
 
 /// The same range hour by hour, for the short ranges the dashboard draws that way.
@@ -286,11 +402,17 @@ async fn get_usage_hours(
     end_date: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<UsageHoursSnapshot, String> {
-    state
-        .storage
-        .load_usage_hours(provider, device.as_deref(), &start_date, &end_date)
-        .await
-        .map_err(|error| error.to_string())
+    let result =
+        state.storage.load_usage_hours(provider, device.as_deref(), &start_date, &end_date).await;
+    log_query(
+        &format!(
+            "hourly usage {start_date}..{end_date} for {}",
+            query_scope(provider, device.as_deref())
+        ),
+        &result,
+        |hours| format!("{} hour(s)", hours.hours.len()),
+    );
+    result.map_err(|error| error.to_string())
 }
 
 /// A rolling window of hours — the last twenty-four of them — with its totals summed
@@ -303,11 +425,17 @@ async fn get_usage_window(
     end_hour: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<UsageWindowSnapshot, String> {
-    state
-        .storage
-        .load_usage_window(provider, device.as_deref(), &start_hour, &end_hour)
-        .await
-        .map_err(|error| error.to_string())
+    let result =
+        state.storage.load_usage_window(provider, device.as_deref(), &start_hour, &end_hour).await;
+    log_query(
+        &format!(
+            "usage window {start_hour}..{end_hour} for {}",
+            query_scope(provider, device.as_deref())
+        ),
+        &result,
+        |window| format!("{} hour(s)", window.hours.hours.len()),
+    );
+    result.map_err(|error| error.to_string())
 }
 
 /// Every restart QuotaStation has recorded, per provider. The dashboard annotates the
@@ -318,14 +446,14 @@ async fn get_reset_history(
 ) -> Result<Vec<ProviderResetHistory>, String> {
     let mut history = Vec::new();
     for provider in state.enabled_providers() {
+        let result = state.storage.load_reset_history(provider).await;
+        log_query(&format!("reset history for {}", provider.key()), &result, |resets| {
+            format!("{} restart(s)", resets.len())
+        });
         history.push(ProviderResetHistory {
             provider,
             display_name: provider.display_name().to_string(),
-            resets: state
-                .storage
-                .load_reset_history(provider)
-                .await
-                .map_err(|error| error.to_string())?,
+            resets: result.map_err(|error| error.to_string())?,
         });
     }
     Ok(history)
@@ -347,11 +475,15 @@ async fn get_quota_history(
     end_date: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<QuotaHistorySnapshot, String> {
-    state
-        .storage
-        .load_quota_history(provider, &start_date, &end_date)
-        .await
-        .map_err(|error| error.to_string())
+    let result = state.storage.load_quota_history(provider, &start_date, &end_date).await;
+    log_query(
+        &format!("quota history {start_date}..{end_date} for {}", provider.key()),
+        &result,
+        |history| {
+            format!("{} window(s), {} restart(s)", history.windows.len(), history.resets.len())
+        },
+    );
+    result.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -359,11 +491,13 @@ async fn refresh_now(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<WorkspaceSnapshot, String> {
+    log::write("refresh requested by hand");
     Ok(refresh::refresh_all(&app, state.inner()).await)
 }
 
 #[tauri::command]
 fn open_dashboard(app: tauri::AppHandle) {
+    log::write("dashboard opened from the quick panel");
     if let Some(panel) = app.get_webview_window("quick-panel") {
         let _ = panel.hide();
     }
@@ -397,6 +531,7 @@ fn schedule_taskbar_widget_placement(app: &tauri::AppHandle) {
 }
 
 fn set_taskbar_widget_visible(app: &tauri::AppHandle, visible: bool) {
+    log::write(format!("taskbar status switched {}", on_off(visible)));
     let state = app.state::<Arc<AppState>>();
     if let Err(error) = state.update_settings(|settings| settings.taskbar_widget_enabled = visible)
     {
@@ -458,9 +593,95 @@ fn set_taskbar_widget_size(app: tauri::AppHandle, provider_count: u32) -> Result
     .map_err(|error| error.to_string())
 }
 
+/// A provider whose quota this machine could read, for the switch that decides whether it
+/// does. Only a provider with a client here can be asked for a quota at all.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderChoice {
+    provider: ProviderKind,
+    display_name: String,
+}
+
+#[tauri::command]
+fn get_provider_choices() -> Vec<ProviderChoice> {
+    ProviderKind::ALL
+        .into_iter()
+        .filter(|provider| demo::requested() || provider.is_installed())
+        .map(|provider| ProviderChoice {
+            provider,
+            display_name: provider.display_name().to_string(),
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn get_app_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
     state.settings()
+}
+
+/// Which preferences a save actually moved, named rather than valued wherever the value is
+/// this machine's own — a device name or a folder is recorded as changed and no further.
+fn settings_changes(previous: &AppSettings, next: &AppSettings) -> Vec<String> {
+    let mut changes = Vec::new();
+    if previous.theme != next.theme {
+        changes.push(format!("theme {:?}", next.theme));
+    }
+    if previous.taskbar_widget_enabled != next.taskbar_widget_enabled {
+        changes.push(format!("taskbar status {}", on_off(next.taskbar_widget_enabled)));
+    }
+    if previous.taskbar_widget_display != next.taskbar_widget_display {
+        changes.push("taskbar display".to_string());
+    }
+    if previous.status_line_provider_labels != next.status_line_provider_labels {
+        changes.push(format!("status line labels {:?}", next.status_line_provider_labels));
+    }
+    if previous.status_line_other_providers != next.status_line_other_providers {
+        changes.push(format!(
+            "status line other providers {}",
+            on_off(next.status_line_other_providers)
+        ));
+    }
+    if previous.status_line_extra_details != next.status_line_extra_details {
+        changes.push(format!("status line details {}", on_off(next.status_line_extra_details)));
+    }
+    if previous.notify_low_quota != next.notify_low_quota {
+        changes.push(format!("low quota alerts {}", on_off(next.notify_low_quota)));
+    }
+    if previous.notify_read_failures != next.notify_read_failures {
+        changes.push(format!("read failure alerts {}", on_off(next.notify_read_failures)));
+    }
+    if previous.notify_quota_resets != next.notify_quota_resets {
+        changes.push(format!("reset alerts {}", on_off(next.notify_quota_resets)));
+    }
+    if previous.quota_disabled_providers != next.quota_disabled_providers {
+        changes.push(format!(
+            "quota tracked for [{}]",
+            ProviderKind::ALL
+                .into_iter()
+                .filter(|provider| AppState::quota_tracked(next, *provider))
+                .map(ProviderKind::key)
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+    if previous.dismissed_reset_notices != next.dismissed_reset_notices {
+        changes
+            .push(format!("{} restart note(s) acknowledged", next.dismissed_reset_notices.len()));
+    }
+    if previous.device_name != next.device_name {
+        changes.push("this machine's name".to_string());
+    }
+    if previous.shared_usage_folder != next.shared_usage_folder {
+        changes.push(format!(
+            "shared usage folder {}",
+            if next.shared_usage_folder.is_some() { "set" } else { "cleared" }
+        ));
+    }
+    changes
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
 }
 
 /// Records a change the settings dialog made. The status-line bridge reads the same file
@@ -472,11 +693,20 @@ async fn set_app_settings(
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
     let previous = state.settings();
+    let quota_changed = previous.quota_disabled_providers != settings.quota_disabled_providers;
     let taskbar_changed = previous.taskbar_widget_enabled != settings.taskbar_widget_enabled;
     let display_changed = previous.taskbar_widget_display != settings.taskbar_widget_display;
     let theme_changed = previous.theme != settings.theme;
     let name_changed = previous.device_name != settings.device_name;
+    let changes = settings_changes(&previous, &settings);
     let updated = state.update_settings(|current| *current = settings)?;
+    // What changed rather than the record itself: the record carries this machine's
+    // identity and its shared folder, and neither belongs in a file kept for diagnosis.
+    log::write(if changes.is_empty() {
+        "settings saved with no change".to_string()
+    } else {
+        format!("settings changed: {}", changes.join(", "))
+    });
     if name_changed {
         let name = updated.device_name.clone().unwrap_or_else(settings::default_device_name);
         state.storage.record_local_device(&name).await.map_err(|error| {
@@ -485,6 +715,30 @@ async fn set_app_settings(
     }
     if theme_changed {
         apply_theme(&app, updated.theme);
+    }
+    if quota_changed {
+        // Switching quota off has to clear it from the surfaces now rather than at the next
+        // scheduled read, and switching it back on has nothing in memory to draw until
+        // something reads it, so the snapshot is republished here and the read that fills a
+        // returning provider runs behind it. Both are spawned: the publish lock can be held
+        // by a scheduled history refresh for as long as the shared folder takes, and waiting
+        // for it here would leave every settings card disabled until that finished.
+        let publish_app = app.clone();
+        let publish_state = state.inner().clone();
+        tauri::async_runtime::spawn(async move {
+            refresh::republish(&publish_app, &publish_state).await;
+        });
+        let returning = ProviderKind::ALL.into_iter().filter(|provider| {
+            !AppState::quota_tracked(&previous, *provider)
+                && AppState::quota_tracked(&updated, *provider)
+        });
+        for provider in returning.collect::<Vec<_>>() {
+            let app_handle = app.clone();
+            let refresh_state = state.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                refresh::refresh_live_for_provider(&app_handle, &refresh_state, provider).await;
+            });
+        }
     }
     if taskbar_changed {
         set_taskbar_widget_visible(&app, updated.taskbar_widget_enabled);
@@ -508,6 +762,7 @@ fn get_log_available() -> bool {
 
 #[tauri::command]
 fn reveal_log_file() -> Result<(), String> {
+    log::write("activity log revealed in Explorer");
     let path = log::log_path().ok_or_else(|| "No application data directory.".to_string())?;
     // Selecting the file rather than opening it: the log is read with whatever the user
     // prefers, and a missing file still lands them in the right folder.
@@ -519,6 +774,7 @@ fn reveal_log_file() -> Result<(), String> {
 /// renderer. The directory already exists by the time Settings can be opened.
 #[tauri::command]
 fn open_data_folder(app: tauri::AppHandle) -> Result<(), String> {
+    log::write("data folder opened in Explorer");
     let path = app.path().app_data_dir().map_err(|error| error.to_string())?;
     open_in_explorer(&path).map_err(|error| error.to_string())
 }
@@ -527,6 +783,7 @@ fn open_data_folder(app: tauri::AppHandle) -> Result<(), String> {
 /// the renderer cannot turn this narrow action into an arbitrary shell launch.
 #[tauri::command]
 fn open_latest_release() -> Result<(), String> {
+    log::write("release page opened in the browser");
     open_with_explorer("https://github.com/SteveWang92/QuotaStation/releases/latest")
         .map_err(|error| error.to_string())
 }
@@ -576,6 +833,11 @@ async fn set_claude_status_line(
     state: State<'_, Arc<AppState>>,
 ) -> Result<statusline::BridgeStatus, String> {
     let result = if installed { statusline::install() } else { statusline::remove() };
+    log::write(match &result {
+        Ok(()) if installed => "status line installed into Claude Code's settings".to_string(),
+        Ok(()) => "status line removed from Claude Code's settings".to_string(),
+        Err(error) => format!("status line update failed: {error:#}"),
+    });
     result.map_err(|error| {
         sanitize::sanitize_error(&error.to_string(), "Status line update failed")
     })?;
@@ -597,6 +859,11 @@ fn get_claude_notifications() -> bool {
 #[tauri::command]
 fn set_claude_notifications(installed: bool) -> Result<bool, String> {
     let result = if installed { notifications::install() } else { notifications::remove() };
+    log::write(match &result {
+        Ok(()) if installed => "finished-turn hook installed into Claude Code".to_string(),
+        Ok(()) => "finished-turn hook removed from Claude Code".to_string(),
+        Err(error) => format!("finished-turn hook update failed: {error:#}"),
+    });
     result.map_err(|error| {
         sanitize::sanitize_error(&error.to_string(), "Notification hook update failed")
     })?;
@@ -739,10 +1006,18 @@ async fn collect_diagnostics(
     state: &AppState,
 ) -> Result<DiagnosticsSnapshot, String> {
     let mut acquisitions = Vec::new();
+    let settings = state.settings();
     for provider in AppState::local_providers() {
-        acquisitions.extend(state.storage.load_acquisition_diagnostics(provider).await.map_err(
-            |error| sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable"),
-        )?);
+        let rows = state.storage.load_acquisition_diagnostics(provider).await.map_err(|error| {
+            sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
+        })?;
+        // A path nothing uses any more has no status worth reporting: leaving the last
+        // failed quota read here would keep the panel asking to be looked at for a source
+        // the user switched off.
+        let tracked = AppState::quota_tracked(&settings, provider);
+        let live_path = provider.live_path();
+        acquisitions
+            .extend(rows.into_iter().filter(|row| tracked || row.acquisition_path != live_path));
     }
     let retention =
         state.storage.load_retention_diagnostics().await.map_err(|error| {
@@ -786,6 +1061,7 @@ async fn export_diagnostics(
     if path.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("json")) {
         return Err("Save the diagnostic export as a JSON file.".to_string());
     }
+    log::write("diagnostics export requested");
     let diagnostics = collect_diagnostics(&app, state.inner()).await?;
     let mut providers = Vec::new();
     for provider in state.enabled_providers() {
@@ -824,6 +1100,7 @@ async fn backfill_resets(state: &Arc<AppState>) -> anyhow::Result<()> {
 /// a tray menu click does not, so a window that is merely behind another one stays there
 /// after `set_focus`. Briefly claiming always-on-top is what actually brings it forward.
 fn show_main(app: &tauri::AppHandle) {
+    log::write("dashboard window shown");
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
@@ -1027,7 +1304,7 @@ fn toggle_quick_panel_beside(
     let frame = quick_panel_frame(&panel);
     let current_height = panel.outer_size().map(|size| size.height).unwrap_or(QUICK_PANEL_HEIGHT);
     let requested_size = quick_panel_size(
-        state.enabled_providers().len(),
+        state.quota_column_count(),
         current_height,
         panel.scale_factor().unwrap_or(1.0),
         frame,
@@ -1039,9 +1316,14 @@ fn toggle_quick_panel_beside(
         return false;
     }
     if panel.is_visible().unwrap_or(false) {
+        log::write("quick panel closed from the tray");
         let _ = panel.hide();
         return false;
     }
+    log::write(format!(
+        "quick panel opened beside the tray, {} column(s)",
+        state.quota_column_count()
+    ));
 
     let centre =
         (anchor_position.x + anchor_size.width / 2.0, anchor_position.y + anchor_size.height / 2.0);
@@ -1225,6 +1507,14 @@ fn get_autostart(app: tauri::AppHandle) -> bool {
 fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     let manager = app.autolaunch();
     let result = if enabled { manager.enable() } else { manager.disable() };
+    log::write(format!(
+        "start with Windows switched {}{}",
+        if enabled { "on" } else { "off" },
+        match &result {
+            Ok(()) => String::new(),
+            Err(error) => format!(", which failed: {error}"),
+        }
+    ));
     result.map_err(|error| {
         sanitize::sanitize_error(&error.to_string(), "Start-with-Windows update failed")
     })?;
@@ -1252,6 +1542,7 @@ fn shared_folder_exists(path: String) -> Result<bool, String> {
 /// Creates the folder the user confirmed, parents included.
 #[tauri::command]
 fn create_shared_folder(path: String) -> Result<(), String> {
+    log::write("shared usage folder created");
     std::fs::create_dir_all(path.trim()).map_err(|error| {
         sanitize::sanitize_error(&error.to_string(), "The folder could not be created")
     })
@@ -1261,6 +1552,7 @@ fn create_shared_folder(path: String) -> Result<(), String> {
 /// neither reported back nor worth reporting.
 #[tauri::command]
 fn create_desktop_shortcut(app: tauri::AppHandle) -> Result<(), String> {
+    log::write("desktop shortcut requested");
     write_desktop_shortcut(&app)
         .map(|_| ())
         .map_err(|error| sanitize::sanitize_error(&error, "Desktop shortcut creation failed"))
@@ -1281,15 +1573,22 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id.as_ref() {
-            "show" => show_main(app),
+            "show" => {
+                log::write("tray menu: show the dashboard");
+                show_main(app);
+            }
             "refresh" => {
+                log::write("tray menu: refresh now");
                 let app = app.clone();
                 let state = app.state::<Arc<AppState>>().inner().clone();
                 tauri::async_runtime::spawn(async move {
                     refresh::refresh_all(&app, &state).await;
                 });
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                log::write("tray menu: quit");
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -1331,12 +1630,16 @@ pub fn run() {
         ))
         .setup(|app| {
             log::write(format!(
-                "application started, version {}, status line {}",
+                "application started, version {} ({} build {}), {}, status line {}, finished-turn hook {}",
                 app.package_info().version,
+                build_kind(),
+                env!("QUOTASTATION_BUILD_COMMIT"),
+                if autostart::requested() { "started in the background" } else { "started with a window" },
                 match statusline::bridge_status().installed {
                     true => "installed",
                     false => "not installed",
-                }
+                },
+                on_off(notifications::installed()),
             ));
             let app_data_dir = app.path().app_data_dir()?;
             let demo = demo::requested();
@@ -1356,6 +1659,16 @@ pub fn run() {
                 log::write(format!("normalized data retention failed: {error:#}"));
             }
             let local_providers = AppState::local_providers();
+            log::write(format!(
+                "provider clients found: [{}], quota tracked for [{}]",
+                local_providers.iter().map(|provider| provider.key()).collect::<Vec<_>>().join(" "),
+                local_providers
+                    .iter()
+                    .filter(|provider| AppState::quota_tracked(&settings, **provider))
+                    .map(|provider| provider.key())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
             let mut snapshots = BTreeMap::new();
             for &provider in &local_providers {
                 let snapshot = tauri::async_runtime::block_on(storage.load_snapshot(provider))
@@ -1390,6 +1703,15 @@ pub fn run() {
             app.manage(state.clone());
             let _ = APP.set(app.handle().clone());
             build_tray(app)?;
+            log::write(format!(
+                "providers on display: [{}]",
+                state
+                    .enabled_providers()
+                    .iter()
+                    .map(|provider| provider.key())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
             // The dashboard is configured hidden so a background start never flashes a
             // window on its way to the tray; every other start opens it here instead.
             if autostart::requested() {
@@ -1462,10 +1784,8 @@ pub fn run() {
                     let app_handle = app.handle().clone();
                     let live_state = app.state::<Arc<AppState>>().inner().clone();
                     tauri::async_runtime::spawn(async move {
-                        let mut interval = tokio::time::interval(provider.live_refresh_interval());
-                        interval.tick().await;
                         loop {
-                            interval.tick().await;
+                            tokio::time::sleep(live_state.live_refresh_delay(provider).await).await;
                             refresh::refresh_live_for_provider(&app_handle, &live_state, provider)
                                 .await;
                         }
@@ -1511,6 +1831,8 @@ pub fn run() {
             get_theme,
             get_app_settings,
             set_app_settings,
+            get_provider_choices,
+            log_activity,
             get_autostart,
             set_autostart,
             shared_folder_exists,
@@ -1541,6 +1863,7 @@ pub fn run() {
                 let _ = window.hide();
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                log::write(format!("{} window closed to the tray", window.label()));
                 api.prevent_close();
                 let _ = window.hide();
             }

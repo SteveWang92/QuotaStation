@@ -3,6 +3,14 @@ import { useEffect, useState } from "react";
 import { errorMessage } from "./errors";
 import type { AppSettings } from "./types";
 
+const FIRST_RETRY_MS = 250;
+const MAX_RETRY_MS = 5_000;
+// The retry is for the window that asked before the core had an answer, which resolves in
+// well under a minute. Past that the refusal is not the startup race, and repeating it
+// forever only re-renders every subscriber on a five-second beat behind a failure the
+// window is already showing. The Reload control is what tries again after this.
+const MAX_RETRIES = 12;
+
 /**
  * One copy of the settings for the whole window.
  *
@@ -14,6 +22,9 @@ let current: AppSettings | null = null;
 let loadError: string | null = null;
 let loading: Promise<unknown> | null = null;
 let saveQueue: Promise<void> = Promise.resolve();
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let retryDelay = FIRST_RETRY_MS;
+let retriesLeft = MAX_RETRIES;
 export interface AppSettingsState {
   settings: AppSettings | null;
   error: string | null;
@@ -35,6 +46,11 @@ function notify() {
 function publish(next: AppSettings) {
   current = next;
   loadError = null;
+  retryDelay = FIRST_RETRY_MS;
+  retriesLeft = MAX_RETRIES;
+  // A retry queued by the failure before this read is a second read of what just landed.
+  clearTimeout(retryTimer);
+  retryTimer = undefined;
   notify();
 }
 
@@ -49,6 +65,17 @@ export async function reloadAppSettings(): Promise<void> {
     .catch((cause) => {
       loadError = errorMessage(cause);
       notify();
+      // The window exists before the core has state to answer with, so the first read of a
+      // freshly launched window can be rejected for a reason that passes on its own. Until
+      // one lands there is no record to change, and every card that writes one is refused.
+      if (retryTimer === undefined && retriesLeft > 0) {
+        retriesLeft -= 1;
+        retryTimer = setTimeout(() => {
+          retryTimer = undefined;
+          void reloadAppSettings();
+        }, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
+      }
     })
     .finally(() => {
       loading = null;

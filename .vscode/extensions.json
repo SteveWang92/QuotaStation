@@ -1,5 +1,12 @@
 {
-  "recommendations": ["biomejs.biome", "rust-lang.rust-analyzer", "tauri-apps.tauri-vscode"],
+  "recommendations": [
+    "biomejs.biome",
+    "rust-lang.rust-analyzer",
+    "tauri-apps.tauri-vscode",
+    // Applies .editorconfig, which owns the line endings and trailing whitespace that
+    // Biome does not reach — Markdown in particular.
+    "editorconfig.editorconfig"
+  ],
   // Prettier would fight the settings beside this file rather than fail loudly.
   "unwantedRecommendations": ["esbenp.prettier-vscode"]
 }
