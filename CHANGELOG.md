@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Changed
+
+- The activity log records a line whose content has not changed as a repeat count rather than writing it again, which roughly halves the file.
+
 ## [1.1.0] - 2026-09-02
 
 ### Added
