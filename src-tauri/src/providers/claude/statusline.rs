@@ -263,16 +263,20 @@ pub fn run_bridge_if_requested() -> bool {
     // whether Claude Code ran it and what the payload contained. Sizes and field presence
     // only: the payload also carries the session's own working context.
     crate::log::write(format!(
-        "status line bridge ran: {} bytes of input, parsed {}, rate_limits {}",
+        "status line bridge ran: {} bytes, {}",
         payload.len(),
-        if input.is_some() { "yes" } else { "no" },
-        match limits {
-            None => "absent".to_string(),
-            Some(limits) => format!(
-                "five_hour {} seven_day {}",
-                if limits.five_hour.is_some() { "present" } else { "absent" },
-                if limits.seven_day.is_some() { "present" } else { "absent" },
-            ),
+        match (input.is_some(), limits) {
+            (false, _) => "unparsed",
+            (true, None) => "no rate limits",
+            // Named rather than counted, because which window is missing is the question a
+            // half-empty status line raises.
+            (true, Some(limits)) =>
+                match (limits.five_hour.is_some(), limits.seven_day.is_some()) {
+                    (true, true) => "five_hour and seven_day",
+                    (true, false) => "five_hour only",
+                    (false, true) => "seven_day only",
+                    (false, false) => "neither window",
+                },
         }
     ));
     if let Some(limits) = limits {
@@ -280,9 +284,9 @@ pub fn run_bridge_if_requested() -> bool {
         let reading =
             Reading { observed_at: now, five_hour: limits.five_hour, seven_day: limits.seven_day };
         match windows_from(&reading, now) {
-            Ok(_) if store_reading(&reading).is_ok() => {
-                crate::log::write("status line reading stored");
-            }
+            // The line above already says the reading arrived, so only a failure to keep it
+            // adds anything to that.
+            Ok(_) if store_reading(&reading).is_ok() => {}
             Ok(_) => crate::log::write("status line reading not stored"),
             Err(_) => {
                 // Persist only the normalized quota subset, not the source payload. The

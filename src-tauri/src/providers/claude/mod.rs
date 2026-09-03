@@ -47,11 +47,6 @@ pub fn claude_home() -> Option<PathBuf> {
 pub async fn read_live() -> Result<LiveSnapshot> {
     let plan_type = plan::plan_type();
     let reported = statusline::read_windows()?;
-    crate::log::write(format!(
-        "claude live read: status line reported {} window(s), plan {:?}",
-        reported.len(),
-        plan_type
-    ));
     let mut snapshot = match session::read_live(plan_type.clone()).await {
         Ok(snapshot) => snapshot,
         // The session logs are the fallback, so their absence only ends the read when
