@@ -643,14 +643,8 @@ fn settings_changes(previous: &AppSettings, next: &AppSettings) -> Vec<String> {
     if previous.status_line_provider_labels != next.status_line_provider_labels {
         changes.push(format!("status line labels {:?}", next.status_line_provider_labels));
     }
-    if previous.status_line_other_providers != next.status_line_other_providers {
-        changes.push(format!(
-            "status line other providers {}",
-            on_off(next.status_line_other_providers)
-        ));
-    }
-    if previous.status_line_extra_details != next.status_line_extra_details {
-        changes.push(format!("status line details {}", on_off(next.status_line_extra_details)));
+    if previous.status_line_layout != next.status_line_layout {
+        changes.push("status line layout".to_string());
     }
     if previous.notify_low_quota != next.notify_low_quota {
         changes.push(format!("low quota alerts {}", on_off(next.notify_low_quota)));
@@ -853,6 +847,16 @@ async fn set_claude_status_line(
     // one that is already there; the session watcher and the poll carry the rest.
     refresh::refresh_live_for_provider(&app, state.inner(), ProviderKind::Claude).await;
     Ok(statusline::bridge_status())
+}
+
+/// The status line a layout would draw, for the settings page to show before Claude Code
+/// does. It comes from the bridge's own renderer, fed a sample session.
+#[tauri::command]
+fn preview_claude_status_line(
+    layout: settings::StatusLineLayout,
+    labels: settings::ProviderLabelStyle,
+) -> String {
+    statusline::preview(layout, labels)
 }
 
 /// Whether Claude Code tells QuotaStation that a turn has finished.
@@ -1821,6 +1825,7 @@ pub fn run() {
             open_latest_release,
             get_claude_status_line,
             set_claude_status_line,
+            preview_claude_status_line,
             get_claude_notifications,
             set_claude_notifications,
             open_dashboard,

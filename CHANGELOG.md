@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Added
+
+- The Claude Code status line can be laid out in Settings, choosing each segment, its row and order, the quota format, separators and colour, with a live preview.
+
 ### Changed
 
 - The activity log records a line whose content has not changed as a repeat count rather than writing it again, which roughly halves the file.

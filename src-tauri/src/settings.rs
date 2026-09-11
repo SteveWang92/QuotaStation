@@ -22,6 +22,152 @@ pub enum ProviderLabelStyle {
     Full,
 }
 
+/// What the Claude Code status line shows, where, and how.
+///
+/// Segments are named by string rather than by an enum so that a file naming a segment this
+/// build does not know — written by a later version, or by hand — still loads every other
+/// preference in it. [`StatusLineLayout::normalized`] reconciles the list with what this
+/// build can draw.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusLineLayout {
+    /// Every segment this build knows, in the order it is drawn within its row.
+    pub segments: Vec<SegmentPlacement>,
+    #[serde(default)]
+    pub quota: QuotaFormat,
+    #[serde(default)]
+    pub separators: SeparatorStyle,
+    #[serde(default)]
+    pub colour: ColourMode,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentPlacement {
+    pub id: String,
+    pub enabled: bool,
+    /// One of the rows, numbered from 1.
+    pub row: u8,
+}
+
+/// Which parts of each quota window are printed.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct QuotaFormat {
+    pub used: bool,
+    pub remaining: bool,
+    pub countdown: bool,
+    pub pace: bool,
+    pub bar: bool,
+}
+
+impl Default for QuotaFormat {
+    fn default() -> Self {
+        Self { used: true, remaining: false, countdown: true, pace: true, bar: false }
+    }
+}
+
+/// The marks between segments: one inside a group of related readings, one between groups.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SeparatorStyle {
+    /// ` · ` and ` | `.
+    #[default]
+    Classic,
+    /// ` · ` and ` › `.
+    Arrow,
+    /// ` · ` and the Powerline thin arrow, which needs a Powerline or Nerd Font.
+    Powerline,
+}
+
+/// Which readings carry a threshold colour.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ColourMode {
+    /// Quota and context shares.
+    #[default]
+    Full,
+    QuotaOnly,
+    None,
+}
+
+pub const STATUS_LINE_ROWS: u8 = 3;
+
+/// The segments that describe the session, each with the row it takes by default.
+const SESSION_SEGMENTS: [(&str, u8); 9] = [
+    ("model", 1),
+    ("mode", 1),
+    ("directory", 1),
+    ("branch", 1),
+    ("pullRequest", 1),
+    ("context", 2),
+    ("cache", 2),
+    ("sessionCost", 2),
+    ("today", 2),
+];
+
+/// A segment the line had nothing like before it was configurable, and so starts switched
+/// off: an existing installation renders unchanged until the user asks for more.
+const OFF_BY_DEFAULT: [&str; 1] = ["today"];
+
+pub fn quota_segment_id(provider: crate::providers::ProviderKind) -> String {
+    format!("quota:{}", provider.key())
+}
+
+impl Default for StatusLineLayout {
+    fn default() -> Self {
+        Self::legacy(true, true)
+    }
+}
+
+impl StatusLineLayout {
+    /// The layout the two switches that came before it described. Both on is the default
+    /// line: the session on two rows and every provider's quota on the third. Without the
+    /// detail only the model and the quota are left, on one row.
+    pub(crate) fn legacy(extra_details: bool, other_providers: bool) -> Self {
+        use crate::providers::ProviderKind;
+        let session = SESSION_SEGMENTS.iter().map(|(id, row)| SegmentPlacement {
+            id: id.to_string(),
+            enabled: (extra_details || *id == "model") && !OFF_BY_DEFAULT.contains(id),
+            row: if extra_details { *row } else { 1 },
+        });
+        // This client's own quota first, as it always has been.
+        let providers = std::iter::once(ProviderKind::Claude)
+            .chain(ProviderKind::ALL.into_iter().filter(|kind| *kind != ProviderKind::Claude));
+        let quotas = providers.map(|kind| SegmentPlacement {
+            id: quota_segment_id(kind),
+            enabled: other_providers || kind == ProviderKind::Claude,
+            row: if extra_details { STATUS_LINE_ROWS } else { 1 },
+        });
+        Self {
+            segments: session.chain(quotas).collect(),
+            quota: QuotaFormat::default(),
+            separators: SeparatorStyle::default(),
+            colour: ColourMode::default(),
+        }
+    }
+
+    /// The stored layout reconciled with this build: unknown and repeated segments dropped,
+    /// rows kept in range, and a segment the file never mentioned added switched off, so
+    /// the settings page can still offer it.
+    pub fn normalized(mut self) -> Self {
+        let known = Self::default().segments;
+        let mut seen = std::collections::HashSet::new();
+        self.segments.retain(|segment| {
+            known.iter().any(|known| known.id == segment.id) && seen.insert(segment.id.clone())
+        });
+        for segment in &mut self.segments {
+            segment.row = segment.row.clamp(1, STATUS_LINE_ROWS);
+        }
+        for missing in known {
+            if !seen.contains(&missing.id) {
+                self.segments.push(SegmentPlacement { enabled: false, ..missing });
+            }
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -39,14 +185,8 @@ pub struct AppSettings {
     pub taskbar_widget_display: Option<String>,
     #[serde(default)]
     pub status_line_provider_labels: ProviderLabelStyle,
-    /// Whether the status line reports every provider QuotaStation watches, or only the
-    /// client it is being rendered inside.
-    #[serde(default = "enabled")]
-    pub status_line_other_providers: bool,
-    /// Whether the status line carries the session detail Claude Code's own footer never
-    /// shows — the project, the request and the spend. Off leaves the model and the quota.
-    #[serde(default = "enabled")]
-    pub status_line_extra_details: bool,
+    #[serde(default)]
+    pub status_line_layout: StatusLineLayout,
     /// Whether a quota window crossing the shared warning or critical share is announced.
     #[serde(default = "enabled")]
     pub notify_low_quota: bool,
@@ -116,8 +256,7 @@ impl Default for AppSettings {
             taskbar_widget_enabled: enabled(),
             taskbar_widget_display: None,
             status_line_provider_labels: ProviderLabelStyle::default(),
-            status_line_other_providers: enabled(),
-            status_line_extra_details: enabled(),
+            status_line_layout: StatusLineLayout::default(),
             notify_low_quota: enabled(),
             notify_read_failures: enabled(),
             notify_quota_resets: enabled(),
@@ -138,18 +277,18 @@ pub fn load(path: &Path) -> AppSettings {
         .and_then(|content| {
             let stored: serde_json::Value = serde_json::from_str(&content).ok()?;
             let mut settings: AppSettings = serde_json::from_value(stored.clone()).ok()?;
-            // The legacy `statusLineFullDetails` switch covers both of these choices. Keep an
-            // expressed choice wherever the file does not carry its replacement.
-            if let Some(legacy) =
-                stored.get("statusLineFullDetails").and_then(serde_json::Value::as_bool)
-            {
-                if stored.get("statusLineOtherProviders").is_none() {
-                    settings.status_line_other_providers = legacy;
-                }
-                if stored.get("statusLineExtraDetails").is_none() {
-                    settings.status_line_extra_details = legacy;
-                }
+            // A file without a layout may still carry the switches that came before it —
+            // `statusLineFullDetails`, or the pair that replaced it — and a choice expressed
+            // there is kept.
+            if stored.get("statusLineLayout").is_none() {
+                let switch = |key: &str| stored.get(key).and_then(serde_json::Value::as_bool);
+                let full = switch("statusLineFullDetails").unwrap_or(true);
+                settings.status_line_layout = StatusLineLayout::legacy(
+                    switch("statusLineExtraDetails").unwrap_or(full),
+                    switch("statusLineOtherProviders").unwrap_or(full),
+                );
             }
+            settings.status_line_layout = settings.status_line_layout.normalized();
             Some(settings)
         })
         .unwrap_or_default()
@@ -219,20 +358,62 @@ mod tests {
             "no display chosen means the primary one"
         );
         assert_eq!(settings.status_line_provider_labels, ProviderLabelStyle::Short);
-        assert!(settings.status_line_other_providers, "an unrecorded choice takes its default");
-        assert!(settings.status_line_extra_details, "an unrecorded choice takes its default");
+        assert_eq!(settings.status_line_layout, StatusLineLayout::default());
         assert!(settings.notify_low_quota, "an unrecorded choice takes its default");
         assert!(settings.notify_read_failures, "an unrecorded choice takes its default");
         assert!(settings.notify_quota_resets, "an unrecorded choice takes its default");
     }
 
+    fn enabled_ids(layout: &StatusLineLayout) -> Vec<(&str, u8)> {
+        layout
+            .segments
+            .iter()
+            .filter(|segment| segment.enabled)
+            .map(|segment| (segment.id.as_str(), segment.row))
+            .collect()
+    }
+
     #[test]
-    fn the_old_combined_status_line_choice_migrates_to_both_new_choices() {
+    fn the_old_status_line_switches_become_the_layout_they_described() {
         let path = scratch("legacy-status-line-details");
         std::fs::write(&path, r#"{"statusLineFullDetails":false}"#).expect("write old settings");
-        let settings = load(&path);
-        assert!(!settings.status_line_other_providers);
-        assert!(!settings.status_line_extra_details);
+        assert_eq!(
+            enabled_ids(&load(&path).status_line_layout),
+            [("model", 1), ("quota:claude", 1)]
+        );
+
+        std::fs::write(
+            &path,
+            r#"{"statusLineExtraDetails":false,"statusLineOtherProviders":true}"#,
+        )
+        .expect("write old settings");
+        assert_eq!(
+            enabled_ids(&load(&path).status_line_layout),
+            [("model", 1), ("quota:claude", 1), ("quota:codex", 1)]
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_hand_edited_layout_is_reconciled_with_what_this_build_can_draw() {
+        let path = scratch("edited-layout");
+        std::fs::write(
+            &path,
+            r#"{"statusLineLayout":{"segments":[
+                {"id":"quota:codex","enabled":true,"row":9},
+                {"id":"weather","enabled":true,"row":1},
+                {"id":"model","enabled":true,"row":1},
+                {"id":"model","enabled":false,"row":2}
+            ]}}"#,
+        )
+        .expect("write edited settings");
+        let layout = load(&path).status_line_layout;
+        assert_eq!(enabled_ids(&layout), [("quota:codex", STATUS_LINE_ROWS), ("model", 1)]);
+        assert_eq!(
+            layout.segments.len(),
+            StatusLineLayout::default().segments.len(),
+            "every known segment is still offered"
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -243,8 +424,12 @@ mod tests {
             taskbar_widget_enabled: false,
             taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
             status_line_provider_labels: ProviderLabelStyle::Full,
-            status_line_other_providers: false,
-            status_line_extra_details: false,
+            status_line_layout: StatusLineLayout {
+                quota: QuotaFormat { bar: true, ..QuotaFormat::default() },
+                separators: SeparatorStyle::Powerline,
+                colour: ColourMode::QuotaOnly,
+                ..StatusLineLayout::legacy(false, false)
+            },
             notify_low_quota: false,
             notify_read_failures: false,
             notify_quota_resets: false,

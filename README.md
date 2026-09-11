@@ -15,7 +15,8 @@ Windows taskbar.
 
 - See how much of each quota window has been used and exactly when it resets.
 - Open a compact panel from the system tray or keep an optional status widget in the taskbar.
-- Show quota, context, model, and Git details in the Claude Code status line.
+- Show quota, context, model, and Git details in the Claude Code status line, laid out and
+  previewed in Settings.
 - Review hourly usage for recent ranges and daily usage for longer ranges.
 - Compare providers, models, token categories, devices, and the previous period.
 - Keep a history of scheduled and possible early quota resets.

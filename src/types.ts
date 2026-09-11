@@ -273,6 +273,37 @@ export interface DiagnosticsSnapshot {
 /** How a provider is named where the name sits beside a reading rather than above one. */
 export type ProviderLabelStyle = "short" | "full";
 
+/**
+ * One segment of the Claude Code status line: `model`, `mode`, `directory`, `branch`,
+ * `pullRequest`, `context`, `cache`, `sessionCost`, `today`, or `quota:<provider>`. The core
+ * sends every segment it can draw, so the list is also the set the editor offers.
+ */
+export interface StatusLineSegment {
+  id: string;
+  enabled: boolean;
+  /** 1 to 3. */
+  row: number;
+}
+
+export interface StatusLineQuotaFormat {
+  used: boolean;
+  remaining: boolean;
+  countdown: boolean;
+  pace: boolean;
+  bar: boolean;
+}
+
+export type StatusLineSeparators = "classic" | "arrow" | "powerline";
+export type StatusLineColour = "full" | "quotaOnly" | "none";
+
+export interface StatusLineLayout {
+  /** In drawing order within each row. */
+  segments: StatusLineSegment[];
+  quota: StatusLineQuotaFormat;
+  separators: StatusLineSeparators;
+  colour: StatusLineColour;
+}
+
 /** A display whose taskbar can host the status widget. */
 export interface TaskbarDisplay {
   /** The Windows device name the choice is recorded as. */
@@ -297,8 +328,7 @@ export interface AppSettings {
   /** The chosen display's device name, or null for whichever taskbar is the primary one. */
   taskbarWidgetDisplay: string | null;
   statusLineProviderLabels: ProviderLabelStyle;
-  statusLineOtherProviders: boolean;
-  statusLineExtraDetails: boolean;
+  statusLineLayout: StatusLineLayout;
   notifyLowQuota: boolean;
   notifyReadFailures: boolean;
   notifyQuotaResets: boolean;

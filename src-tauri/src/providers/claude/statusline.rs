@@ -30,8 +30,11 @@ use crate::domain::{
     CRITICAL_PERCENT, Freshness, LimitKind, LimitWindow, QuotaLevel, WARNING_PERCENT, WindowSource,
 };
 use crate::providers::ProviderKind;
-use crate::settings::ProviderLabelStyle;
-use crate::summary::QuotaWindow;
+use crate::settings::{
+    ColourMode, ProviderLabelStyle, QuotaFormat, STATUS_LINE_ROWS, SeparatorStyle,
+    StatusLineLayout, quota_segment_id,
+};
+use crate::summary::{QuotaSummary, QuotaWindow};
 
 use super::{FIVE_HOUR_WINDOW_MINS, SEVEN_DAY_WINDOW_MINS, claude_home};
 
@@ -344,6 +347,8 @@ fn view_of<'a>(
 ) -> StatusLineView<'a> {
     let now = jiff::Timestamp::now().as_second();
     let settings = crate::settings::load_default();
+    let layout = settings.status_line_layout;
+    let summary = crate::summary::load_fresh(now);
     let workspace = input.and_then(|input| input.workspace.as_ref());
     let current_dir = workspace
         .and_then(|workspace| workspace.current_dir.as_deref())
@@ -365,10 +370,11 @@ fn view_of<'a>(
             .and_then(|worktree| worktree.branch.clone())
             .or_else(|| workspace.and_then(|workspace| workspace.git_worktree.clone()))
             .or_else(|| repository.as_deref().and_then(crate::git::branch_at)),
-        // Only the detailed line has a project group to hang these on, so the minimal one
-        // never pays for the `git` process behind them.
-        worktree: settings
-            .status_line_extra_details
+        // Only a line that shows the branch pays for the `git` process behind its marks.
+        worktree: layout
+            .segments
+            .iter()
+            .any(|segment| segment.enabled && segment.id == "branch")
             .then(|| repository.as_deref().and_then(|root| crate::git::work_tree_status(root, now)))
             .flatten(),
         context_used: context.and_then(|context| {
@@ -396,15 +402,23 @@ fn view_of<'a>(
         session_cost_usd: input
             .and_then(|input| input.cost.as_ref())
             .and_then(|cost| cost.total_cost_usd),
+        today: summary.as_ref().and_then(today_totals),
         quotas: quota_segments(
             windows_from_payload(limits),
+            summary,
             settings.status_line_provider_labels,
-            now,
         ),
-        other_providers: settings.status_line_other_providers,
-        extra_details: settings.status_line_extra_details,
+        layout,
         now,
     }
+}
+
+/// Today's tokens across every provider, and their cost where any provider priced them.
+fn today_totals(summary: &QuotaSummary) -> Option<(u64, Option<f64>)> {
+    let tokens: u64 = summary.providers.iter().map(|provider| provider.today_tokens).sum();
+    let costs: Vec<f64> =
+        summary.providers.iter().filter_map(|provider| provider.api_equivalent_cost_usd).collect();
+    (tokens > 0).then(|| (tokens, (!costs.is_empty()).then(|| costs.iter().sum())))
 }
 
 /// Everything the status line is drawn from, gathered before anything is rendered so the
@@ -427,17 +441,17 @@ struct StatusLineView<'a> {
     /// The open pull request's number and, when it has one, its review state.
     pull_request: Option<(u64, Option<&'a str>)>,
     session_cost_usd: Option<f64>,
-    /// One entry per provider, this client's own first.
+    /// Today's tokens across every provider, and their API-equivalent cost when known.
+    today: Option<(u64, Option<f64>)>,
+    /// One entry per provider that has something to report.
     quotas: Vec<QuotaSegment>,
-    /// Whether the providers other than this client are wanted. Nothing else depends on it.
-    other_providers: bool,
-    /// Whether the session rows are wanted — everything Claude Code's own footer never
-    /// shows. Off leaves the model and the quota, which is all a status line has to add.
-    extra_details: bool,
+    layout: StatusLineLayout,
     now: i64,
 }
 
 struct QuotaSegment {
+    /// The layout's name for this provider's segment.
+    id: String,
     label: String,
     /// Whether this is the client the line is being rendered inside. Only its own quota can
     /// go unnamed, because only its own quota is what an unnamed reading would be read as.
@@ -450,27 +464,61 @@ const RED: &str = "\u{1b}[31m";
 const YELLOW: &str = "\u{1b}[33m";
 const RESET: &str = "\u{1b}[0m";
 
-/// A percentage consumed, always coloured.
+/// Text describing a share consumed, in that share's colour when colour is wanted.
 ///
 /// The thresholds are the ones the interface uses for its warning and critical statuses, so
 /// the status line and the application never disagree about when a window has become worth
 /// acting on. Everything below them is green rather than left plain: a row carrying four
 /// readings is scanned rather than read, and an uncoloured reading is one the eye has to
 /// stop and parse before it can rule it out.
-fn percent(used: f64) -> String {
-    marked_percent(used, None)
-}
-
-/// The same reading with its pace marker inside the colour, so the arrow reads as part of
-/// the number rather than as a symbol standing between two columns.
-fn marked_percent(used: f64, marker: Option<&str>) -> String {
-    let value = used.clamp(0.0, 100.0);
-    let colour = match value {
+fn coloured(used: f64, text: &str, colour: bool) -> String {
+    if !colour {
+        return text.to_string();
+    }
+    let colour = match used.clamp(0.0, 100.0) {
         value if value >= CRITICAL_PERCENT => RED,
         value if value >= WARNING_PERCENT => YELLOW,
         _ => GREEN,
     };
-    format!("{colour}{value:.0}%{}{RESET}", marker.unwrap_or(""))
+    format!("{colour}{text}{RESET}")
+}
+
+/// Five cells, each a fifth of the window consumed.
+fn bar(used: f64) -> String {
+    let filled = (used.clamp(0.0, 100.0) / 20.0).round() as usize;
+    format!("{}{}", "\u{25b0}".repeat(filled), "\u{25b1}".repeat(5 - filled))
+}
+
+/// One quota window, printed with the parts the layout asks for. The pace marker sits
+/// inside the colour, so the arrow reads as part of the number rather than as a symbol
+/// standing between two columns.
+fn window_text(window: &QuotaWindow, format: QuotaFormat, colour: bool, now: i64) -> String {
+    let used = window.used_percent.clamp(0.0, 100.0);
+    let mut values = Vec::new();
+    if format.used {
+        values.push(format!("{used:.0}%"));
+    }
+    if format.remaining {
+        values.push(format!("{:.0}% left", 100.0 - used));
+    }
+    let marker =
+        format.pace.then(|| pace(used, window.resets_at, window.window_minutes, now)).flatten();
+    if let (Some(first), Some(marker)) = (values.first_mut(), marker) {
+        first.push_str(marker);
+    }
+    if format.bar {
+        values.push(bar(used));
+    }
+    let mut parts = vec![window.label.clone()];
+    if !values.is_empty() {
+        parts.push(coloured(used, &values.join(" "), colour));
+    }
+    if format.countdown
+        && let Some(left) = window.resets_at.and_then(|resets_at| countdown(resets_at, now))
+    {
+        parts.push(format!("({left})"));
+    }
+    parts.join(" ")
 }
 
 /// How much of the last response's input came from cache rather than being sent again.
@@ -556,138 +604,150 @@ fn work_tree_marks(status: crate::git::WorkTreeStatus) -> String {
     marks.join(" ")
 }
 
-/// Within a group, the readings are of one kind and a dot is enough to separate them.
-const WITHIN: &str = " \u{b7} ";
-/// Between groups, a bar: the eye stops there, which is what tells the model apart from the
-/// project, the project from the session's own cost, and one provider from the next.
-const BETWEEN: &str = " | ";
+/// The mark inside a group of readings of one kind, and the one between groups. The eye
+/// stops at the second, which is what tells the model apart from the project, the project
+/// from the session's own cost, and one provider from the next.
+fn separators(style: SeparatorStyle) -> (&'static str, &'static str) {
+    match style {
+        SeparatorStyle::Classic => (" \u{b7} ", " | "),
+        SeparatorStyle::Arrow => (" \u{b7} ", " \u{203a} "),
+        SeparatorStyle::Powerline => (" \u{b7} ", " \u{e0b1} "),
+    }
+}
 
-fn joined(groups: Vec<Vec<String>>) -> String {
-    groups
-        .into_iter()
-        .filter(|group| !group.is_empty())
-        .map(|group| group.join(WITHIN))
-        .collect::<Vec<_>>()
-        .join(BETWEEN)
+/// Which readings belong together. Neighbouring segments of one group take the lighter
+/// mark, which is what lets any order still read as groups rather than as a flat list.
+fn group(id: &str) -> &str {
+    match id {
+        "model" | "mode" => "model",
+        "directory" | "branch" | "pullRequest" => "project",
+        "context" | "cache" => "request",
+        // The session's cost, today's totals and each provider's quota stand alone.
+        other => other,
+    }
 }
 
 /// What Claude Code shows while the bridge is installed.
 ///
-/// Three rows, each answering one question: what this session is, what it has spent, and
-/// what is left across every provider QuotaStation watches. The last row is the whole reason
-/// the bridge is worth its screen — Claude Code knows its own quota and nothing about anyone
-/// else's, and this is the one place both can be read without leaving the terminal.
-///
-/// Two settings cut it down, and each cuts one thing. Without the other providers the quota
-/// is this client's alone; without the extra detail the session rows go entirely, which
-/// leaves the model and the quota on one row — Claude Code has no status line of its own to
-/// fall back to, so that row is as close to installing nothing as an installed one gets.
+/// The layout decides which segments appear, on which of up to three rows, and in what
+/// order. The default puts what this session is on the first row, what it has consumed on
+/// the second, and what is left across every provider QuotaStation watches on the third.
+/// That last one is the whole reason the bridge is worth its screen — Claude Code knows its
+/// own quota and nothing about anyone else's, and this is the one place both can be read
+/// without leaving the terminal.
 fn status_line(view: &StatusLineView) -> String {
-    let mut model: Vec<String> = Vec::new();
-    if let Some(name) = view.model.filter(|model| !model.is_empty()) {
-        model.push(name.to_string());
-    }
-    let mut project: Vec<String> = Vec::new();
-    let mut request: Vec<String> = Vec::new();
-    let mut spend: Vec<String> = Vec::new();
-    if view.extra_details {
-        if let Some(effort) = view.effort.filter(|level| !level.is_empty()) {
-            model.push(effort.to_string());
-        }
-        if view.fast_mode {
-            model.push("fast".to_string());
-        }
-        if view.thinking {
-            model.push("think".to_string());
-        }
-        if let Some(directory) = &view.directory {
-            project.push(directory.clone());
-        }
-        if let Some(branch) = &view.branch {
-            project.push(
-                match view.worktree.map(work_tree_marks).filter(|marks| !marks.is_empty()) {
-                    Some(marks) => format!("{branch} {marks}"),
-                    None => branch.clone(),
-                },
-            );
-        }
-        if let Some((number, state)) = view.pull_request {
-            project.push(match state.filter(|state| !state.is_empty()) {
-                Some(state) => format!("PR #{number} {state}"),
-                None => format!("PR #{number}"),
-            });
-        }
-        if let Some(used) = view.context_used {
-            let share = percent(used);
-            request.push(match view.context_tokens {
-                Some((tokens, size)) => {
-                    format!("ctx {share} ({}/{})", tokens_short(tokens), tokens_short(size))
-                }
-                None => format!("ctx {share}"),
-            });
-        }
-        // One decimal, because in Claude Code almost every input token is a cache read and
-        // the whole figure rounds to 100% on an ordinary turn. The turns worth noticing are
-        // the ones that had to rebuild part of the prefix, and that shows in the fraction.
-        if let Some(hit) = view.cache_hit {
-            request.push(format!("cache {hit:.1}%"));
-        }
-        // A session that has spent nothing yet has no figure worth a column.
-        if let Some(cost) = view.session_cost_usd.filter(|cost| *cost > 0.0) {
-            spend.push(format!("${cost:.2}"));
-        }
-    }
+    let layout = &view.layout;
+    let (within, between) = separators(layout.separators);
+    let quota_colour = layout.colour != ColourMode::None;
+    let enabled =
+        |id: &str| layout.segments.iter().any(|segment| segment.enabled && segment.id == id);
 
-    let segments = view.quotas.iter().filter(|segment| view.other_providers || segment.own);
-    let mut quotas: Vec<(&QuotaSegment, Vec<String>)> = Vec::new();
-    for segment in segments {
-        let windows: Vec<String> = segment
-            .windows
-            .iter()
-            // A window that has already restarted describes nothing that is running now.
-            .filter(|window| window.resets_at.is_none_or(|resets_at| resets_at > view.now))
-            .map(|window| {
-                let used = marked_percent(
-                    window.used_percent,
-                    pace(window.used_percent, window.resets_at, window.window_minutes, view.now),
-                );
-                match window.resets_at.and_then(|resets_at| countdown(resets_at, view.now)) {
-                    Some(left) => format!("{} {used} ({left})", window.label),
-                    None => format!("{} {used}", window.label),
-                }
-            })
-            .collect();
-        if windows.is_empty() {
-            continue;
-        }
-        quotas.push((segment, windows));
-    }
+    let quotas: Vec<(&QuotaSegment, String)> = view
+        .quotas
+        .iter()
+        .filter(|segment| enabled(&segment.id))
+        .filter_map(|segment| {
+            let windows: Vec<String> = segment
+                .windows
+                .iter()
+                // A window that has already restarted describes nothing that is running now.
+                .filter(|window| window.resets_at.is_none_or(|resets_at| resets_at > view.now))
+                .map(|window| window_text(window, layout.quota, quota_colour, view.now))
+                .collect();
+            (!windows.is_empty()).then(|| (segment, windows.join(within)))
+        })
+        .collect();
     // Naming the provider only matters once there is a second one to tell it apart from;
     // alone inside Claude Code it says what the line is already running in. A foreign
     // provider is always named, whatever else survived: an unnamed reading beside Claude
     // Code's own model is read as Claude Code's own quota.
     let several = quotas.len() > 1;
-    let quotas: Vec<Vec<String>> = quotas
-        .into_iter()
-        .map(|(segment, mut windows)| {
-            if several || !segment.own {
-                let first = windows.remove(0);
-                windows.insert(0, format!("{} {first}", segment.label));
-            }
-            windows
-        })
-        .collect();
 
-    let rows = if view.extra_details {
-        // One session line would outgrow the width a terminal gives it, so what the session
-        // is and what it has consumed are read on separate lines.
-        vec![joined(vec![model, project]), joined(vec![request, spend]), joined(quotas)]
-    } else {
-        // Without the session rows there is one row, so the quota joins the model rather
-        // than being left alone on a line that says less than the one above it.
-        vec![joined(std::iter::once(model).chain(quotas).collect())]
+    let text = |id: &str| -> Option<String> {
+        match id {
+            "model" => view.model.filter(|model| !model.is_empty()).map(str::to_string),
+            "mode" => {
+                let mut mode = Vec::new();
+                if let Some(effort) = view.effort.filter(|level| !level.is_empty()) {
+                    mode.push(effort);
+                }
+                if view.fast_mode {
+                    mode.push("fast");
+                }
+                if view.thinking {
+                    mode.push("think");
+                }
+                (!mode.is_empty()).then(|| mode.join(within))
+            }
+            "directory" => view.directory.clone(),
+            "branch" => view.branch.as_ref().map(|branch| {
+                match view.worktree.map(work_tree_marks).filter(|marks| !marks.is_empty()) {
+                    Some(marks) => format!("{branch} {marks}"),
+                    None => branch.clone(),
+                }
+            }),
+            "pullRequest" => view.pull_request.map(|(number, state)| {
+                match state.filter(|state| !state.is_empty()) {
+                    Some(state) => format!("PR #{number} {state}"),
+                    None => format!("PR #{number}"),
+                }
+            }),
+            "context" => view.context_used.map(|used| {
+                let share = coloured(
+                    used,
+                    &format!("{:.0}%", used.clamp(0.0, 100.0)),
+                    layout.colour == ColourMode::Full,
+                );
+                match view.context_tokens {
+                    Some((tokens, size)) => {
+                        format!("ctx {share} ({}/{})", tokens_short(tokens), tokens_short(size))
+                    }
+                    None => format!("ctx {share}"),
+                }
+            }),
+            // One decimal, because in Claude Code almost every input token is a cache read
+            // and the whole figure rounds to 100% on an ordinary turn. The turns worth
+            // noticing are the ones that had to rebuild part of the prefix, and that shows
+            // in the fraction.
+            "cache" => view.cache_hit.map(|hit| format!("cache {hit:.1}%")),
+            // A session that has spent nothing yet has no figure worth a column.
+            "sessionCost" => {
+                view.session_cost_usd.filter(|cost| *cost > 0.0).map(|cost| format!("${cost:.2}"))
+            }
+            "today" => view.today.map(|(tokens, cost)| match cost {
+                Some(cost) => format!("today {} ${cost:.2}", tokens_short(tokens)),
+                None => format!("today {}", tokens_short(tokens)),
+            }),
+            quota => {
+                quotas.iter().find(|(segment, _)| segment.id == quota).map(|(segment, windows)| {
+                    if several || !segment.own {
+                        format!("{} {windows}", segment.label)
+                    } else {
+                        windows.clone()
+                    }
+                })
+            }
+        }
     };
-    let lines: Vec<String> = rows.into_iter().filter(|line| !line.is_empty()).collect();
+
+    let mut lines = Vec::new();
+    for row in 1..=STATUS_LINE_ROWS {
+        let mut line = String::new();
+        let mut previous: Option<&str> = None;
+        for segment in
+            layout.segments.iter().filter(|segment| segment.enabled && segment.row == row)
+        {
+            let Some(text) = text(&segment.id) else { continue };
+            if let Some(previous) = previous {
+                line.push_str(if previous == group(&segment.id) { within } else { between });
+            }
+            line.push_str(&text);
+            previous = Some(group(&segment.id));
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
     if lines.is_empty() {
         // Claude Code hands out no rate limits on API-key and enterprise sign-ins, and an
         // empty line would read as a broken status line rather than an absent quota.
@@ -725,32 +785,31 @@ fn windows_from_payload(limits: Option<&RateLimits>) -> Vec<QuotaWindow> {
 /// the row says less rather than saying something no longer true.
 fn quota_segments(
     payload_windows: Vec<QuotaWindow>,
+    summary: Option<QuotaSummary>,
     labels: ProviderLabelStyle,
-    now: i64,
 ) -> Vec<QuotaSegment> {
     let name = |provider: &crate::summary::ProviderQuota| match labels {
         ProviderLabelStyle::Short => provider.short_name.clone(),
         ProviderLabelStyle::Full => provider.display_name.clone(),
     };
-    let mut recorded =
-        crate::summary::load_fresh(now).map(|summary| summary.providers).unwrap_or_default();
-    let claude = recorded.iter().position(|provider| provider.provider == "claude");
+    let own_id = quota_segment_id(ProviderKind::Claude);
+    let mut recorded = summary.map(|summary| summary.providers).unwrap_or_default();
+    let claude =
+        recorded.iter().position(|provider| provider.provider == ProviderKind::Claude.key());
     let mut segments = Vec::new();
     match (payload_windows.is_empty(), claude) {
         (false, index) => {
-            let label = index.map(|index| name(&recorded.remove(index))).unwrap_or_else(|| {
+            let label = index
+                .map(|index| name(&recorded.remove(index)))
                 // The application has never recorded this provider, so the name has to come
                 // from the one place that always knows it.
-                match labels {
-                    ProviderLabelStyle::Short => ProviderKind::Claude.short_name().to_string(),
-                    ProviderLabelStyle::Full => ProviderKind::Claude.display_name().to_string(),
-                }
-            });
-            segments.push(QuotaSegment { label, own: true, windows: payload_windows });
+                .unwrap_or_else(|| provider_label(ProviderKind::Claude, labels));
+            segments.push(QuotaSegment { id: own_id, label, own: true, windows: payload_windows });
         }
         (true, Some(index)) => {
             let provider = recorded.remove(index);
             segments.push(QuotaSegment {
+                id: own_id,
                 label: name(&provider),
                 own: true,
                 windows: provider.windows,
@@ -759,11 +818,71 @@ fn quota_segments(
         (true, None) => {}
     }
     segments.extend(recorded.into_iter().map(|provider| QuotaSegment {
+        id: format!("quota:{}", provider.provider),
         label: name(&provider),
         own: false,
         windows: provider.windows,
     }));
     segments
+}
+
+fn provider_label(kind: ProviderKind, labels: ProviderLabelStyle) -> String {
+    match labels {
+        ProviderLabelStyle::Short => kind.short_name().to_string(),
+        ProviderLabelStyle::Full => kind.display_name().to_string(),
+    }
+}
+
+/// The line a layout draws, from a fixed sample session rather than a real one, so the
+/// settings page shows the effect of a choice through this renderer rather than a second
+/// one of its own.
+pub fn preview(layout: StatusLineLayout, labels: ProviderLabelStyle) -> String {
+    let now = jiff::Timestamp::now().as_second();
+    let window = |label: &str, used: f64, minutes_left: i64, window_minutes: i64| QuotaWindow {
+        label: label.to_string(),
+        used_percent: used,
+        resets_at: Some(now + minutes_left * 60),
+        window_minutes: Some(window_minutes),
+    };
+    let samples = ProviderKind::ALL.into_iter().map(|kind| QuotaSegment {
+        id: quota_segment_id(kind),
+        label: provider_label(kind, labels),
+        own: kind == ProviderKind::Claude,
+        // Readings chosen to show every colour and both pace markers.
+        windows: match kind {
+            ProviderKind::Claude => vec![
+                window("5h", 42.0, 150, FIVE_HOUR_WINDOW_MINS),
+                window("7d", 18.0, 5 * 1_440, SEVEN_DAY_WINDOW_MINS),
+            ],
+            ProviderKind::Codex => vec![
+                window("5h", 76.0, 200, FIVE_HOUR_WINDOW_MINS),
+                window("7d", 93.0, 1_440, SEVEN_DAY_WINDOW_MINS),
+            ],
+        },
+    });
+    status_line(&StatusLineView {
+        model: Some("Opus"),
+        directory: Some("my-project".to_string()),
+        branch: Some("main".to_string()),
+        worktree: Some(crate::git::WorkTreeStatus {
+            changed: 2,
+            ahead: 1,
+            behind: 0,
+            tracked: true,
+        }),
+        context_used: Some(34.0),
+        context_tokens: Some((68_000, 200_000)),
+        cache_hit: Some(96.4),
+        effort: Some("high"),
+        thinking: true,
+        fast_mode: false,
+        pull_request: Some((42, Some("approved"))),
+        session_cost_usd: Some(1.84),
+        today: Some((12_400_000, Some(18.25))),
+        quotas: samples.collect(),
+        layout: layout.normalized(),
+        now,
+    })
 }
 
 fn store_reading(reading: &Reading) -> Result<()> {
@@ -924,6 +1043,7 @@ pub(super) fn write_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::SegmentPlacement;
 
     fn reading(now: i64) -> Reading {
         Reading {
@@ -989,9 +1109,9 @@ mod tests {
             fast_mode: false,
             pull_request: None,
             session_cost_usd: None,
+            today: None,
             quotas,
-            other_providers: true,
-            extra_details: true,
+            layout: StatusLineLayout::default(),
             now: NOW,
         }
     }
@@ -1030,6 +1150,7 @@ mod tests {
     fn two_providers() -> Vec<QuotaSegment> {
         vec![
             QuotaSegment {
+                id: "quota:claude".to_string(),
                 label: "CLD".to_string(),
                 own: true,
                 windows: vec![
@@ -1038,6 +1159,7 @@ mod tests {
                 ],
             },
             QuotaSegment {
+                id: "quota:codex".to_string(),
                 label: "CDX".to_string(),
                 own: false,
                 windows: vec![window("5h", 62.0, Some(2 * 3_600 + 600))],
@@ -1085,14 +1207,14 @@ mod tests {
         let mut session = view(Some("Opus"), two_providers());
         session.directory = Some("QuotaStation".to_string());
         session.context_used = Some(19.0);
-        session.extra_details = false;
+        session.layout = StatusLineLayout::legacy(false, true);
         assert_eq!(
             plain(&status_line(&session)),
             "Opus | CLD 5h 24% (4h02m) · 7d 41% (5d) | CDX 5h 62% (2h10m)",
             "no directory and no context, but every provider still reports"
         );
 
-        session.other_providers = false;
+        session.layout = StatusLineLayout::legacy(false, false);
         assert_eq!(
             plain(&status_line(&session)),
             "Opus | 5h 24% (4h02m) · 7d 41% (5d)",
@@ -1107,7 +1229,7 @@ mod tests {
         session.branch = Some("dev".to_string());
         session.context_used = Some(19.0);
         session.session_cost_usd = Some(0.1234);
-        session.other_providers = false;
+        session.layout = StatusLineLayout::legacy(true, false);
         assert_eq!(
             plain(&status_line(&session)),
             "Opus | QuotaStation · dev\n\
@@ -1122,6 +1244,7 @@ mod tests {
         let line = status_line(&view(
             None,
             vec![QuotaSegment {
+                id: "quota:codex".to_string(),
                 label: "CDX".to_string(),
                 own: false,
                 windows: vec![
@@ -1142,6 +1265,7 @@ mod tests {
         let line = status_line(&view(
             Some("Opus"),
             vec![QuotaSegment {
+                id: "quota:codex".to_string(),
                 label: "CDX".to_string(),
                 own: false,
                 windows: vec![window("5h", 62.0, Some(-60))],
@@ -1158,20 +1282,86 @@ mod tests {
         let mut session = view(
             Some("Opus"),
             vec![QuotaSegment {
+                id: "quota:codex".to_string(),
                 label: "CDX".to_string(),
                 own: false,
                 windows: vec![window("5h", 62.0, Some(2 * 3_600))],
             }],
         );
-        session.extra_details = false;
-        session.other_providers = false;
+        session.layout = StatusLineLayout::legacy(false, false);
         assert_eq!(plain(&status_line(&session)), "Opus", "no foreign quota at all");
-        session.other_providers = true;
+        session.layout = StatusLineLayout::legacy(false, true);
         assert_eq!(
             plain(&status_line(&session)),
             "Opus | CDX 5h 62% (2h00m)",
             "a foreign quota alone is still named"
         );
+    }
+
+    #[test]
+    fn segments_can_move_between_rows_and_change_order() {
+        let mut session = view(Some("Opus"), two_providers());
+        session.branch = Some("dev".to_string());
+        session.context_used = Some(19.0);
+        let codex = session.layout.segments.iter().position(|s| s.id == "quota:codex").unwrap();
+        let moved = session.layout.segments.remove(codex);
+        session.layout.segments.insert(0, SegmentPlacement { row: 1, ..moved });
+        session.layout.separators = SeparatorStyle::Arrow;
+        assert_eq!(
+            plain(&status_line(&session)),
+            "CDX 5h 62% (2h10m) \u{203a} Opus \u{203a} dev\n\
+             ctx 19%\n\
+             CLD 5h 24% (4h02m) \u{b7} 7d 41% (5d)"
+        );
+    }
+
+    #[test]
+    fn a_quota_window_prints_the_parts_the_layout_asks_for() {
+        let mut session = view(
+            None,
+            vec![QuotaSegment {
+                id: "quota:codex".to_string(),
+                label: "CDX".to_string(),
+                own: false,
+                windows: vec![QuotaWindow {
+                    label: "5h".to_string(),
+                    used_percent: 62.0,
+                    resets_at: Some(NOW + 250 * 60),
+                    window_minutes: Some(300),
+                }],
+            }],
+        );
+        session.layout.quota =
+            QuotaFormat { used: false, remaining: true, countdown: false, pace: true, bar: true };
+        assert_eq!(plain(&status_line(&session)), "CDX 5h 38% left\u{2191} ▰▰▰▱▱");
+    }
+
+    #[test]
+    fn colour_can_be_limited_to_the_quota_or_left_out() {
+        let mut session = view(
+            None,
+            vec![QuotaSegment {
+                id: "quota:codex".to_string(),
+                label: "CDX".to_string(),
+                own: false,
+                windows: vec![window("5h", 72.0, None)],
+            }],
+        );
+        session.context_used = Some(95.0);
+        session.layout.colour = ColourMode::QuotaOnly;
+        assert_eq!(status_line(&session), format!("ctx 95%\nCDX 5h {YELLOW}72%{RESET}"));
+        session.layout.colour = ColourMode::None;
+        assert_eq!(status_line(&session), "ctx 95%\nCDX 5h 72%");
+    }
+
+    #[test]
+    fn the_preview_is_the_line_the_layout_draws() {
+        let mut layout = StatusLineLayout::default();
+        for segment in &mut layout.segments {
+            segment.enabled = segment.id == "model" || segment.id == "today";
+            segment.row = 1;
+        }
+        assert_eq!(plain(&preview(layout, ProviderLabelStyle::Short)), "Opus | today 12M $18.25");
     }
 
     #[test]
