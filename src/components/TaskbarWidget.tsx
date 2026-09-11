@@ -9,9 +9,8 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
   const providerColor = statusColor(snapshot.compactStatus);
   return (
     <div className="taskbar-provider">
-      {/* One name for the whole column rather than one per row: a provider showing both of
-          its windows was repeating its own name, which is the widest thing in a slot the
-          taskbar may only give 30px of. */}
+      {/* One name for the whole column rather than one per row: the name is the widest
+          thing in a slot the taskbar may only give 30px of. */}
       <span className="taskbar-name" style={{ color: providerColor }}>
         {snapshot.shortName}
       </span>
@@ -27,7 +26,7 @@ function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
           snapshot.limits.map((limit) => {
             // Every window draws the same three fixed-width cells — badge, bar, reading — so
             // the bars of two windows, and of two providers, all start and end on the same
-            // pixel. A proportional bar made each row a different length instead.
+            // pixel.
             const percent = limit.usedPercent === null ? null : `${Math.round(limit.usedPercent)}%`;
             const countdown =
               limit.resetsAt === null ? null : formatCompactCountdown(limit.resetsAt);

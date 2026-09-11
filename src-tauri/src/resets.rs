@@ -92,11 +92,10 @@ pub fn detect(previous: WindowObservation, current: WindowObservation) -> Option
 /// Runs [`detect`] over a time-ordered stream of observations, keeping the previous
 /// reading of each window.
 ///
-/// A window is identified by how long it runs, not by the slot it arrives in. Codex has
-/// moved its windows between `primary` and `secondary` more than once — on 2026-08-25 the
-/// weekly window moved out of `primary` and the five-hour window moved in — and pairing by
-/// slot silently threw away the reading each restart had to be recognised against. A
-/// duration that has never been seen simply starts a comparison of its own.
+/// A window is identified by how long it runs, not by the slot it arrives in. Codex moves
+/// its windows between `primary` and `secondary`, and pairing by slot would throw away the
+/// reading each restart has to be recognised against. A duration that has never been seen
+/// simply starts a comparison of its own.
 #[derive(Default)]
 pub struct ResetTracker {
     previous: BTreeMap<i64, WindowObservation>,
@@ -207,8 +206,8 @@ mod tests {
 
     #[test]
     fn a_window_that_moved_to_the_other_slot_is_still_the_same_window() {
-        // What Codex did on 2026-08-25: the weekly window left `primary`, the five-hour
-        // window took its place, and everything restarted at zero.
+        // The weekly window leaves `primary`, the five-hour window takes its place, and
+        // everything restarts at zero.
         let mut tracker = ResetTracker::default();
         assert!(tracker.push(observation(1_000_000, 61.0, 1_000_000 + 4 * 86_400)).is_none());
         let five_hour = WindowObservation {

@@ -10,10 +10,9 @@
   color-scheme: dark;
 
   /* The dark palette is the base rather than an override: the core stamps `data-theme` on
-     the document before the first paint, and dark is what QuotaStation looked like before
-     there was a choice, so a theme that never arrives leaves the application as it was.
-     Every colour below is a role, never a shade — a rule that reaches for a raw hex is a
-     rule that only works in one theme. */
+     the document before the first paint, and dark is the default, so a theme that never
+     arrives leaves the application dark. Every colour below is a role, never a shade — a
+     rule that reaches for a raw hex is a rule that only works in one theme. */
   --bg: #0b1014;
   --bg-glow: rgba(75, 105, 127, 0.13);
   --bg-from: #0a0f13;
@@ -234,10 +233,8 @@ button { font: inherit; }
 
 .quota-section { border: 1px solid var(--line-panel); border-radius: 5px; overflow: hidden; background: var(--surface-veil); }
 /* Sized to fit inside one half of the two-column provider grid, which is the narrowest the
-   dashboard ever draws this row. Columns wide enough for a full-width row overflowed that
-   panel, and the section clips its overflow, so the reset column was cut off the right edge
-   at the ordinary window size and only reappeared once the window narrowed enough to put
-   the providers on one column each. */
+   dashboard ever draws this row. The section clips its overflow, so wider columns would cut
+   the reset column off the right edge. */
 .quota-row {
   min-height: 104px;
   display: grid;
@@ -643,9 +640,8 @@ button { font: inherit; }
    them rather than sitting on a line of its own. */
 /* The taskbar owns this window's height and crops whatever does not fit, so the layout is
    built for the short end: line-height 1, small type, and one line per window with its bar
-   centred against the numbers. Every column has a fixed width, the bar included: a bar
-   sized from the space left over drew a different length for a countdown reading "6d 18h"
-   than for one reading "3h 18m", so no two rows matched. */
+   centred against the numbers. Every column has a fixed width, the bar included, so rows
+   with countdowns of different lengths still line up. */
 /* The gap before the divider and the padding after it are the same number, so the rule sits
    midway between the two providers. The reading column is only as wide as the longest
    reading it has to hold, because the slack of a wider one is centred with the text and
@@ -657,7 +653,7 @@ button { font: inherit; }
 .taskbar-windows { display: flex; flex-direction: column; justify-content: center; gap: 3px; }
 .taskbar-quota { display: grid; grid-template-columns: 14px 70px 64px; align-items: center; gap: 4px; }
 /* Not ".taskbar-window": the root element carries that class to make the surface
-   transparent, and a bare class selector styled the whole document through it. */
+   transparent, and a bare class selector would style the whole document through it. */
 .taskbar-window-badge { color: var(--taskbar-dim); font-size: 9px; font-weight: 700; text-transform: lowercase; }
 /* Centred, so a window with no reading yet puts its single dash on the same axis as the
    numbers of the window below it instead of against the right edge. */

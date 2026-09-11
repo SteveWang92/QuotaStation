@@ -138,8 +138,8 @@ pub fn load(path: &Path) -> AppSettings {
         .and_then(|content| {
             let stored: serde_json::Value = serde_json::from_str(&content).ok()?;
             let mut settings: AppSettings = serde_json::from_value(stored.clone()).ok()?;
-            // v0.2 had one switch for both choices v0.3 split apart. Preserve an expressed
-            // choice wherever the old file does not yet carry its replacement.
+            // The legacy `statusLineFullDetails` switch covers both of these choices. Keep an
+            // expressed choice wherever the file does not carry its replacement.
             if let Some(legacy) =
                 stored.get("statusLineFullDetails").and_then(serde_json::Value::as_bool)
             {
@@ -165,19 +165,11 @@ fn default_path() -> Option<PathBuf> {
 }
 
 pub fn save(path: &Path, settings: &AppSettings) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
     let content = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
     // The status-line process reads this file while the application is running. Publish a
     // complete replacement so it never sees a truncated JSON document, and a failed write
     // leaves the last saved preferences intact.
-    let staging = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&staging, content).map_err(|error| error.to_string())?;
-    std::fs::rename(&staging, path).map_err(|error| {
-        let _ = std::fs::remove_file(&staging);
-        error.to_string()
-    })?;
+    crate::fs_atomic::write(path, content).map_err(|error| error.to_string())?;
     remove_abandoned_staging(path);
     Ok(())
 }
@@ -244,9 +236,9 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    #[test]
-    fn settings_survive_a_round_trip_through_the_file_format() {
-        let settings = AppSettings {
+    /// Every field moved away from its default, so a field the file format drops shows up.
+    fn customised() -> AppSettings {
+        AppSettings {
             theme: crate::theme::ThemePreference::Light,
             taskbar_widget_enabled: false,
             taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
@@ -261,7 +253,12 @@ mod tests {
             dismissed_reset_notices: vec!["codex:primary:1781654400".to_string()],
             quota_disabled_providers: vec!["codex".to_string()],
             shared_usage_folder: Some("D:\\Sync\\QuotaStation".to_string()),
-        };
+        }
+    }
+
+    #[test]
+    fn settings_survive_a_round_trip_through_the_file_format() {
+        let settings = customised();
         let encoded = serde_json::to_string(&settings).expect("encode");
         assert_eq!(serde_json::from_str::<AppSettings>(&encoded).expect("decode"), settings);
     }
@@ -281,22 +278,7 @@ mod tests {
     fn replacing_the_settings_file_keeps_the_last_complete_record() {
         let path = scratch("atomic");
         save(&path, &AppSettings::default()).expect("write the first settings");
-        let expected = AppSettings {
-            theme: crate::theme::ThemePreference::System,
-            taskbar_widget_enabled: false,
-            taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
-            status_line_provider_labels: ProviderLabelStyle::Full,
-            status_line_other_providers: false,
-            status_line_extra_details: false,
-            notify_low_quota: false,
-            notify_read_failures: false,
-            notify_quota_resets: false,
-            device_id: Some("18f3c".to_string()),
-            device_name: Some("Workshop".to_string()),
-            dismissed_reset_notices: vec!["codex:primary:1781654400".to_string()],
-            quota_disabled_providers: vec!["codex".to_string()],
-            shared_usage_folder: Some("D:\\Sync\\QuotaStation".to_string()),
-        };
+        let expected = customised();
         save(&path, &expected).expect("replace the settings");
         assert_eq!(load(&path), expected);
         let _ = std::fs::remove_file(path);

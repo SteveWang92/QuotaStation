@@ -40,8 +40,8 @@ pub fn requested() -> bool {
 /// Brings an already-registered logon entry up to date with [`BACKGROUND_ARG`].
 ///
 /// The autostart plugin registers the argument with every new entry, but it reports only
-/// whether an entry exists, so one written by an earlier version would go on opening a
-/// window at every logon until the setting was toggled off and on again. Rewriting it is
+/// whether an entry exists, so an entry without the argument would go on opening a window
+/// at every logon until the setting is toggled off and on again. Rewriting it is
 /// safe only where the entry already names this executable: two copies of QuotaStation can
 /// exist on one machine, and the running one must not quietly claim the other's logon slot.
 #[cfg(windows)]

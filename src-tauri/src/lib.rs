@@ -1,6 +1,7 @@
 mod alerts;
 mod autostart;
 mod diagnostic_export;
+mod fs_atomic;
 mod git;
 mod log;
 mod refresh;
@@ -119,34 +120,49 @@ pub struct AppState {
     watcher_diagnostics: RwLock<WatcherDiagnostics>,
     /// What the shared usage folder last did, written by the refresh that ran it.
     shared_folder_diagnostics: RwLock<SharedFolderDiagnostics>,
-    quick_panel_focus_lost_at: StdMutex<Option<Instant>>,
-    quick_panel_toggled_at: StdMutex<Option<Instant>>,
-    quick_panel_shown_at: StdMutex<Option<Instant>>,
+    quick_panel: StdMutex<QuickPanelTiming>,
     settings: StdMutex<AppSettings>,
     detected_providers: StdMutex<Vec<ProviderKind>>,
     settings_path: PathBuf,
 }
 
+/// When the quick panel last changed hands, which is what tells one click reaching it twice,
+/// or a focus loss caused by the click that opened it, apart from a real request.
+#[derive(Default)]
+struct QuickPanelTiming {
+    focus_lost_at: Option<Instant>,
+    toggled_at: Option<Instant>,
+    shown_at: Option<Instant>,
+}
+
 impl AppState {
-    /// The state a test drives, over a throwaway database and with no window behind it.
-    /// Only the parts the refresh path reads are populated.
-    #[cfg(test)]
-    pub(crate) fn for_tests(storage: Storage) -> Self {
+    fn new(
+        storage: Storage,
+        settings: AppSettings,
+        settings_path: PathBuf,
+        snapshots: BTreeMap<ProviderKind, ProviderSnapshot>,
+        providers: Vec<ProviderKind>,
+    ) -> Self {
         Self {
             storage,
-            snapshots: RwLock::new(BTreeMap::new()),
+            snapshots: RwLock::new(snapshots),
             refresh_publish_lock: Mutex::new(()),
             live_refresh_lock: Mutex::new(()),
             history_refresh_lock: Mutex::new(()),
             watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
             shared_folder_diagnostics: RwLock::new(SharedFolderDiagnostics::default()),
-            quick_panel_focus_lost_at: StdMutex::new(None),
-            quick_panel_toggled_at: StdMutex::new(None),
-            quick_panel_shown_at: StdMutex::new(None),
-            settings: StdMutex::new(AppSettings::default()),
-            detected_providers: StdMutex::new(Vec::new()),
-            settings_path: PathBuf::new(),
+            quick_panel: StdMutex::new(QuickPanelTiming::default()),
+            settings: StdMutex::new(settings),
+            detected_providers: StdMutex::new(providers),
+            settings_path,
         }
+    }
+
+    /// The state a test drives, over a throwaway database and with no window behind it.
+    /// Only the parts the refresh path reads are populated.
+    #[cfg(test)]
+    pub(crate) fn for_tests(storage: Storage) -> Self {
+        Self::new(storage, AppSettings::default(), PathBuf::new(), BTreeMap::new(), Vec::new())
     }
 
     fn settings(&self) -> AppSettings {
@@ -231,12 +247,7 @@ impl AppState {
         for &provider in enabled.iter().filter(|provider| !local.contains(provider)) {
             let mut snapshot = self.storage.load_snapshot(provider).await?;
             snapshot.remote_usage_only = true;
-            snapshot.limits.clear();
-            snapshot.earned_reset_count = None;
-            snapshot.earned_reset_expires_at = None;
-            snapshot.recent_resets.clear();
-            snapshot.live_error = None;
-            snapshot.sign_in_required = false;
+            snapshot.clear_quota();
             snapshot.resolve_derived_state();
             remote.push((provider, snapshot));
         }
@@ -278,8 +289,10 @@ impl AppState {
         provider: ProviderKind,
         read: impl FnOnce(&ProviderSnapshot) -> T,
     ) -> T {
-        let mut snapshots = self.snapshots.write().await;
-        read(snapshots.entry(provider).or_insert_with(|| ProviderSnapshot::new(provider)))
+        if let Some(snapshot) = self.snapshots.read().await.get(&provider) {
+            return read(snapshot);
+        }
+        read(&ProviderSnapshot::new(provider))
     }
 
     /// The payload every surface consumes. Derived state is resolved here so a snapshot
@@ -300,12 +313,7 @@ impl AppState {
                 snapshot.quota_disabled =
                     !snapshot.remote_usage_only && !Self::quota_tracked(&settings, provider);
                 if snapshot.remote_usage_only || snapshot.quota_disabled {
-                    snapshot.limits.clear();
-                    snapshot.earned_reset_count = None;
-                    snapshot.earned_reset_expires_at = None;
-                    snapshot.recent_resets.clear();
-                    snapshot.live_error = None;
-                    snapshot.sign_in_required = false;
+                    snapshot.clear_quota();
                 }
                 snapshot.resolve_derived_state();
                 snapshot
@@ -1114,9 +1122,8 @@ fn show_main(app: &tauri::AppHandle) {
 /// Sizing it as it opens keeps the edge anchoring below working from the real size.
 ///
 /// This is the width the columns are laid out at, so a scaled display is given the scaled
-/// window: 390 device pixels left a 125% display 312 layout pixels to draw a 390-pixel
-/// column in, and the reflow made the panel taller than the height the renderer had
-/// already measured at the width the window opened with.
+/// window; an unscaled width would squeeze the column and reflow the panel taller than the
+/// height the renderer measured.
 const QUICK_PANEL_COLUMN_WIDTH: f64 = 390.0;
 /// Only what the window opens at before the renderer has measured anything. Every height
 /// after the first render comes from [`set_quick_panel_height`].
@@ -1131,10 +1138,8 @@ const QUICK_PANEL_MARGIN: f64 = 12.0;
 /// is larger than its content area — 18 x 10 physical pixels at 125% here. `outer_size`,
 /// `outer_position` and the work area are all in window-rect coordinates while `set_size`
 /// takes a content size, so every placement below stays in window-rect units and converts
-/// exactly once, in [`resize_quick_panel`]. Reading one and writing the other grew the
-/// window by this frame on every open, and the content, which had not changed, kept the
-/// height it was measured at — leaving a band of bare background around the card that read
-/// as a second panel behind it.
+/// exactly once, in [`resize_quick_panel`]. Mixing the two would grow the window by this
+/// frame on every open and leave a band of bare background around the card.
 fn quick_panel_frame(panel: &tauri::WebviewWindow) -> tauri::PhysicalSize<u32> {
     let Ok(outer) = panel.outer_size() else { return tauri::PhysicalSize::new(0, 0) };
     let inner = panel.inner_size().unwrap_or(outer);
@@ -1293,11 +1298,11 @@ fn toggle_quick_panel_beside(
     // corner and there is one panel between them, so a second request arriving on the heels
     // of the first is the same click reaching a second path — obeying it moved the panel to
     // the other anchor, which read as a second window replacing the first.
-    if let Ok(mut toggled_at) = state.quick_panel_toggled_at.lock() {
-        if toggled_at.is_some_and(|at| at.elapsed() < Duration::from_millis(300)) {
+    if let Ok(mut timing) = state.quick_panel.lock() {
+        if timing.toggled_at.is_some_and(|at| at.elapsed() < Duration::from_millis(300)) {
             return panel.is_visible().unwrap_or(false);
         }
-        *toggled_at = Some(Instant::now());
+        timing.toggled_at = Some(Instant::now());
     }
     // The renderer has already sized the window to its contents, so the panel opens at the
     // height it currently holds rather than at the height it was configured with.
@@ -1309,10 +1314,12 @@ fn toggle_quick_panel_beside(
         panel.scale_factor().unwrap_or(1.0),
         frame,
     );
-    if let Ok(mut focus_lost_at) = state.quick_panel_focus_lost_at.lock()
-        && focus_lost_at.is_some_and(|lost_at| lost_at.elapsed() < Duration::from_millis(500))
+    if let Ok(mut timing) = state.quick_panel.lock()
+        && timing
+            .focus_lost_at
+            .is_some_and(|lost_at| lost_at.elapsed() < Duration::from_millis(500))
     {
-        *focus_lost_at = None;
+        timing.focus_lost_at = None;
         return false;
     }
     if panel.is_visible().unwrap_or(false) {
@@ -1345,8 +1352,8 @@ fn toggle_quick_panel_beside(
         )
     };
     let _ = panel.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
-    if let Ok(mut shown_at) = state.quick_panel_shown_at.lock() {
-        *shown_at = Some(Instant::now());
+    if let Ok(mut timing) = state.quick_panel.lock() {
+        timing.shown_at = Some(Instant::now());
     }
     let _ = panel.show();
     let _ = panel.set_focus();
@@ -1675,21 +1682,13 @@ pub fn run() {
                     .unwrap_or_else(|_| ProviderSnapshot::new(provider));
                 snapshots.insert(provider, snapshot);
             }
-            let state = Arc::new(AppState {
+            let state = Arc::new(AppState::new(
                 storage,
-                snapshots: RwLock::new(snapshots),
-                refresh_publish_lock: Mutex::new(()),
-                live_refresh_lock: Mutex::new(()),
-                history_refresh_lock: Mutex::new(()),
-                watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
-                shared_folder_diagnostics: RwLock::new(SharedFolderDiagnostics::default()),
-                quick_panel_focus_lost_at: StdMutex::new(None),
-                quick_panel_toggled_at: StdMutex::new(None),
-                quick_panel_shown_at: StdMutex::new(None),
-                settings: StdMutex::new(settings),
-                detected_providers: StdMutex::new(local_providers),
+                settings,
                 settings_path,
-            });
+                snapshots,
+                local_providers,
+            ));
             // What the device split calls this machine, so a split reads "Workshop" rather
             // than an identifier — and follows the machine being renamed.
             if let Err(error) =
@@ -1848,17 +1847,14 @@ pub fn run() {
                 // before it ever had it — the click belongs to that window, and Windows hands
                 // the foreground back. Dismissing on that is dismissing the panel the click
                 // just asked for, which looks like the click doing nothing at all.
-                let just_shown = state
-                    .quick_panel_shown_at
-                    .lock()
-                    .ok()
-                    .and_then(|shown_at| *shown_at)
-                    .is_some_and(|shown_at| shown_at.elapsed() < Duration::from_millis(400));
-                if just_shown {
-                    return;
-                }
-                if let Ok(mut focus_lost_at) = state.quick_panel_focus_lost_at.lock() {
-                    *focus_lost_at = Some(Instant::now());
+                if let Ok(mut timing) = state.quick_panel.lock() {
+                    if timing
+                        .shown_at
+                        .is_some_and(|shown_at| shown_at.elapsed() < Duration::from_millis(400))
+                    {
+                        return;
+                    }
+                    timing.focus_lost_at = Some(Instant::now());
                 }
                 let _ = window.hide();
             }

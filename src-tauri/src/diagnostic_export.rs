@@ -122,26 +122,14 @@ impl DiagnosticExport {
     }
 
     pub fn write_to(&self, path: &Path) -> Result<(), String> {
-        let parent = path
-            .parent()
+        path.parent()
             .filter(|parent| parent.is_dir())
             .ok_or_else(|| "Choose an existing folder for the diagnostic export.".to_string())?;
         let content = serde_json::to_vec_pretty(self)
             .map_err(|_| "Diagnostic export could not be prepared.".to_string())?;
-        let staging = parent.join(format!(
-            ".{}.{}.tmp",
-            path.file_name().and_then(|name| name.to_str()).unwrap_or("diagnostics.json"),
-            std::process::id()
-        ));
-        std::fs::write(&staging, content)
-            .map_err(|_| "Diagnostic export could not be written.".to_string())?;
-        // The rename replaces an existing export in one step. A failure leaves that file
-        // untouched, so the staging copy is what goes.
-        if std::fs::rename(&staging, path).is_err() {
-            let _ = std::fs::remove_file(&staging);
-            return Err("Diagnostic export could not be saved.".to_string());
-        }
-        Ok(())
+        // An existing export is replaced in one step, and a failure leaves it untouched.
+        crate::fs_atomic::write(path, content)
+            .map_err(|_| "Diagnostic export could not be saved.".to_string())
     }
 }
 

@@ -106,8 +106,7 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
   const failure = refreshError ?? error;
   return (
     <main className="quick-panel-shell" ref={shell}>
-      {/* Each column carries its own provider's status, and the aggregate here was the
-          louder of those two said a second time. */}
+      {/* Each column carries its own provider's status, so the header repeats no aggregate. */}
       <header className="quick-panel-header">
         <strong>QuotaStation</strong>
         <button

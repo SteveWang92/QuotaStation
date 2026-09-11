@@ -198,9 +198,8 @@ export function ClaudeFinishedNotifications() {
 }
 
 /**
- * What installing actually does, at the moment it is being decided. The same words sat
- * permanently on the card before, where they were a wall of text in front of a setting
- * most people had already made up their mind about.
+ * What installing actually does, at the moment it is being decided, rather than as a
+ * permanent wall of text on the card.
  */
 function ConfirmInstall({
   busy,

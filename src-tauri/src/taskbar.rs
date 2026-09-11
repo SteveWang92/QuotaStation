@@ -189,8 +189,8 @@ fn live_widget(app: &tauri::AppHandle) -> Option<HWND> {
 #[cfg(windows)]
 fn rebuild_widget(app: &tauri::AppHandle) -> Result<(), String> {
     // Building a webview window takes longer than the two seconds between placement ticks,
-    // and every tick until it appears would ask for another one: three status windows were
-    // created from one Explorer restart before this guard existed.
+    // and every tick until it appears would ask for another one, creating several status
+    // windows from one Explorer restart.
     if REBUILD_IN_FLIGHT.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
@@ -307,8 +307,8 @@ fn dock_widget(app: &tauri::AppHandle, taskbar: &Taskbar) -> Result<(), String> 
             "taskbar has {available_width}px available but the status layout requires {width}px"
         ));
     }
-    // Use the taskbar's actual physical height. A 44px ceiling left only 22 CSS pixels at
-    // 200% scaling and cropped the second quota row even when Explorer had ample space.
+    // Use the taskbar's actual physical height. A fixed ceiling would leave too few CSS
+    // pixels at high scaling and crop the second quota row.
     let height = docked_height(taskbar_height);
     let gap = scaled(TASKBAR_MARGIN / 2, dpi);
     let x = (trailing - taskbar_rect.left - width - gap).max(gap);
@@ -361,15 +361,14 @@ fn trailing_edge(taskbar: &Taskbar, rect: RECT, dpi: u32) -> i32 {
 /// The display's effective scaling.
 ///
 /// Read from the monitor rather than from the taskbar window: `GetDpiForWindow` answers in
-/// terms of the *calling* process's DPI awareness, and it reported a flat 96 for a taskbar
-/// on a 125% display — which sized the layout at 460 device pixels where it needed 575 and
-/// cropped its leading column, the exact defect the width scaling exists to avoid.
+/// terms of the *calling* process's DPI awareness and reports a flat 96 for a taskbar on a
+/// scaled display, which would undersize the layout and crop its leading column.
 /// Where the free part of the taskbar begins: after the task buttons, which Windows 11
 /// centres, so the empty stretch is between them and the clock rather than the whole bar.
 ///
-/// Without this the widget was anchored to the trailing end alone and drew straight over
-/// the running applications' icons on a short taskbar — a portrait display's, measured at
-/// 1080 pixels wide, where the centred buttons reach past the widget's leading edge.
+/// Anchoring to the trailing end alone would draw the widget over the running applications'
+/// icons on a short taskbar, such as a portrait display's, where the centred buttons reach
+/// past the widget's leading edge.
 #[cfg(windows)]
 fn leading_edge(taskbar: HWND, rect: RECT) -> i32 {
     let mut right = rect.left;
@@ -584,9 +583,8 @@ pub fn raise_window(_app: &tauri::AppHandle, _label: &str) -> Result<(), String>
 /// being squeezed until its leftmost provider is cropped.
 ///
 /// The width is the width the layout is drawn at, so it is scaled by the monitor's factor
-/// before the window is sized: asking for 460 device pixels on a 125% display left the
-/// renderer 368 CSS pixels to lay out 441 in, and the columns that overflowed were cropped
-/// off the left edge — the first provider lost its name. The height stays in device pixels
+/// before the window is sized; an unscaled width leaves the renderer fewer CSS pixels than
+/// the layout needs and crops the first provider off the left edge. The height stays in device pixels
 /// because the taskbar, not the layout, decides it.
 const WIDGET_BASE_WIDTH: u32 = 40;
 const PROVIDER_SLOT_WIDTH: u32 = 210;

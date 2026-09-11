@@ -26,7 +26,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{Freshness, LimitKind, LimitWindow, QuotaLevel, WindowSource};
+use crate::domain::{
+    CRITICAL_PERCENT, Freshness, LimitKind, LimitWindow, QuotaLevel, WARNING_PERCENT, WindowSource,
+};
 use crate::providers::ProviderKind;
 use crate::settings::ProviderLabelStyle;
 use crate::summary::QuotaWindow;
@@ -464,8 +466,8 @@ fn percent(used: f64) -> String {
 fn marked_percent(used: f64, marker: Option<&str>) -> String {
     let value = used.clamp(0.0, 100.0);
     let colour = match value {
-        value if value >= 90.0 => RED,
-        value if value >= 70.0 => YELLOW,
+        value if value >= CRITICAL_PERCENT => RED,
+        value if value >= WARNING_PERCENT => YELLOW,
         _ => GREEN,
     };
     format!("{colour}{value:.0}%{}{RESET}", marker.unwrap_or(""))
@@ -677,8 +679,8 @@ fn status_line(view: &StatusLineView) -> String {
         .collect();
 
     let rows = if view.extra_details {
-        // The session line grew past the width a terminal gives it, so what the session is
-        // and what it has consumed are read on separate lines.
+        // One session line would outgrow the width a terminal gives it, so what the session
+        // is and what it has consumed are read on separate lines.
         vec![joined(vec![model, project]), joined(vec![request, spend]), joined(quotas)]
     } else {
         // Without the session rows there is one row, so the quota joins the model rather
@@ -766,17 +768,10 @@ fn quota_segments(
 
 fn store_reading(reading: &Reading) -> Result<()> {
     let path = cache_path().context("resolve the application data directory")?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("create the application data directory")?;
-    }
-    // Concurrent Claude Code sessions render status lines independently, so the file is
-    // published by rename: a reader never sees a half-written reading.
-    let staging = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&staging, serde_json::to_string(reading)?)?;
-    std::fs::rename(&staging, &path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&staging);
-    })?;
-    Ok(())
+    // Concurrent Claude Code sessions render status lines independently, so a reader must
+    // never see a half-written reading.
+    crate::fs_atomic::write(&path, serde_json::to_string(reading)?)
+        .context("store the status-line reading")
 }
 
 /// Whether Claude Code is configured to hand its quota to QuotaStation, and what stands in
@@ -911,10 +906,6 @@ pub(super) fn write_settings(
     settings: &serde_json::Value,
     original: Option<&[u8]>,
 ) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .context("create the Claude Code configuration directory")?;
-    }
     let current = match std::fs::read(path) {
         Ok(content) => Some(content),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -927,12 +918,7 @@ pub(super) fn write_settings(
     let content = serde_json::to_string_pretty(settings)?;
     // Claude Code reads this file continuously, so it is replaced whole rather than
     // truncated and rewritten in place.
-    let staging = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&staging, format!("{content}\n")).context("write the Claude Code settings")?;
-    std::fs::rename(&staging, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&staging);
-    })?;
-    Ok(())
+    crate::fs_atomic::write(path, format!("{content}\n")).context("write the Claude Code settings")
 }
 
 #[cfg(test)]

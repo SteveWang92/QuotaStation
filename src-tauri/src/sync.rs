@@ -145,14 +145,8 @@ async fn export(
     if std::fs::read(&path).is_ok_and(|published| published == content) {
         return Ok(());
     }
-    // Written beside the file and renamed onto it, so a sync client watching the folder
-    // never picks up half a document.
-    let staging = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&staging, &content).context("write the exported aggregates")?;
-    std::fs::rename(&staging, &path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&staging);
-    })?;
-    Ok(())
+    // A sync client watching the folder must never pick up half a document.
+    crate::fs_atomic::write(&path, &content).context("write the exported aggregates")
 }
 
 /// Reads every other machine's file that has moved since it was last read.

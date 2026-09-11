@@ -121,21 +121,10 @@ fn summary_path() -> Option<std::path::PathBuf> {
 pub fn publish(workspace: &WorkspaceSnapshot) {
     let summary = summarize(workspace, jiff::Timestamp::now().as_second());
     let Some(path) = summary_path() else { return };
-    let _ = write_atomically(&path, &summary);
-}
-
-fn write_atomically(path: &std::path::Path, summary: &QuotaSummary) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let Ok(content) = serde_json::to_string(summary) else { return Ok(()) };
-    // A refresh and a status-line render can coincide, so the file is published by rename:
-    // a reader never sees a half-written summary.
-    let staging = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&staging, content)?;
-    std::fs::rename(&staging, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&staging);
-    })
+    let Ok(content) = serde_json::to_string(&summary) else { return };
+    // A refresh and a status-line render can coincide, so a reader must never see a
+    // half-written summary.
+    let _ = crate::fs_atomic::write(&path, content);
 }
 
 /// The published summary, if one describes the present.

@@ -207,18 +207,12 @@ fn load_cache() -> Vec<CacheEntry> {
 }
 
 /// Best effort throughout: a cache that cannot be written costs a process on the next
-/// render, which is not worth reporting to anyone. Published by rename, because several
-/// Claude Code sessions render at once.
+/// render, which is not worth reporting to anyone. Replaced whole, because several Claude
+/// Code sessions render at once.
 fn store_cache(cache: &[CacheEntry]) {
     let Some(path) = cache_path() else { return };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let staging = path.with_extension(format!("{}.tmp", std::process::id()));
     let Ok(encoded) = serde_json::to_string(cache) else { return };
-    if std::fs::write(&staging, encoded).is_ok() && std::fs::rename(&staging, &path).is_err() {
-        let _ = std::fs::remove_file(&staging);
-    }
+    let _ = crate::fs_atomic::write(&path, encoded);
 }
 
 #[cfg(test)]

@@ -10,9 +10,8 @@ import type { AppSettings, ProviderChoice, TaskbarDisplay, ThemePreference } fro
  * How the application sits on the machine: whether Windows starts it, whether it draws the
  * taskbar status, and the desktop shortcut.
  *
- * These were tray menu items, which put them where they could only be found by right
- * clicking an icon, and where a failure had nowhere to be reported — the menu closed and the
- * reason went to the log. They belong beside the other preferences.
+ * They live here rather than in the tray menu, where they could only be found by right
+ * clicking an icon and a failure would have nowhere to be reported.
  */
 export function GeneralSettings() {
   const { settings, error: settingsError, reload: reloadSettings } = useAppSettings();

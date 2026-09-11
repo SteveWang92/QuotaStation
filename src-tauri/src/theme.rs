@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 pub enum ThemePreference {
     /// Follow the Windows app theme, and change with it while running.
     System,
-    /// The default, because it is what QuotaStation looked like before there was a choice.
+    /// The default.
     #[default]
     Dark,
     Light,

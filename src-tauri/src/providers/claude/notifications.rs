@@ -176,7 +176,7 @@ pub fn record_session(id: &str, name: Option<&str>, project: Option<&str>, now: 
     if let Some(path) = register_path()
         && let Ok(encoded) = serde_json::to_string(&register)
     {
-        let _ = publish(&path, &encoded);
+        let _ = crate::fs_atomic::write(&path, &encoded);
     }
 }
 
@@ -247,22 +247,10 @@ fn process_stem() -> String {
     format!("pid-{}", std::process::id())
 }
 
+/// Several sessions write at once and the application may be reading, so every event is
+/// written whole or not at all.
 fn write_event(path: &std::path::Path, event: &FinishedEvent) -> std::io::Result<()> {
-    publish(path, &serde_json::to_string(event).unwrap_or_default())
-}
-
-/// Writes a file the way every reader here expects to find it: whole, or not at all.
-/// Several sessions write at once and the application may be reading, so the content is
-/// staged under this process's own name and moved into place.
-fn publish(path: &std::path::Path, content: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let staging = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&staging, content)?;
-    std::fs::rename(&staging, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&staging);
-    })
+    crate::fs_atomic::write(path, serde_json::to_string(event).unwrap_or_default())
 }
 
 /// Every event the hooks left behind, removed as they are read.

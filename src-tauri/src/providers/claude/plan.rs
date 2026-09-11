@@ -4,11 +4,10 @@
 //! alongside the token, so naming the tier costs neither a network call nor the account
 //! identifiers that `~/.claude.json` also holds.
 //!
-//! The token itself is never read here. QuotaStation previously presented it to Anthropic's
-//! OAuth usage endpoint as a second quota source; that endpoint rate-limits an account as a
-//! whole and is already being read by Claude Code's own usage display, so in practice it
-//! answered `429` and nothing else. The percentages now come from Claude Code's status line,
-//! which costs no credential at all, and this module reads only the plan name.
+//! The token itself is never read here. Anthropic's OAuth usage endpoint is not a usable
+//! quota source: it rate-limits an account as a whole and Claude Code's own usage display
+//! already reads it, so it answers `429`. The percentages come from Claude Code's status
+//! line, which costs no credential at all, and this module reads only the plan name.
 
 use std::path::Path;
 

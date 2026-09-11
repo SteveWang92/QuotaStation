@@ -326,6 +326,17 @@ impl ProviderSnapshot {
         }
     }
 
+    /// Drops everything this snapshot says about quota, for a provider whose quota this
+    /// machine does not show: switched off, or known only through another device's usage.
+    pub fn clear_quota(&mut self) {
+        self.limits.clear();
+        self.earned_reset_count = None;
+        self.earned_reset_expires_at = None;
+        self.recent_resets.clear();
+        self.live_error = None;
+        self.sign_in_required = false;
+    }
+
     /// Quota freshness follows only from live acquisition and each window's own source
     /// timestamp. A successful history parse must never renew an older quota reading.
     pub fn resolve_derived_state(&mut self) {

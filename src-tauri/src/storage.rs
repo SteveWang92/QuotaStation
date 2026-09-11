@@ -39,8 +39,8 @@ const BACKFILL_OVERLAP_HOURS: i64 = 48;
 
 /// How long quota readings are kept at the granularity they arrived at, before they become
 /// the daily summaries that replace them. This is the window an unexplained reset can still
-/// be diagnosed in, and ninety days of readings cost single-digit megabytes; fourteen meant
-/// the samples behind a restart were usually gone by the time anyone asked about it.
+/// be diagnosed in, and ninety days of readings cost single-digit megabytes; a shorter
+/// window loses the samples behind a restart before anyone asks about it.
 const SAMPLE_HISTORY_DAYS: i64 = 90;
 
 /// How many restarts the surfaces are given. They annotate the window running now and
@@ -301,9 +301,9 @@ impl Storage {
             // already measured, not news about it: Claude Code publishes the five-hour window
             // with a restart but no percentage while one closes, and the session-log fallback
             // beneath it never carries a percentage at all. Such a reading is ignored whole —
-            // stored, it empties every surface and, worse, discards the reading a restart
-            // would have been recognised against, which is how the Claude five-hour reset of
-            // 2026-08-21 went unrecorded. The log still records what arrived.
+            // stored, it would empty every surface and discard the reading a restart is
+            // recognised against, so that restart would go unrecorded. The log still records
+            // what arrived.
             if limit.used_percent.is_none() && measured.contains(kind) {
                 continue;
             }
@@ -2557,9 +2557,8 @@ mod tests {
 
     /// Claude Code publishes the five-hour window with a restart but no percentage while one
     /// closes, and the session-log fallback fills the gap with a window it can time but not
-    /// measure. Storing that reading is what lost the reset of 2026-08-21: it replaced the
-    /// last published percentage, so the first reading of the new window had nothing left to
-    /// be a restart against.
+    /// measure. Storing that reading would replace the last published percentage, leaving
+    /// the first reading of the new window nothing to be a restart against.
     #[tokio::test]
     async fn a_reading_without_an_allowance_leaves_the_measured_window_it_cannot_replace() {
         let (storage, _database) = open_storage().await;
