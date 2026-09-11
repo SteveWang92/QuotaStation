@@ -7,7 +7,7 @@ costs. All usage history stays on your computer.
 
 ![QuotaStation dashboard showing Codex and Claude Code quotas with hourly usage charts](docs/images/dashboard.png)
 
-QuotaStation currently supports Codex and Claude Code. It brings their current limits and
+QuotaStation supports Codex and Claude Code. It brings their current limits and
 local usage history into one dashboard, with smaller views available from the system tray and
 Windows taskbar.
 

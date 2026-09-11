@@ -17,12 +17,17 @@ repository; where they and the rules below differ, the rules below win.
 Every fact is explained in exactly one of these; the others link to it rather than repeating
 it, and a paragraph found in two of them is a bug in the documentation.
 
+Every document and code comment describes the current state: no dates, progress, version
+history, or account of how the code used to behave. Those belong in issues, commits, and
+`CHANGELOG.md`.
+
 | Document | Owns |
 | --- | --- |
+| GitHub issues | Planned work and its progress. The only home for progress. |
 | `README.md` | What QuotaStation is and what it does today, for someone who has never seen it. No version numbers, no design rationale. |
 | `docs/architecture.md` | Why the boundaries are where they are: the stack, the provider/renderer split, data retention, privacy rules, what each source may and may not do. |
 | `docs/development.md` | How to run, build, verify, and where local data lives. Commands and paths. |
-| `docs/PROJECT_PLAN.local.md` | What is done, what is next, and the decisions and dead ends behind both. The only home for progress. |
+| `docs/PROJECT_PLAN.local.md` | Product direction, guardrails, and the accepted decisions and dead ends behind the current design. Never progress. |
 | `CHANGELOG.md` | What changed for a user, per version. |
 | `CLAUDE.md` | How to work in this repository. |
 | `CLAUDE.local.md` | Facts true of one machine only: where its working copy and its running instance live. Never rules. |
@@ -161,10 +166,3 @@ The full sequence, once the maintainer asks for it:
    before calling the release done.
 10. Reset `dev` to `main` — `git checkout dev && git reset --hard main` and
     `git push --force-with-lease origin dev` — so `dev` starts the next version even with it.
-
-`v0.1.0` was the base case and skipped steps 2 through 6. There was no `main` to diff
-against, so there was no pull request and nothing for a release review to gate; the version
-and the changelog were already final, so a `chore(release)` commit would have carried no
-change at all. `main` was branched from `dev` and the tag placed on the commit they shared,
-which also left step 10 with nothing to do. Every release after it follows the full sequence
-above. The GitHub default branch stays `dev` so the repository opens on current work.
