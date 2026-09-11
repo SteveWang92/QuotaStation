@@ -195,7 +195,20 @@ async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSn
     // The event reaches this application's own windows and nothing else. The status-line
     // bridge is a separate process with no way to receive it, so the same snapshot is also
     // left on disk for it to read.
-    crate::summary::publish(&workspace);
+    // The status line's weekly totals are the one figure the snapshot does not carry, and
+    // the bridge has no database to ask. A provider whose range cannot be read is left out,
+    // which costs its share of the weekly figure and nothing else.
+    let end = jiff::Zoned::now().date();
+    let start = end.checked_sub(jiff::Span::new().days(6)).unwrap_or(end).to_string();
+    let end = end.to_string();
+    let mut weeks = Vec::new();
+    for provider in workspace.providers.iter().map(|provider| provider.provider) {
+        if let Ok(range) = state.storage.load_usage_range(Some(provider), None, &start, &end).await
+        {
+            weeks.push((provider, range.usage.total, range.api_equivalent_cost_usd));
+        }
+    }
+    crate::summary::publish(&workspace, &weeks);
     // Every refresh passes through here, whichever scheduler or watcher asked for it, so it
     // is the one place that sees every change a notification could be about.
     crate::alerts::review(app, &workspace);

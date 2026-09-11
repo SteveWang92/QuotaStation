@@ -72,6 +72,21 @@ struct StatusLineInput {
     thinking: Option<Thinking>,
     fast_mode: Option<bool>,
     pr: Option<PullRequest>,
+    version: Option<String>,
+    output_style: Option<Named>,
+    vim: Option<Vim>,
+    agent: Option<Named>,
+    exceeds_200k_tokens: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct Named {
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Vim {
+    mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -130,6 +145,10 @@ struct CurrentUsage {
 #[derive(Deserialize)]
 struct Cost {
     total_cost_usd: Option<f64>,
+    total_duration_ms: Option<u64>,
+    total_api_duration_ms: Option<u64>,
+    total_lines_added: Option<u64>,
+    total_lines_removed: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -355,8 +374,52 @@ fn view_of<'a>(
         .or_else(|| input.and_then(|input| input.cwd.as_deref()))
         .map(Path::new);
     let context = input.and_then(|input| input.context_window.as_ref());
+    let cost = input.and_then(|input| input.cost.as_ref());
     let repository = current_dir.and_then(crate::git::repository_root);
+    let wants =
+        |id: &str| layout.segments.iter().any(|segment| segment.enabled && segment.id == id);
+    // Only a line that shows what a `git` process answers pays for running it.
+    let git = repository
+        .as_deref()
+        .map(|root| {
+            let wanted = crate::git::Wanted {
+                status: wants("branch"),
+                head: wants("lastCommit") || wants("tag"),
+            };
+            crate::git::read(root, now, wanted)
+        })
+        .unwrap_or_default();
+    let operation =
+        repository.as_deref().filter(|_| wants("gitOperation")).and_then(crate::git::operation);
+    let stash = repository.as_deref().filter(|_| wants("stash")).and_then(crate::git::stash_count);
+    let labels = settings.status_line_provider_labels;
+    let today = summary.as_ref().and_then(today_totals);
+    let week = summary.as_ref().and_then(week_totals);
+    let last_reset = summary.as_ref().and_then(|summary| latest_reset(summary, labels));
+    let reset_credits =
+        summary.as_ref().map(|summary| reset_credits(summary, labels)).unwrap_or_default();
+    let quota_age = summary.as_ref().map(|summary| now - summary.generated_at);
+    let text =
+        |value: Option<&'a String>| value.map(String::as_str).filter(|text| !text.is_empty());
     StatusLineView {
+        session_name: text(input.and_then(|input| input.session_name.as_ref())),
+        agent: text(input.and_then(|input| input.agent.as_ref()?.name.as_ref())),
+        output_style: text(input.and_then(|input| input.output_style.as_ref()?.name.as_ref())),
+        vim_mode: text(input.and_then(|input| input.vim.as_ref()?.mode.as_ref())),
+        version: text(input.and_then(|input| input.version.as_ref())),
+        operation,
+        stash,
+        head: git.head,
+        large_context: input.and_then(|input| input.exceeds_200k_tokens).unwrap_or(false),
+        lines_changed: cost.and_then(|cost| {
+            Some((cost.total_lines_added?, cost.total_lines_removed.unwrap_or(0)))
+        }),
+        duration_ms: cost
+            .and_then(|cost| Some((cost.total_duration_ms?, cost.total_api_duration_ms))),
+        week,
+        last_reset,
+        reset_credits,
+        quota_age,
         model: input
             .and_then(|input| input.model.as_ref())
             .and_then(|model| model.display_name.as_deref()),
@@ -370,13 +433,7 @@ fn view_of<'a>(
             .and_then(|worktree| worktree.branch.clone())
             .or_else(|| workspace.and_then(|workspace| workspace.git_worktree.clone()))
             .or_else(|| repository.as_deref().and_then(crate::git::branch_at)),
-        // Only a line that shows the branch pays for the `git` process behind its marks.
-        worktree: layout
-            .segments
-            .iter()
-            .any(|segment| segment.enabled && segment.id == "branch")
-            .then(|| repository.as_deref().and_then(|root| crate::git::work_tree_status(root, now)))
-            .flatten(),
+        worktree: git.status,
         context_used: context.and_then(|context| {
             context
                 .used_percentage
@@ -399,17 +456,93 @@ fn view_of<'a>(
         pull_request: input
             .and_then(|input| input.pr.as_ref())
             .and_then(|pr| Some((pr.number?, pr.review_state.as_deref()))),
-        session_cost_usd: input
-            .and_then(|input| input.cost.as_ref())
-            .and_then(|cost| cost.total_cost_usd),
-        today: summary.as_ref().and_then(today_totals),
-        quotas: quota_segments(
-            windows_from_payload(limits),
-            summary,
-            settings.status_line_provider_labels,
-        ),
+        session_cost_usd: cost.and_then(|cost| cost.total_cost_usd),
+        today,
+        quotas: quota_segments(windows_from_payload(limits), summary, labels),
         layout,
         now,
+    }
+}
+
+/// The last seven days' tokens across every provider, and their cost where priced.
+fn week_totals(summary: &QuotaSummary) -> Option<(u64, Option<f64>)> {
+    let tokens: u64 = summary.providers.iter().map(|provider| provider.week_tokens).sum();
+    let costs: Vec<f64> =
+        summary.providers.iter().filter_map(|provider| provider.week_cost_usd).collect();
+    (tokens > 0).then(|| (tokens, (!costs.is_empty()).then(|| costs.iter().sum())))
+}
+
+/// The most recent confirmed restart of any provider's window.
+struct ResetNote {
+    provider: String,
+    window: String,
+    at: i64,
+    early: bool,
+}
+
+fn latest_reset(summary: &QuotaSummary, labels: ProviderLabelStyle) -> Option<ResetNote> {
+    summary
+        .providers
+        .iter()
+        .filter_map(|provider| Some((provider, provider.last_reset.as_ref()?)))
+        .max_by_key(|(_, reset)| reset.at)
+        .map(|(provider, reset)| ResetNote {
+            provider: summary_name(provider, labels),
+            window: reset.window.clone(),
+            at: reset.at,
+            early: reset.early,
+        })
+}
+
+/// Each provider that holds reset credits, by name, with how many.
+fn reset_credits(summary: &QuotaSummary, labels: ProviderLabelStyle) -> Vec<(String, u64)> {
+    summary
+        .providers
+        .iter()
+        .filter_map(|provider| {
+            let count = provider.earned_reset_count.filter(|count| *count > 0)?;
+            Some((summary_name(provider, labels), count))
+        })
+        .collect()
+}
+
+fn summary_name(provider: &crate::summary::ProviderQuota, labels: ProviderLabelStyle) -> String {
+    match labels {
+        ProviderLabelStyle::Short => provider.short_name.clone(),
+        ProviderLabelStyle::Full => provider.display_name.clone(),
+    }
+}
+
+/// How long ago something happened, in the width a status line can spare.
+fn ago(seconds: i64) -> String {
+    match seconds.max(0) {
+        seconds if seconds < 60 => "just now".to_string(),
+        seconds if seconds < 3_600 => format!("{}m ago", seconds / 60),
+        seconds if seconds < 86_400 => format!("{}h ago", seconds / 3_600),
+        seconds => format!("{}d ago", seconds / 86_400),
+    }
+}
+
+/// A span of milliseconds, in the same width.
+fn elapsed(milliseconds: u64) -> String {
+    match milliseconds / 1_000 {
+        seconds if seconds < 60 => format!("{seconds}s"),
+        seconds if seconds < 3_600 => format!("{}m", seconds / 60),
+        seconds => format!("{}h{:02}m", seconds / 3_600, (seconds % 3_600) / 60),
+    }
+}
+
+/// `v1.1.0-6-gde36776` as `v1.1.0+6`: the newest tag and the commits made since it. A
+/// tagged commit describes itself as the tag alone, which is printed as it is.
+fn tag_text(describe: &str) -> String {
+    let mut parts = describe.rsplitn(3, '-');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(hash), Some(count), Some(tag))
+            if hash.starts_with('g') && count.parse::<u32>().is_ok() =>
+        {
+            format!("{tag}+{count}")
+        }
+        _ => describe.to_string(),
     }
 }
 
@@ -441,6 +574,26 @@ struct StatusLineView<'a> {
     /// The open pull request's number and, when it has one, its review state.
     pull_request: Option<(u64, Option<&'a str>)>,
     session_cost_usd: Option<f64>,
+    session_name: Option<&'a str>,
+    agent: Option<&'a str>,
+    output_style: Option<&'a str>,
+    vim_mode: Option<&'a str>,
+    version: Option<&'a str>,
+    /// A rebase, merge, cherry-pick, revert or bisect left in progress.
+    operation: Option<String>,
+    stash: Option<usize>,
+    head: Option<crate::git::HeadCommit>,
+    large_context: bool,
+    /// Lines this session added and removed.
+    lines_changed: Option<(u64, u64)>,
+    /// The session's wall-clock time and the part of it spent on the API, in milliseconds.
+    duration_ms: Option<(u64, Option<u64>)>,
+    /// The last seven days' tokens across every provider, and their cost when known.
+    week: Option<(u64, Option<f64>)>,
+    last_reset: Option<ResetNote>,
+    reset_credits: Vec<(String, u64)>,
+    /// How old the summary behind the other providers' quota is, in seconds.
+    quota_age: Option<i64>,
     /// Today's tokens across every provider, and their API-equivalent cost when known.
     today: Option<(u64, Option<f64>)>,
     /// One entry per provider that has something to report.
@@ -619,10 +772,15 @@ fn separators(style: SeparatorStyle) -> (&'static str, &'static str) {
 /// mark, which is what lets any order still read as groups rather than as a flat list.
 fn group(id: &str) -> &str {
     match id {
-        "model" | "mode" => "model",
-        "directory" | "branch" | "pullRequest" => "project",
-        "context" | "cache" => "request",
-        // The session's cost, today's totals and each provider's quota stand alone.
+        "model" | "mode" | "agent" | "outputStyle" | "vimMode" => "model",
+        "directory" | "branch" | "gitOperation" | "stash" | "lastCommit" | "tag"
+        | "pullRequest" => "project",
+        "context" | "largeContext" | "cache" => "request",
+        "linesChanged" | "duration" => "work",
+        "today" | "week" => "usage",
+        "lastReset" | "resetCredits" => "resets",
+        // The session's name and cost, the client's version, how old the quota is, and each
+        // provider's quota stand alone.
         other => other,
     }
 }
@@ -714,6 +872,57 @@ fn status_line(view: &StatusLineView) -> String {
             "sessionCost" => {
                 view.session_cost_usd.filter(|cost| *cost > 0.0).map(|cost| format!("${cost:.2}"))
             }
+            "sessionName" => view.session_name.map(str::to_string),
+            "agent" => view.agent.map(|name| format!("agent {name}")),
+            // Every session has the default style, so only a chosen one says anything.
+            "outputStyle" => view
+                .output_style
+                .filter(|style| *style != "default")
+                .map(|style| format!("style {style}")),
+            "vimMode" => view.vim_mode.map(str::to_string),
+            "version" => view.version.map(|version| format!("v{version}")),
+            "gitOperation" => view.operation.clone(),
+            "stash" => view.stash.filter(|count| *count > 0).map(|count| format!("stash {count}")),
+            "lastCommit" => view
+                .head
+                .as_ref()
+                .map(|head| format!("commit {}", ago(view.now - head.committed_at))),
+            "tag" => view.head.as_ref().and_then(|head| head.describe.as_deref()).map(tag_text),
+            "largeContext" => view.large_context.then(|| {
+                if layout.colour == ColourMode::Full {
+                    format!("{RED}ctx >200k{RESET}")
+                } else {
+                    "ctx >200k".to_string()
+                }
+            }),
+            "linesChanged" => {
+                view.lines_changed.map(|(added, removed)| format!("+{added} \u{2212}{removed}"))
+            }
+            "duration" => view.duration_ms.map(|(total, api)| match api {
+                Some(api) => format!("{} (api {})", elapsed(total), elapsed(api)),
+                None => elapsed(total),
+            }),
+            "week" => view.week.map(|(tokens, cost)| match cost {
+                Some(cost) => format!("week {} ${cost:.2}", tokens_short(tokens)),
+                None => format!("week {}", tokens_short(tokens)),
+            }),
+            "lastReset" => view.last_reset.as_ref().map(|reset| {
+                format!(
+                    "{} {} reset{} {}",
+                    reset.provider,
+                    reset.window,
+                    if reset.early { " early" } else { "" },
+                    ago(view.now - reset.at)
+                )
+            }),
+            "resetCredits" => (!view.reset_credits.is_empty()).then(|| {
+                view.reset_credits
+                    .iter()
+                    .map(|(provider, count)| format!("{provider} credits {count}"))
+                    .collect::<Vec<_>>()
+                    .join(within)
+            }),
+            "quotaAge" => view.quota_age.map(|age| format!("quota read {}", ago(age))),
             "today" => view.today.map(|(tokens, cost)| match cost {
                 Some(cost) => format!("today {} ${cost:.2}", tokens_short(tokens)),
                 None => format!("today {}", tokens_short(tokens)),
@@ -788,10 +997,7 @@ fn quota_segments(
     summary: Option<QuotaSummary>,
     labels: ProviderLabelStyle,
 ) -> Vec<QuotaSegment> {
-    let name = |provider: &crate::summary::ProviderQuota| match labels {
-        ProviderLabelStyle::Short => provider.short_name.clone(),
-        ProviderLabelStyle::Full => provider.display_name.clone(),
-    };
+    let name = |provider: &crate::summary::ProviderQuota| summary_name(provider, labels);
     let own_id = quota_segment_id(ProviderKind::Claude);
     let mut recorded = summary.map(|summary| summary.providers).unwrap_or_default();
     let claude =
@@ -871,13 +1077,36 @@ pub fn preview(layout: StatusLineLayout, labels: ProviderLabelStyle) -> String {
             tracked: true,
         }),
         context_used: Some(34.0),
-        context_tokens: Some((68_000, 200_000)),
+        context_tokens: Some((340_000, 1_000_000)),
         cache_hit: Some(96.4),
         effort: Some("high"),
         thinking: true,
         fast_mode: false,
         pull_request: Some((42, Some("approved"))),
         session_cost_usd: Some(1.84),
+        session_name: Some("refactor-auth"),
+        agent: Some("reviewer"),
+        output_style: Some("explanatory"),
+        vim_mode: Some("NORMAL"),
+        version: Some("2.1.140"),
+        operation: Some("REBASE 2/5".to_string()),
+        stash: Some(1),
+        head: Some(crate::git::HeadCommit {
+            committed_at: now - 3 * 3_600,
+            describe: Some("v1.4.0-6-g1a2b3c4".to_string()),
+        }),
+        large_context: true,
+        lines_changed: Some((156, 23)),
+        duration_ms: Some((45 * 60_000, Some(18 * 60_000))),
+        week: Some((85_000_000, Some(120.5))),
+        last_reset: Some(ResetNote {
+            provider: provider_label(ProviderKind::Codex, labels),
+            window: "5h".to_string(),
+            at: now - 2 * 3_600,
+            early: true,
+        }),
+        reset_credits: vec![(provider_label(ProviderKind::Codex, labels), 2)],
+        quota_age: Some(240),
         today: Some((12_400_000, Some(18.25))),
         quotas: samples.collect(),
         layout: layout.normalized(),
@@ -1109,6 +1338,21 @@ mod tests {
             fast_mode: false,
             pull_request: None,
             session_cost_usd: None,
+            session_name: None,
+            agent: None,
+            output_style: None,
+            vim_mode: None,
+            version: None,
+            operation: None,
+            stash: None,
+            head: None,
+            large_context: false,
+            lines_changed: None,
+            duration_ms: None,
+            week: None,
+            last_reset: None,
+            reset_credits: Vec::new(),
+            quota_age: None,
             today: None,
             quotas,
             layout: StatusLineLayout::default(),
@@ -1362,6 +1606,70 @@ mod tests {
             segment.row = 1;
         }
         assert_eq!(plain(&preview(layout, ProviderLabelStyle::Short)), "Opus | today 12M $18.25");
+    }
+
+    fn enable(session: &mut StatusLineView, ids: &[&str]) {
+        for segment in &mut session.layout.segments {
+            if ids.contains(&segment.id.as_str()) {
+                segment.enabled = true;
+            }
+        }
+    }
+
+    #[test]
+    fn the_session_detail_claude_code_reports_can_be_switched_on() {
+        let mut session = view(Some("Opus"), Vec::new());
+        session.session_name = Some("refactor-auth");
+        session.output_style = Some("default");
+        session.large_context = true;
+        session.lines_changed = Some((156, 23));
+        session.duration_ms = Some((45 * 60_000, Some(125_000)));
+        let default = plain(&status_line(&session));
+        assert_eq!(default, "Opus", "nothing new appears until it is switched on");
+
+        enable(
+            &mut session,
+            &["sessionName", "outputStyle", "largeContext", "linesChanged", "duration"],
+        );
+        assert_eq!(
+            plain(&status_line(&session)),
+            "Opus | refactor-auth\nctx >200k | +156 \u{2212}23 \u{b7} 45m (api 2m)",
+            "the default output style says nothing and is left out"
+        );
+    }
+
+    #[test]
+    fn the_project_and_quotastation_counts_can_be_switched_on() {
+        let mut session = view(None, Vec::new());
+        session.head = Some(crate::git::HeadCommit {
+            committed_at: NOW - 3 * 3_600,
+            describe: Some("v1.1.0-6-gde36776".to_string()),
+        });
+        session.week = Some((85_000_000, Some(120.5)));
+        session.last_reset = Some(ResetNote {
+            provider: "CDX".to_string(),
+            window: "5h".to_string(),
+            at: NOW - 2 * 3_600,
+            early: true,
+        });
+        session.reset_credits = vec![("CDX".to_string(), 2)];
+        session.quota_age = Some(240);
+        enable(
+            &mut session,
+            &["lastCommit", "tag", "week", "lastReset", "resetCredits", "quotaAge"],
+        );
+        assert_eq!(
+            plain(&status_line(&session)),
+            "commit 3h ago \u{b7} v1.1.0+6\n\
+             week 85M $120.50 | CDX 5h reset early 2h ago \u{b7} CDX credits 2 | quota read 4m ago"
+        );
+    }
+
+    #[test]
+    fn a_tag_description_reads_as_the_tag_and_the_commits_since() {
+        assert_eq!(tag_text("v1.1.0-6-gde36776"), "v1.1.0+6");
+        assert_eq!(tag_text("v1.1.0"), "v1.1.0", "a tagged commit is the tag alone");
+        assert_eq!(tag_text("release-2-0"), "release-2-0", "dashes inside a tag are kept");
     }
 
     #[test]

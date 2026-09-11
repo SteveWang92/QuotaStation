@@ -274,9 +274,9 @@ export interface DiagnosticsSnapshot {
 export type ProviderLabelStyle = "short" | "full";
 
 /**
- * One segment of the Claude Code status line: `model`, `mode`, `directory`, `branch`,
- * `pullRequest`, `context`, `cache`, `sessionCost`, `today`, or `quota:<provider>`. The core
- * sends every segment it can draw, so the list is also the set the editor offers.
+ * One segment of the Claude Code status line, named by the core — `model`, `branch`,
+ * `quota:<provider>` and so on. The core sends every segment it can draw, so the list is
+ * also the set the editor offers.
  */
 export interface StatusLineSegment {
   id: string;

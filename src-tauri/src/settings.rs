@@ -93,22 +93,41 @@ pub enum ColourMode {
 
 pub const STATUS_LINE_ROWS: u8 = 3;
 
-/// The segments that describe the session, each with the row it takes by default.
-const SESSION_SEGMENTS: [(&str, u8); 9] = [
+/// Every segment but the quotas, with the row it takes by default: the first says what the
+/// session and the project are, the second what Claude Code reported about this session,
+/// and the third what QuotaStation itself counted, after the quotas that open it.
+const SEGMENTS: [(&str, u8); 25] = [
     ("model", 1),
     ("mode", 1),
+    ("sessionName", 1),
+    ("agent", 1),
+    ("outputStyle", 1),
+    ("vimMode", 1),
+    ("version", 1),
     ("directory", 1),
     ("branch", 1),
+    ("gitOperation", 1),
+    ("stash", 1),
+    ("lastCommit", 1),
+    ("tag", 1),
     ("pullRequest", 1),
     ("context", 2),
+    ("largeContext", 2),
     ("cache", 2),
     ("sessionCost", 2),
-    ("today", 2),
+    ("linesChanged", 2),
+    ("duration", 2),
+    ("today", 3),
+    ("week", 3),
+    ("lastReset", 3),
+    ("resetCredits", 3),
+    ("quotaAge", 3),
 ];
 
-/// A segment the line had nothing like before it was configurable, and so starts switched
-/// off: an existing installation renders unchanged until the user asks for more.
-const OFF_BY_DEFAULT: [&str; 1] = ["today"];
+/// What the line showed before it was configurable. Everything else starts switched off, so
+/// an existing installation renders unchanged until the user asks for more.
+const ON_BY_DEFAULT: [&str; 8] =
+    ["model", "mode", "directory", "branch", "pullRequest", "context", "cache", "sessionCost"];
 
 pub fn quota_segment_id(provider: crate::providers::ProviderKind) -> String {
     format!("quota:{}", provider.key())
@@ -126,11 +145,13 @@ impl StatusLineLayout {
     /// detail only the model and the quota are left, on one row.
     pub(crate) fn legacy(extra_details: bool, other_providers: bool) -> Self {
         use crate::providers::ProviderKind;
-        let session = SESSION_SEGMENTS.iter().map(|(id, row)| SegmentPlacement {
+        let placed = |(id, row): &(&str, u8)| SegmentPlacement {
             id: id.to_string(),
-            enabled: (extra_details || *id == "model") && !OFF_BY_DEFAULT.contains(id),
+            enabled: (extra_details || *id == "model") && ON_BY_DEFAULT.contains(id),
             row: if extra_details { *row } else { 1 },
-        });
+        };
+        let session = SEGMENTS.iter().filter(|(_, row)| *row < STATUS_LINE_ROWS).map(placed);
+        let counted = SEGMENTS.iter().filter(|(_, row)| *row == STATUS_LINE_ROWS).map(placed);
         // This client's own quota first, as it always has been.
         let providers = std::iter::once(ProviderKind::Claude)
             .chain(ProviderKind::ALL.into_iter().filter(|kind| *kind != ProviderKind::Claude));
@@ -140,7 +161,7 @@ impl StatusLineLayout {
             row: if extra_details { STATUS_LINE_ROWS } else { 1 },
         });
         Self {
-            segments: session.chain(quotas).collect(),
+            segments: session.chain(quotas).chain(counted).collect(),
             quota: QuotaFormat::default(),
             separators: SeparatorStyle::default(),
             colour: ColourMode::default(),
