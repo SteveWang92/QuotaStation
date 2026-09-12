@@ -24,7 +24,10 @@ use ccusage_adapter_claude::load_entries;
 use ccusage_core::cli::SharedArgs;
 use serde::Deserialize;
 
-use crate::{domain::SessionCost, providers::ProviderKind};
+use crate::{
+    domain::{SessionCost, TokenUsage},
+    providers::ProviderKind,
+};
 
 /// Every session both sides priced, oldest first.
 pub async fn read_session_costs() -> Result<Vec<SessionCost>> {
@@ -49,13 +52,20 @@ struct Reported {
     cost_usd: f64,
     started_at_ms: i64,
     complete: bool,
+    total_duration_ms: i64,
+    api_duration_ms: i64,
+    lines_added: i64,
+    lines_removed: i64,
 }
 
 /// What the pricing catalog makes of one session's entries.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct Computed {
     cost_usd: f64,
     independent: bool,
+    usage: TokenUsage,
+    /// What each model cost, so the session can name them most expensive first.
+    model_costs: BTreeMap<String, f64>,
 }
 
 /// The record as Claude Code writes it. Only the fields the comparison needs are read;
@@ -72,6 +82,17 @@ struct CostState {
     start_time: i64,
     #[serde(default)]
     has_unknown_model_cost: bool,
+    /// How long the session ran, and how much of that it spent waiting on the provider.
+    /// Defaulted like the flag above, so a record written before Claude Code carried one
+    /// of these still compares its costs rather than dropping out of the table.
+    #[serde(default)]
+    total_duration: i64,
+    #[serde(default, rename = "totalAPIDuration")]
+    total_api_duration: i64,
+    #[serde(default)]
+    total_lines_added: i64,
+    #[serde(default)]
+    total_lines_removed: i64,
 }
 
 fn reported_costs(files: &[std::path::PathBuf]) -> BTreeMap<String, Reported> {
@@ -100,6 +121,10 @@ fn read_reported_costs(file: &Path, reported: &mut BTreeMap<String, Reported>) {
             cost_usd: record.total_cost_usd,
             started_at_ms: record.start_time,
             complete: !record.has_unknown_model_cost,
+            total_duration_ms: record.total_duration,
+            api_duration_ms: record.total_api_duration,
+            lines_added: record.total_lines_added,
+            lines_removed: record.total_lines_removed,
         };
         reported
             .entry(record.session_id)
@@ -115,16 +140,40 @@ fn read_reported_costs(file: &Path, reported: &mut BTreeMap<String, Reported>) {
 /// The same sessions as the parser prices them, and whether it reached the price on its
 /// own. It prices an entry from the catalog only while the entry carries no cost of its
 /// own, so one entry that does is enough to make the session's two figures one number.
+///
+/// The tokens are counted here rather than read from the client's own record, so a session
+/// carries the same deduplicated figures every other total in the application is built
+/// from.
 fn computed_costs(entries: &[ccusage_core::LoadedEntry]) -> BTreeMap<String, Computed> {
     let mut computed: BTreeMap<String, Computed> = BTreeMap::new();
     for entry in entries {
         let session = computed
             .entry(entry.session_id.to_string())
-            .or_insert(Computed { cost_usd: 0.0, independent: true });
+            .or_insert(Computed { independent: true, ..Computed::default() });
         session.cost_usd += entry.cost;
         session.independent &= entry.data.cost_usd.is_none();
+        let usage = entry.data.message.usage;
+        // Claude reports cache creation as its own category and no reasoning at all, which
+        // is the fold the daily history already applies to the same numbers.
+        let input = usage.input_tokens + usage.cache_creation_token_count();
+        session.usage.input += input;
+        session.usage.cache_read += usage.cache_read_input_tokens;
+        session.usage.output += usage.output_tokens;
+        session.usage.total +=
+            input + usage.cache_read_input_tokens + usage.output_tokens + entry.extra_total_tokens;
+        if let Some(model) = &entry.model {
+            let model = ccusage_core::model_aliases::resolve_model_name(model);
+            *session.model_costs.entry(model.into_owned()).or_default() += entry.cost;
+        }
     }
     computed
+}
+
+/// One session's models, most expensive first.
+fn models_of(computed: &Computed) -> Vec<String> {
+    let mut models: Vec<(&String, &f64)> = computed.model_costs.iter().collect();
+    models.sort_by(|left, right| right.1.total_cmp(left.1));
+    models.into_iter().map(|(model, _)| model.clone()).collect()
 }
 
 /// The sessions both sides know about. One the parser has no entries for is left out
@@ -145,6 +194,12 @@ fn compare(
                 computed_cost_usd: computed.cost_usd,
                 independent: computed.independent,
                 reported_complete: reported.complete,
+                total_duration_ms: reported.total_duration_ms,
+                api_duration_ms: reported.api_duration_ms,
+                lines_added: reported.lines_added,
+                lines_removed: reported.lines_removed,
+                usage: computed.usage.clone(),
+                models: models_of(computed),
             })
         })
         .collect();
@@ -170,7 +225,19 @@ mod tests {
     use super::*;
 
     fn reported(cost_usd: f64) -> Reported {
-        Reported { cost_usd, started_at_ms: 1_788_187_073_329, complete: true }
+        Reported {
+            cost_usd,
+            started_at_ms: 1_788_187_073_329,
+            complete: true,
+            total_duration_ms: 0,
+            api_duration_ms: 0,
+            lines_added: 0,
+            lines_removed: 0,
+        }
+    }
+
+    fn computed(cost_usd: f64) -> Computed {
+        Computed { cost_usd, independent: true, ..Computed::default() }
     }
 
     #[test]
@@ -210,7 +277,7 @@ mod tests {
                 ("known".to_string(), reported(2.0)),
                 ("gone".to_string(), reported(3.0)),
             ]),
-            BTreeMap::from([("known".to_string(), Computed { cost_usd: 2.2, independent: true })]),
+            BTreeMap::from([("known".to_string(), computed(2.2))]),
         );
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "known");
@@ -221,7 +288,7 @@ mod tests {
     fn the_gap_is_measured_against_what_the_client_reported() {
         let sessions = compare(
             BTreeMap::from([("a".to_string(), reported(2.0))]),
-            BTreeMap::from([("a".to_string(), Computed { cost_usd: 2.2, independent: true })]),
+            BTreeMap::from([("a".to_string(), computed(2.2))]),
         );
         assert!((gap_percent(&sessions).expect("a gap") - 10.0).abs() < 1e-9);
         assert_eq!(gap_percent(&[]), None);

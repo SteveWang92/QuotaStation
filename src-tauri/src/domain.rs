@@ -284,7 +284,7 @@ pub struct SharedResetEvent {
     pub detected_at: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
     pub input: u64,
@@ -730,7 +730,8 @@ pub struct HistoryDay {
 /// Neither figure is a bill. Nothing is charged per token on a subscription, so the pair
 /// says whether the local catalog still agrees with the vendor's accounting, not what was
 /// spent. Only the sessions whose client recorded a total of its own appear at all.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionCost {
     /// The client's own identifier for the session. It stays on this machine: the shared
     /// folder export carries aggregates, and nothing that names a session goes into it.
@@ -750,6 +751,31 @@ pub struct SessionCost {
     /// Whether the client could price every model the session used. A client that met a
     /// model it has no price for reports a total that is short of the session.
     pub reported_complete: bool,
+    /// How long the session ran, and how much of that it spent waiting on the provider.
+    pub total_duration_ms: i64,
+    pub api_duration_ms: i64,
+    pub lines_added: i64,
+    pub lines_removed: i64,
+    /// The session's tokens as the parser deduplicated them, so a session agrees with the
+    /// day it belongs to rather than with the client's own second count of the same work.
+    pub usage: TokenUsage,
+    /// The models the session used, most expensive first.
+    pub models: Vec<String>,
+}
+
+/// Every session in a range, with the two sides summed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCostSnapshot {
+    pub sessions: Vec<SessionCost>,
+    pub reported_cost_usd: f64,
+    pub computed_cost_usd: f64,
+    /// How far the computed side is from the reported one, as a share of what the client
+    /// reported. `None` when the range holds nothing to compare.
+    pub gap_percent: Option<f64>,
+    /// How far back comparisons are kept, so a range reaching past that says why it is
+    /// empty rather than implying no work was done then.
+    pub retention_days: i64,
 }
 
 #[derive(Debug, Clone)]

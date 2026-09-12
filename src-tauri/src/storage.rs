@@ -15,8 +15,8 @@ use crate::domain::{
     Freshness, HOURLY_HISTORY_DAYS, HistorySnapshot, HourlyUsagePoint, LimitKind, LimitResetEvent,
     LimitWindow, LiveSnapshot, ModelUsage, ModelUsageRow, PRICING_CATALOG_REVISION, PaceLevel,
     ProviderSnapshot, QuotaHistoryPoint, QuotaHistorySnapshot, QuotaHistoryWindow, QuotaLevel,
-    ResetClassification, RetentionDiagnostics, SessionCost, TokenUsage, UsageHoursSnapshot,
-    UsageRangeSnapshot, UsageWindowSnapshot, WindowSource,
+    ResetClassification, RetentionDiagnostics, SessionCost, SessionCostSnapshot, TokenUsage,
+    UsageHoursSnapshot, UsageRangeSnapshot, UsageWindowSnapshot, WindowSource,
 };
 use crate::resets::{ResetTracker, WindowObservation, detect};
 use crate::sanitize::sanitize_error;
@@ -48,6 +48,40 @@ const SAMPLE_HISTORY_DAYS: i64 = 90;
 /// quota reading is kept, which is the span any question about a period can still be asked
 /// over.
 const SESSION_COST_HISTORY_DAYS: i64 = SAMPLE_HISTORY_DAYS;
+
+/// One stored session comparison, as the surfaces read it back.
+fn session_cost_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionCost {
+    let tokens = |column: &str| row.get::<i64, _>(column).max(0) as u64;
+    let models: String = row.get("models");
+    SessionCost {
+        session_id: row.get("session_id"),
+        session_started_at: row.get("session_started_at"),
+        reported_cost_usd: row.get("reported_cost_usd"),
+        computed_cost_usd: row.get("computed_cost_usd"),
+        independent: row.get("independent"),
+        reported_complete: row.get("reported_complete"),
+        total_duration_ms: row.get("total_duration_ms"),
+        api_duration_ms: row.get("api_duration_ms"),
+        lines_added: row.get("lines_added"),
+        lines_removed: row.get("lines_removed"),
+        usage: TokenUsage {
+            input: tokens("input_tokens"),
+            cache_read: tokens("cache_read_tokens"),
+            output: tokens("output_tokens"),
+            reasoning: tokens("reasoning_tokens"),
+            total: tokens("total_tokens"),
+        },
+        models: models
+            .split(MODEL_SEPARATOR)
+            .filter(|model| !model.is_empty())
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
+/// What joins a session's model names in the one column that holds them. A model name
+/// never contains it, and nothing queries the column, so the list is stored as it reads.
+const MODEL_SEPARATOR: &str = ", ";
 
 /// How many restarts the surfaces are given. They annotate the window running now and
 /// list the ones before it, neither of which needs the whole history.
@@ -737,15 +771,27 @@ impl Storage {
             sqlx::query(
                 "INSERT INTO session_costs \
                  (provider_instance_id, session_id, session_started_at, reported_cost_usd, \
-                  computed_cost_usd, independent, reported_complete, parser_revision, \
+                  computed_cost_usd, independent, reported_complete, total_duration_ms, \
+                  api_duration_ms, lines_added, lines_removed, input_tokens, cache_read_tokens, \
+                  output_tokens, reasoning_tokens, total_tokens, models, parser_revision, \
                   pricing_catalog_revision, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(provider_instance_id, session_id) DO UPDATE SET \
                  session_started_at=excluded.session_started_at, \
                  reported_cost_usd=excluded.reported_cost_usd, \
                  computed_cost_usd=excluded.computed_cost_usd, \
                  independent=excluded.independent, \
                  reported_complete=excluded.reported_complete, \
+                 total_duration_ms=excluded.total_duration_ms, \
+                 api_duration_ms=excluded.api_duration_ms, \
+                 lines_added=excluded.lines_added, \
+                 lines_removed=excluded.lines_removed, \
+                 input_tokens=excluded.input_tokens, \
+                 cache_read_tokens=excluded.cache_read_tokens, \
+                 output_tokens=excluded.output_tokens, \
+                 reasoning_tokens=excluded.reasoning_tokens, \
+                 total_tokens=excluded.total_tokens, \
+                 models=excluded.models, \
                  parser_revision=excluded.parser_revision, \
                  pricing_catalog_revision=excluded.pricing_catalog_revision, \
                  updated_at=excluded.updated_at",
@@ -757,6 +803,16 @@ impl Storage {
             .bind(session.computed_cost_usd)
             .bind(session.independent)
             .bind(session.reported_complete)
+            .bind(session.total_duration_ms)
+            .bind(session.api_duration_ms)
+            .bind(session.lines_added)
+            .bind(session.lines_removed)
+            .bind(session.usage.input as i64)
+            .bind(session.usage.cache_read as i64)
+            .bind(session.usage.output as i64)
+            .bind(session.usage.reasoning as i64)
+            .bind(session.usage.total as i64)
+            .bind(session.models.join(MODEL_SEPARATOR))
             .bind(CCUSAGE_REVISION)
             .bind(PRICING_CATALOG_REVISION)
             .bind(observed_at)
@@ -765,6 +821,46 @@ impl Storage {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Every session of one provider that started inside a range, newest first, with the
+    /// two sides of the comparison summed.
+    ///
+    /// The range is read in local days like every other history query, because the dates
+    /// on screen are the ones the reader picked in their own timezone.
+    pub async fn session_costs(
+        &self,
+        provider: ProviderKind,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<SessionCostSnapshot> {
+        let provider_id = self.provider_id(provider).await?;
+        let rows = sqlx::query(
+            "SELECT session_id, session_started_at, reported_cost_usd, computed_cost_usd, \
+             independent, reported_complete, total_duration_ms, api_duration_ms, lines_added, \
+             lines_removed, input_tokens, cache_read_tokens, output_tokens, reasoning_tokens, \
+             total_tokens, models \
+             FROM session_costs \
+             WHERE provider_instance_id = ? \
+             AND date(session_started_at, 'localtime') BETWEEN ? AND ? \
+             ORDER BY session_started_at DESC",
+        )
+        .bind(provider_id)
+        .bind(start_date)
+        .bind(end_date)
+        .fetch_all(&self.pool)
+        .await?;
+        let sessions: Vec<SessionCost> = rows.iter().map(session_cost_from_row).collect();
+        let reported_cost_usd = sessions.iter().map(|session| session.reported_cost_usd).sum();
+        let computed_cost_usd = sessions.iter().map(|session| session.computed_cost_usd).sum();
+        Ok(SessionCostSnapshot {
+            sessions,
+            reported_cost_usd,
+            computed_cost_usd,
+            gap_percent: (reported_cost_usd > 0.0)
+                .then(|| (computed_cost_usd - reported_cost_usd) / reported_cost_usd * 100.0),
+            retention_days: SESSION_COST_HISTORY_DAYS,
+        })
     }
 
     /// Names this machine in the device list, so a split reads "Workshop" rather than an
@@ -2037,18 +2133,32 @@ mod tests {
         assert_eq!(days.days.len(), 1, "the daily rows are untouched by the hourly cutoff");
     }
 
+    fn session(session_id: &str, started_at: &str, reported: f64, computed: f64) -> SessionCost {
+        SessionCost {
+            session_id: session_id.to_string(),
+            session_started_at: started_at.to_string(),
+            reported_cost_usd: reported,
+            computed_cost_usd: computed,
+            independent: true,
+            reported_complete: true,
+            total_duration_ms: 900_000,
+            api_duration_ms: 300_000,
+            lines_added: 40,
+            lines_removed: 5,
+            usage: TokenUsage {
+                input: 1_000,
+                cache_read: 2_000,
+                output: 300,
+                reasoning: 0,
+                total: 3_400,
+            },
+            models: vec!["claude-opus-5".to_string(), "claude-haiku-4-5".to_string()],
+        }
+    }
+
     #[tokio::test]
     async fn a_session_cost_is_corrected_in_place_and_dropped_once_it_leaves_the_window() {
         let (storage, _database) = open_storage().await;
-        let session =
-            |session_id: &str, started_at: &str, reported: f64, computed: f64| SessionCost {
-                session_id: session_id.to_string(),
-                session_started_at: started_at.to_string(),
-                reported_cost_usd: reported,
-                computed_cost_usd: computed,
-                independent: true,
-                reported_complete: true,
-            };
         storage
             .save_session_costs(
                 CODEX,
@@ -2077,6 +2187,41 @@ mod tests {
                 .await
                 .expect("read the surviving comparisons");
         assert_eq!(remaining, [("running".to_string(), 3.0)]);
+    }
+
+    #[tokio::test]
+    async fn a_range_answers_with_the_sessions_that_started_in_its_local_days() {
+        let (storage, _database) = open_storage().await;
+        storage
+            .save_session_costs(
+                CODEX,
+                &[
+                    session("earlier", "2026-08-18T09:00:00Z", 1.0, 1.5),
+                    session("wanted", "2026-08-20T09:00:00Z", 2.0, 2.5),
+                ],
+                "2026-08-20T15:00:00Z",
+            )
+            .await
+            .expect("store the comparisons");
+        // The rows are filtered by the local day they started on, which is the day the
+        // reader picked on screen, so the expected day is read the same way.
+        let day: String = sqlx::query_scalar("SELECT date(?, 'localtime')")
+            .bind("2026-08-20T09:00:00Z")
+            .fetch_one(&storage.pool)
+            .await
+            .expect("the local day of the wanted session");
+
+        let snapshot = storage.session_costs(CODEX, &day, &day).await.expect("read the range");
+
+        assert_eq!(
+            snapshot.sessions.iter().map(|s| s.session_id.as_str()).collect::<Vec<_>>(),
+            ["wanted"]
+        );
+        let wanted = &snapshot.sessions[0];
+        assert_eq!(wanted.usage.total, 3_400);
+        assert_eq!(wanted.models, ["claude-opus-5", "claude-haiku-4-5"]);
+        assert_eq!(wanted.total_duration_ms, 900_000);
+        assert_eq!(snapshot.gap_percent, Some(25.0));
     }
 
     #[tokio::test]

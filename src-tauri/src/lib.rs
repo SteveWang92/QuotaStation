@@ -36,8 +36,8 @@ use std::{
 
 use domain::{
     DeviceDiagnostics, DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot,
-    SharedFolderDiagnostics, UsageHoursSnapshot, UsageRangeSnapshot, UsageWindowSnapshot,
-    WatcherDiagnostics, WorkspaceSnapshot,
+    SessionCostSnapshot, SharedFolderDiagnostics, UsageHoursSnapshot, UsageRangeSnapshot,
+    UsageWindowSnapshot, WatcherDiagnostics, WorkspaceSnapshot,
 };
 use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
@@ -490,6 +490,26 @@ async fn get_quota_history(
         |history| {
             format!("{} window(s), {} restart(s)", history.windows.len(), history.resets.len())
         },
+    );
+    result.map_err(|error| error.to_string())
+}
+
+/// Every session comparison one provider recorded inside a range.
+///
+/// Only Claude Code writes a cost of its own, so another provider answers with an empty
+/// range rather than an error: nothing is wrong, there is simply nothing to compare.
+#[tauri::command]
+async fn get_session_costs(
+    provider: ProviderKind,
+    start_date: String,
+    end_date: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<SessionCostSnapshot, String> {
+    let result = state.storage.session_costs(provider, &start_date, &end_date).await;
+    log_query(
+        &format!("session costs {start_date}..{end_date} for {}", provider.key()),
+        &result,
+        |snapshot| format!("{} session(s)", snapshot.sessions.len()),
     );
     result.map_err(|error| error.to_string())
 }
@@ -1841,6 +1861,7 @@ pub fn run() {
             get_usage_hours,
             get_usage_window,
             get_quota_history,
+            get_session_costs,
             get_reset_history,
             refresh_now,
             get_diagnostics,
