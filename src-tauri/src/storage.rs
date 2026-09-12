@@ -15,8 +15,8 @@ use crate::domain::{
     Freshness, HOURLY_HISTORY_DAYS, HistorySnapshot, HourlyUsagePoint, LimitKind, LimitResetEvent,
     LimitWindow, LiveSnapshot, ModelUsage, ModelUsageRow, PRICING_CATALOG_REVISION, PaceLevel,
     ProviderSnapshot, QuotaHistoryPoint, QuotaHistorySnapshot, QuotaHistoryWindow, QuotaLevel,
-    ResetClassification, RetentionDiagnostics, TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot,
-    UsageWindowSnapshot, WindowSource,
+    ResetClassification, RetentionDiagnostics, SessionCost, TokenUsage, UsageHoursSnapshot,
+    UsageRangeSnapshot, UsageWindowSnapshot, WindowSource,
 };
 use crate::resets::{ResetTracker, WindowObservation, detect};
 use crate::sanitize::sanitize_error;
@@ -42,6 +42,12 @@ const BACKFILL_OVERLAP_HOURS: i64 = 48;
 /// be diagnosed in, and ninety days of readings cost single-digit megabytes; a shorter
 /// window loses the samples behind a restart before anyone asks about it.
 const SAMPLE_HISTORY_DAYS: i64 = 90;
+
+/// How long a session's two cost figures are kept. They are read again from the logs while
+/// those still exist, so the rows outlast the sessions behind them by exactly as long as a
+/// quota reading is kept, which is the span any question about a period can still be asked
+/// over.
+const SESSION_COST_HISTORY_DAYS: i64 = SAMPLE_HISTORY_DAYS;
 
 /// How many restarts the surfaces are given. They annotate the window running now and
 /// list the ones before it, neither of which needs the whole history.
@@ -716,6 +722,51 @@ impl Storage {
         Ok(())
     }
 
+    /// Stores what a provider's own client said each session cost beside what this
+    /// machine's catalog makes of it. A session is written once and then corrected, since
+    /// a session logged today is summarised again once more work goes through it.
+    pub async fn save_session_costs(
+        &self,
+        provider: ProviderKind,
+        sessions: &[SessionCost],
+        observed_at: &str,
+    ) -> Result<()> {
+        let provider_id = self.provider_id(provider).await?;
+        let mut tx = self.pool.begin().await?;
+        for session in sessions {
+            sqlx::query(
+                "INSERT INTO session_costs \
+                 (provider_instance_id, session_id, session_started_at, reported_cost_usd, \
+                  computed_cost_usd, independent, reported_complete, parser_revision, \
+                  pricing_catalog_revision, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(provider_instance_id, session_id) DO UPDATE SET \
+                 session_started_at=excluded.session_started_at, \
+                 reported_cost_usd=excluded.reported_cost_usd, \
+                 computed_cost_usd=excluded.computed_cost_usd, \
+                 independent=excluded.independent, \
+                 reported_complete=excluded.reported_complete, \
+                 parser_revision=excluded.parser_revision, \
+                 pricing_catalog_revision=excluded.pricing_catalog_revision, \
+                 updated_at=excluded.updated_at",
+            )
+            .bind(provider_id)
+            .bind(&session.session_id)
+            .bind(&session.session_started_at)
+            .bind(session.reported_cost_usd)
+            .bind(session.computed_cost_usd)
+            .bind(session.independent)
+            .bind(session.reported_complete)
+            .bind(CCUSAGE_REVISION)
+            .bind(PRICING_CATALOG_REVISION)
+            .bind(observed_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Names this machine in the device list, so a split reads "Workshop" rather than an
     /// identifier. Called whenever the name could have changed, which is startup and a
     /// settings save.
@@ -1054,6 +1105,13 @@ impl Storage {
         // rolled up into a summary that already exists.
         sqlx::query(&format!(
             "DELETE FROM hourly_usage WHERE date(hour_start) < date(?, 'localtime', '-{HOURLY_HISTORY_DAYS} days')"
+        ))
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(&format!(
+            "DELETE FROM session_costs \
+             WHERE datetime(session_started_at) < datetime(?, '-{SESSION_COST_HISTORY_DAYS} days')"
         ))
         .bind(now)
         .execute(&mut *tx)
@@ -1980,6 +2038,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_cost_is_corrected_in_place_and_dropped_once_it_leaves_the_window() {
+        let (storage, _database) = open_storage().await;
+        let session =
+            |session_id: &str, started_at: &str, reported: f64, computed: f64| SessionCost {
+                session_id: session_id.to_string(),
+                session_started_at: started_at.to_string(),
+                reported_cost_usd: reported,
+                computed_cost_usd: computed,
+                independent: true,
+                reported_complete: true,
+            };
+        storage
+            .save_session_costs(
+                CODEX,
+                &[
+                    session("old", "2026-05-01T09:00:00Z", 1.0, 1.1),
+                    session("running", "2026-08-20T09:00:00Z", 2.0, 2.2),
+                ],
+                "2026-08-20T15:00:00Z",
+            )
+            .await
+            .expect("store the comparisons");
+        storage
+            .save_session_costs(
+                CODEX,
+                &[session("running", "2026-08-20T09:00:00Z", 3.0, 3.3)],
+                "2026-08-20T16:00:00Z",
+            )
+            .await
+            .expect("store the grown session");
+
+        storage.run_retention_at("2026-08-20T16:00:00Z").await.expect("run retention");
+
+        let remaining: Vec<(String, f64)> =
+            sqlx::query_as("SELECT session_id, reported_cost_usd FROM session_costs")
+                .fetch_all(&storage.pool)
+                .await
+                .expect("read the surviving comparisons");
+        assert_eq!(remaining, [("running".to_string(), 3.0)]);
+    }
+
+    #[tokio::test]
     async fn migrations_leave_only_the_tables_the_core_writes() {
         let (storage, _database) = open_storage().await;
         assert_eq!(
@@ -1995,6 +2095,7 @@ mod tests {
                 "provider_instances",
                 "refresh_runs",
                 "retention_state",
+                "session_costs",
             ]
         );
     }

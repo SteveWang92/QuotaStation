@@ -1,3 +1,4 @@
+mod cost;
 mod history;
 pub mod notifications;
 mod plan;
@@ -14,6 +15,7 @@ use crate::domain::{LimitKind, LimitWindow, LiveSnapshot};
 #[cfg(test)]
 use crate::domain::{Freshness, PaceLevel, QuotaLevel, WindowSource};
 
+pub use cost::{gap_percent, read_session_costs};
 pub use history::read_history;
 
 /// Claude's rolling session window, in minutes.

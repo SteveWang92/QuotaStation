@@ -88,6 +88,9 @@ async fn refresh_history_for(state: &Arc<AppState>, providers: &[ProviderKind]) 
         let history = providers::read_history(provider).await;
         crate::log::write(describe_history(provider, began, &history));
         apply_history(state, provider, &started_at, history).await;
+        if provider == ProviderKind::Claude {
+            record_session_costs(state).await;
+        }
     }
     // The parse has just replaced this machine's rows. Publishing them and reading in what
     // the other machines published belongs to the same refresh, so the snapshot below
@@ -371,6 +374,39 @@ async fn apply_history(
             error.as_deref(),
         )
         .await;
+}
+
+/// Stores what Claude Code accounted each of its recent sessions to, beside what the
+/// pricing catalog makes of the same session.
+///
+/// It runs with the history parse because it reads the same logs and answers a question
+/// about the same figure: whether the estimate on screen still tracks the vendor's own
+/// accounting. Failing to read it changes nothing on any surface, so it is logged and left
+/// rather than turned into a provider error.
+async fn record_session_costs(state: &Arc<AppState>) {
+    let sessions = match providers::claude::read_session_costs().await {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            crate::log::write(format!("claude session costs unreadable: {error:#}"));
+            return;
+        }
+    };
+    if sessions.is_empty() {
+        return;
+    }
+    if let Err(error) =
+        state.storage.save_session_costs(ProviderKind::Claude, &sessions, &now()).await
+    {
+        crate::log::write(format!("claude session costs could not be stored: {error:#}"));
+        return;
+    }
+    crate::log::write(format!(
+        "claude session costs: {} session(s), {} priced independently, estimate {:+.1}% against \
+         what Claude Code reported",
+        sessions.len(),
+        sessions.iter().filter(|session| session.independent).count(),
+        providers::claude::gap_percent(&sessions).unwrap_or_default()
+    ));
 }
 
 fn storage_error(error: anyhow::Error) -> String {

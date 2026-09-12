@@ -724,6 +724,34 @@ pub struct HistoryDay {
     pub model_rows: Vec<ModelUsageRow>,
 }
 
+/// One session priced twice: by the provider's own client, and by the catalog this
+/// machine parses its logs with.
+///
+/// Neither figure is a bill. Nothing is charged per token on a subscription, so the pair
+/// says whether the local catalog still agrees with the vendor's accounting, not what was
+/// spent. Only the sessions whose client recorded a total of its own appear at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionCost {
+    /// The client's own identifier for the session. It stays on this machine: the shared
+    /// folder export carries aggregates, and nothing that names a session goes into it.
+    pub session_id: String,
+    /// When the session began, as the client recorded it. A session's records carry no
+    /// time of their own, so this is the only moment the comparison can be placed at.
+    pub session_started_at: String,
+    /// What the client accounted the session to.
+    pub reported_cost_usd: f64,
+    /// What the pricing catalog makes of the same session's tokens.
+    pub computed_cost_usd: f64,
+    /// Whether the computed figure was reached without the client's own numbers. The
+    /// parser prices an entry from the catalog only while the entry carries no cost of its
+    /// own; once one does, both sides are the same number and their agreement means
+    /// nothing.
+    pub independent: bool,
+    /// Whether the client could price every model the session used. A client that met a
+    /// model it has no price for reports a total that is short of the session.
+    pub reported_complete: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelUsageRow {
     pub model: String,
