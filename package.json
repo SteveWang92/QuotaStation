@@ -19,8 +19,10 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "check:core": "cargo check --manifest-path src-tauri/Cargo.toml",
     "test:core": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+    "coverage:core": "cargo llvm-cov --locked --manifest-path src-tauri/Cargo.toml --summary-only",
     "fmt:core": "cargo fmt --manifest-path src-tauri/Cargo.toml --check",
     "format:core": "cargo fmt --manifest-path src-tauri/Cargo.toml",
     "lint:core": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
@@ -49,6 +51,7 @@
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "6.0.5",
+    "@vitest/coverage-v8": "4.1.10",
     "typescript": "5.9.3",
     "vite": "8.2.1",
     "vitest": "4.1.10"

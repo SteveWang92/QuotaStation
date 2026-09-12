@@ -20,5 +20,15 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    coverage: {
+      // Everything the renderer ships, so a module with no test at all is counted as the
+      // zero it is rather than left out of the total.
+      include: ["src/**/*.{ts,tsx}"],
+      // The entry point mounts React and the components are drawn rather than computed;
+      // neither is covered by the unit tests, and counting them only hides which of the
+      // modules that are testable have no test.
+      exclude: ["src/main.tsx", "src/components/**"],
+      reporter: ["text"],
+    },
   },
 });

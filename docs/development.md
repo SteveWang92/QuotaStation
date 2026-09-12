@@ -88,6 +88,31 @@ switch a globally installed Prettier off for this workspace and stop format-on-s
 touching Markdown, YAML, TOML and SQL, none of which anything here formats — the
 documentation is wrapped by hand. Nothing else under `.vscode/` is shared.
 
+### Test coverage
+
+Coverage is measured on request, not enforced: neither command is part of `npm run verify`
+or of CI, and no threshold fails a build. They exist to answer which modules have no test
+at all, which is a different question from whether the gates pass.
+
+```powershell
+npm run coverage
+npm run coverage:core
+```
+
+`npm run coverage` reports the interface. It counts everything under `src/` except
+`src/main.tsx` and the components, which are drawn rather than computed and are not covered
+by unit tests; counting them would only bury the testable modules that have none. A file at
+100% is left out of the table, so the rows that appear are the work.
+
+`npm run coverage:core` reports the core and needs
+[`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov), which is not a project
+dependency and is installed once per machine:
+
+```powershell
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked
+```
+
 Run every interface and core check together before a release pull request with:
 
 ```powershell
