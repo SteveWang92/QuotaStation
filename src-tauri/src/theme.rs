@@ -78,6 +78,9 @@ fn personalize(value: &str) -> Option<bool> {
     let name = wide(value);
     let mut data = 0u32;
     let mut size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: the two name pointers come from `wide`, whose NUL-terminated buffers `key` and
+    // `name` outlive the call. The output pointer addresses `data` and `size` starts as its
+    // byte length, so a DWORD is the largest value that can be written.
     let status = unsafe {
         RegGetValueW(
             HKEY_CURRENT_USER,

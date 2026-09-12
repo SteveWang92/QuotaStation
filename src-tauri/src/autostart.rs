@@ -84,6 +84,9 @@ fn registered_command(name: &str) -> Option<String> {
     // simply means the entry is not one QuotaStation wrote.
     let mut buffer = [0u16; 1024];
     let mut size = std::mem::size_of_val(&buffer) as u32;
+    // SAFETY: the two name pointers come from `wide`, which keeps its NUL-terminated buffer
+    // alive in `key` and `value` for the whole call. The output pointer addresses `buffer`
+    // and `size` starts as its byte length, so the API cannot write past it.
     let status = unsafe {
         RegGetValueW(
             HKEY_CURRENT_USER,

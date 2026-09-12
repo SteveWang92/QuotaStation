@@ -48,6 +48,8 @@ pub fn owning_window() -> Option<TerminalTarget> {
     /// would take a snapshot per generation.
     fn parents() -> Vec<(u32, u32)> {
         let mut pairs = Vec::new();
+        // SAFETY: the snapshot is taken with no owned arguments, and the handle it answers with
+        // is closed once at the end of this function.
         let snapshot: HANDLE = match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) } {
             Ok(snapshot) => snapshot,
             Err(_) => return pairs,
@@ -56,14 +58,18 @@ pub fn owning_window() -> Option<TerminalTarget> {
             dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,
             ..Default::default()
         };
+        // SAFETY: `snapshot` is the live snapshot taken above, and `entry` is a local whose
+        // `dwSize` was set to its own size, which is what bounds the write.
         if unsafe { Process32First(snapshot, &mut entry) }.is_ok() {
             loop {
                 pairs.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                // SAFETY: the same live snapshot and the same sized entry, now being advanced.
                 if unsafe { Process32Next(snapshot, &mut entry) }.is_err() {
                     break;
                 }
             }
         }
+        // SAFETY: the snapshot is closed exactly once here and used nowhere afterwards.
         let _ = unsafe { CloseHandle(snapshot) };
         pairs
     }
@@ -78,13 +84,20 @@ pub fn owning_window() -> Option<TerminalTarget> {
         // EnumWindows is synchronous, so it outlives every call.
         let search = unsafe { &mut *(state.0 as *mut Search) };
         let mut owner = 0u32;
+        // SAFETY: `window` is the handle the enumeration just supplied and `owner` is a live
+        // local.
         unsafe { GetWindowThreadProcessId(window, Some(&mut owner)) };
+        if owner != search.process {
+            return TRUE;
+        }
         // A titled, visible window: a console host keeps hidden ones, and a terminal that
         // has not drawn anything is not somewhere to send the user.
-        if owner == search.process
-            && unsafe { IsWindowVisible(window) }.as_bool()
-            && unsafe { GetWindowTextLengthW(window) } > 0
-        {
+        //
+        // SAFETY: both calls take the handle the enumeration supplied, which is a window for
+        // as long as this callback runs.
+        let usable =
+            unsafe { IsWindowVisible(window).as_bool() && GetWindowTextLengthW(window) > 0 };
+        if usable {
             search.found = Some(window);
             return windows::core::BOOL(0);
         }
@@ -93,6 +106,8 @@ pub fn owning_window() -> Option<TerminalTarget> {
 
     fn window_of(process: u32) -> Option<HWND> {
         let mut search = Search { process, found: None };
+        // SAFETY: `visit` has the signature the enumeration requires, and the pointer it is
+        // given addresses `search`, which outlives this synchronous call.
         let _ =
             unsafe { EnumWindows(Some(visit), LPARAM(std::ptr::from_mut(&mut search) as isize)) };
         search.found
@@ -139,14 +154,20 @@ pub fn focus(target: TerminalTarget) -> bool {
     };
 
     let window = HWND(target.window as *mut std::ffi::c_void);
+    // SAFETY: asking whether a recorded handle is still a window is exactly what it is for;
+    // the API is defined over a handle that no longer exists.
     if !unsafe { IsWindow(Some(window)) }.as_bool() {
         return false;
     }
     let mut owner = 0u32;
+    // SAFETY: `window` was confirmed to be a window above, and `owner` is a live local.
     unsafe { GetWindowThreadProcessId(window, Some(&mut owner)) };
     if owner != target.process_id {
         return false;
     }
+    // SAFETY: `window` is a live window owned by the process it was recorded against, checked
+    // above. The input attachment made here is undone before the block ends, and every other
+    // call reads or raises that one window.
     unsafe {
         let foreground = GetForegroundWindow();
         let foreground_thread = GetWindowThreadProcessId(foreground, None);

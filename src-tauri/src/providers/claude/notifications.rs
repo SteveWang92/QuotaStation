@@ -67,13 +67,20 @@ impl SessionRegisterLock {
             core::w,
         };
 
+        // SAFETY: the name is a static wide literal and `None` asks for the default security
+        // attributes, so the call borrows nothing of ours. It returns either a handle this
+        // scope becomes responsible for or an error.
         let handle =
             unsafe { CreateMutexW(None, false, w!("Local\\QuotaStationClaudeSessionRegister")) }
                 .ok()?;
+        // SAFETY: `handle` is the mutex just created, and nothing closes it until this wait
+        // returns.
         let wait = unsafe { WaitForSingleObject(handle, 1_000) };
         if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
             Some(Self(handle))
         } else {
+            // SAFETY: the wait failed, so this branch is the only owner of `handle` and
+            // closes it exactly once.
             let _ = unsafe { CloseHandle(handle) };
             None
         }
@@ -85,7 +92,10 @@ impl Drop for SessionRegisterLock {
     fn drop(&mut self) {
         use windows::Win32::{Foundation::CloseHandle, System::Threading::ReleaseMutex};
 
+        // SAFETY: `self.0` is the handle `acquire` created and waited on successfully, and
+        // `Drop` runs once, so the mutex is released and the handle closed exactly once.
         let _ = unsafe { ReleaseMutex(self.0) };
+        // SAFETY: the same handle, released above and owned by nothing else.
         let _ = unsafe { CloseHandle(self.0) };
     }
 }

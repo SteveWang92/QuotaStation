@@ -35,6 +35,8 @@ use windows::{
 #[cfg(windows)]
 fn window_rect(hwnd: HWND) -> Option<RECT> {
     let mut rect = RECT::default();
+    // SAFETY: `hwnd` is checked to still exist before any caller reaches here, and `rect`
+    // is a live local the API only writes four `i32`s into.
     unsafe {
         GetWindowRect(hwnd, &mut rect).ok()?;
     }
@@ -69,12 +71,18 @@ struct Taskbar {
 #[cfg(windows)]
 fn taskbars() -> Vec<Taskbar> {
     let mut found = Vec::new();
+    // SAFETY: both arguments are static: a wide class-name literal and a null window name,
+    // which is how the API is asked for any window of that class.
     if let Ok(primary) = unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) } {
         found.extend(describe_taskbar(primary));
     }
     let mut previous: Option<HWND> = None;
     while let Ok(next) =
-        unsafe { FindWindowExW(None, previous, w!("Shell_SecondaryTrayWnd"), PCWSTR::null()) }
+        // SAFETY: `previous` is a handle this loop received from the same enumeration on its
+        // last turn, and the class and window names are static literals.
+        unsafe {
+            FindWindowExW(None, previous, w!("Shell_SecondaryTrayWnd"), PCWSTR::null())
+        }
     {
         found.extend(describe_taskbar(next));
         previous = Some(next);
@@ -84,9 +92,13 @@ fn taskbars() -> Vec<Taskbar> {
 
 #[cfg(windows)]
 fn describe_taskbar(hwnd: HWND) -> Option<Taskbar> {
+    // SAFETY: `hwnd` is a taskbar handle Explorer just answered with, and the flag asks for
+    // the nearest monitor rather than a null handle on a miss.
     let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
     let mut info = MONITORINFOEXW::default();
     info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+    // SAFETY: `info` is a live local whose `cbSize` was set to its own size on the line
+    // above, which is what tells the API how much of it may be written.
     if !unsafe { GetMonitorInfoW(monitor, std::ptr::from_mut(&mut info).cast::<MONITORINFO>()) }
         .as_bool()
     {
@@ -181,6 +193,8 @@ pub fn widget_label() -> String {
 #[cfg(windows)]
 fn live_widget(app: &tauri::AppHandle) -> Option<HWND> {
     let hwnd = app.get_webview_window(&widget_label())?.hwnd().ok()?;
+    // SAFETY: asking whether a handle is still a window is exactly what a stale handle is
+    // for; the API is defined over one that no longer exists.
     unsafe { IsWindow(Some(hwnd)) }.as_bool().then_some(hwnd)
 }
 
@@ -314,6 +328,10 @@ fn dock_widget(app: &tauri::AppHandle, taskbar: &Taskbar) -> Result<(), String> 
     let x = (trailing - taskbar_rect.left - width - gap).max(gap);
     let y = ((taskbar_height - height) / 2).max(0);
     let hwnd = widget.hwnd().map_err(|error| error.to_string())?;
+    // SAFETY: `hwnd` is the widget window's own handle, read from Tauri on the line above,
+    // and `taskbar.hwnd` is a taskbar Explorer answered with this tick. Every call below
+    // reads or restyles those two windows and nothing else; the styles written back are the
+    // ones just read, with the child bits set.
     unsafe {
         if GetParent(hwnd).ok() != Some(taskbar.hwnd) {
             let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
@@ -351,6 +369,8 @@ fn dock_widget(app: &tauri::AppHandle, taskbar: &Taskbar) -> Result<(), String> 
 /// generously enough for a two-line date and time.
 #[cfg(windows)]
 fn trailing_edge(taskbar: &Taskbar, rect: RECT, dpi: u32) -> i32 {
+    // SAFETY: `taskbar.hwnd` is a live taskbar handle and the class name is a static literal;
+    // a taskbar without that child answers with an error rather than a bad handle.
     unsafe { FindWindowExW(Some(taskbar.hwnd), None, w!("TrayNotifyWnd"), PCWSTR::null()) }
         .ok()
         .and_then(window_rect)
@@ -372,6 +392,9 @@ fn trailing_edge(taskbar: &Taskbar, rect: RECT, dpi: u32) -> i32 {
 #[cfg(windows)]
 fn leading_edge(taskbar: HWND, rect: RECT) -> i32 {
     let mut right = rect.left;
+    // SAFETY: `task_buttons_right` matches the callback signature the API expects, and the
+    // `LPARAM` it receives is a pointer to `right`, which outlives this call because
+    // enumeration is synchronous.
     let _ = unsafe {
         EnumChildWindows(
             Some(taskbar),
@@ -385,11 +408,15 @@ fn leading_edge(taskbar: HWND, rect: RECT) -> i32 {
 #[cfg(windows)]
 unsafe extern "system" fn task_buttons_right(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let mut class = [0u16; 64];
+    // SAFETY: `class` is a live local buffer and the API is given its true length, so it
+    // cannot write past it.
     let length = unsafe { GetClassNameW(hwnd, &mut class) } as usize;
     if String::from_utf16_lossy(&class[..length]) == "MSTaskListWClass"
         && let Some(rect) = window_rect(hwnd)
     {
         let widest = lparam.0 as *mut i32;
+        // SAFETY: `lparam` carries the `&mut i32` `leading_edge` passed in, which is still alive
+        // for the whole enumeration, and this callback runs on that same thread.
         unsafe { *widest = (*widest).max(rect.right) };
     }
     TRUE
@@ -399,6 +426,8 @@ unsafe extern "system" fn task_buttons_right(hwnd: HWND, lparam: LPARAM) -> BOOL
 fn taskbar_dpi(taskbar: &Taskbar) -> u32 {
     let mut dpi_x = 0;
     let mut dpi_y = 0;
+    // SAFETY: `monitor_handle` was answered by `MonitorFromWindow` for a taskbar that exists,
+    // and both outputs are live locals.
     match unsafe {
         GetDpiForMonitor(taskbar.monitor_handle, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y)
     } {
@@ -485,6 +514,8 @@ fn widget_click_transition(
 #[cfg(windows)]
 unsafe extern "system" fn on_mouse(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 && matches!(wparam.0 as u32, WM_LBUTTONDOWN | WM_LBUTTONUP) {
+        // SAFETY: for `HC_ACTION` the system documents `lparam` as a pointer to an `MSLLHOOKSTRUCT`
+        // it keeps valid for the duration of this callback, and only the point is copied out.
         let point = unsafe { (*(lparam.0 as *const MSLLHOOKSTRUCT)).pt };
         let captured = WIDGET_CLICK_CAPTURED.load(Ordering::Relaxed);
         let (next, action) = widget_click_transition(captured, wparam.0 as u32, over_widget(point));
@@ -498,22 +529,33 @@ unsafe extern "system" fn on_mouse(code: i32, wparam: WPARAM, lparam: LPARAM) ->
             WidgetClickAction::Pass => {}
         }
     }
+    // SAFETY: passing the hook call on is the documented contract for every event this does
+    // not consume; the three arguments are the ones the system just supplied.
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
 #[cfg(windows)]
 fn over_widget(point: POINT) -> bool {
     let hwnd = HWND(WATCHED_WIDGET.load(Ordering::Relaxed) as *mut _);
+    // SAFETY: the handle is either invalid, which is checked first, or the widget window's,
+    // and asking a stale handle whether it is visible is defined.
     if hwnd.is_invalid() || !unsafe { IsWindowVisible(hwnd) }.as_bool() {
         return false;
     }
     // A visible-style window can still sit behind a fullscreen or always-on-top window.
     // The hook is global, so a rectangle check alone would steal that covering window's
     // click. WindowFromPoint identifies the root that will actually receive it.
+    //
+    // SAFETY: `point` is a plain copied coordinate; the API takes it by value.
     let hit = unsafe { WindowFromPoint(point) };
-    if hit.is_invalid()
-        || unsafe { GetAncestor(hit, GA_ROOT) } != unsafe { GetAncestor(hwnd, GA_ROOT) }
-    {
+    if hit.is_invalid() {
+        return false;
+    }
+    // SAFETY: `hit` is valid here and `hwnd` was checked to be a window above, so both are
+    // handles the API accepts; a window with no ancestor answers with itself.
+    let (hit_root, widget_root) =
+        unsafe { (GetAncestor(hit, GA_ROOT), GetAncestor(hwnd, GA_ROOT)) };
+    if hit_root != widget_root {
         return false;
     }
     window_rect(hwnd).is_some_and(|rect| {
@@ -530,6 +572,9 @@ pub fn watch_widget_clicks() {
     if INSTALLED.swap(1, Ordering::SeqCst) == 1 {
         return;
     }
+    // SAFETY: `on_mouse` has the signature a `WH_MOUSE_LL` hook requires, a global low-level
+    // hook takes no module handle, and this runs on the thread with the message loop, which
+    // is what such a hook is called on.
     if let Err(error) = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(on_mouse), None, 0) } {
         INSTALLED.store(0, Ordering::SeqCst);
         crate::log::write(format!("taskbar status click watch unavailable: {error}"));
@@ -556,6 +601,9 @@ pub fn raise_window(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
     app.run_on_main_thread(move || {
         let Some(window) = handle.get_webview_window(&label) else { return };
         let Ok(hwnd) = window.hwnd() else { return };
+        // SAFETY: this runs on the main thread and `hwnd` belongs to a window Tauri just handed
+        // back. Every input attachment made here is undone on the line that pairs with it before
+        // the block ends.
         unsafe {
             let holder = GetWindowThreadProcessId(GetForegroundWindow(), None);
             let ours = GetCurrentThreadId();
@@ -636,6 +684,9 @@ fn float_widget(app: &tauri::AppHandle, taskbar: Option<&Taskbar>) -> Result<(),
     let widget = app.get_webview_window(&widget_label()).ok_or("taskbar widget window missing")?;
     let hwnd = widget.hwnd().map_err(|error| error.to_string())?;
     let mut detached = false;
+    // SAFETY: `hwnd` is the widget window's own handle. The style written back is the one
+    // read on the first line of the block with the child bit swapped for the popup bit, and
+    // detaching a window from its parent is defined for a window that has one.
     unsafe {
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
         if style & WS_CHILD.0 != 0 {
