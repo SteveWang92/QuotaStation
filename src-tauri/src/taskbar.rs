@@ -522,7 +522,7 @@ unsafe extern "system" fn on_mouse(code: i32, wparam: WPARAM, lparam: LPARAM) ->
         WIDGET_CLICK_CAPTURED.store(next, Ordering::Relaxed);
         match action {
             WidgetClickAction::Open => {
-                crate::open_quick_panel_from_taskbar();
+                crate::quick_panel::open_quick_panel_from_taskbar();
                 return LRESULT(1);
             }
             WidgetClickAction::Swallow => return LRESULT(1),
