@@ -273,6 +273,9 @@ export interface DiagnosticsSnapshot {
 /** How a provider is named where the name sits beside a reading rather than above one. */
 export type ProviderLabelStyle = "short" | "full";
 
+/** How much room the quick panel takes for the same readings. */
+export type QuickPanelDensity = "standard" | "compact";
+
 /**
  * One segment of the Claude Code status line, named by the core — `model`, `branch`,
  * `quota:<provider>` and so on. The core sends every segment it can draw, so the list is
@@ -327,6 +330,7 @@ export interface AppSettings {
   taskbarWidgetEnabled: boolean;
   /** The chosen display's device name, or null for whichever taskbar is the primary one. */
   taskbarWidgetDisplay: string | null;
+  quickPanelDensity: QuickPanelDensity;
   statusLineProviderLabels: ProviderLabelStyle;
   statusLineLayout: StatusLineLayout;
   notifyLowQuota: boolean;

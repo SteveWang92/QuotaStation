@@ -8,6 +8,7 @@ const STORED: AppSettings = {
   theme: "system",
   taskbarWidgetEnabled: false,
   taskbarWidgetDisplay: null,
+  quickPanelDensity: "standard",
   statusLineProviderLabels: "short",
   statusLineLayout: {
     segments: [{ id: "model", enabled: true, row: 1 }],

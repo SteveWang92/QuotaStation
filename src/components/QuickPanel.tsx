@@ -2,13 +2,60 @@ import { invoke } from "@tauri-apps/api/core";
 import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { logActivity } from "../activity";
+import { useAppSettings } from "../appSettings";
 import { errorMessage } from "../errors";
-import { formatCurrency, formatNumber } from "../format";
+import { formatCompactNumber, formatCurrency, formatNumber, formatResetTimestamp } from "../format";
 import { statusColor } from "../theme";
 import type { ProviderSnapshot, WorkspaceSnapshot } from "../types";
 import { useSnapshot } from "../useSnapshot";
 import { ProviderSetup } from "./ProviderSetup";
+import { QuotaGlanceRow } from "./QuotaGlanceRow";
 import { QuotaSection } from "./QuotaSection";
+
+/**
+ * The same provider at compact density: one line per quota window and one line of usage,
+ * because the panel is one narrow column and the exact reset time, the tenths of a percent
+ * and the exact token count are all a dashboard away.
+ */
+function CompactProvider({ snapshot }: { snapshot: ProviderSnapshot }) {
+  const providerColor = statusColor(snapshot.compactStatus);
+  return (
+    <section className="quick-provider" aria-label={`${snapshot.displayName} status`}>
+      <header className="quick-provider-header">
+        <h2>{snapshot.displayName}</h2>
+        <span style={{ color: providerColor }}>{snapshot.compactStatus.label}</span>
+      </header>
+      {snapshot.signInRequired ? (
+        <p className="quick-provider-note">
+          Signed out — sign in with the {snapshot.displayName} client again.
+        </p>
+      ) : snapshot.limits.length > 0 ? (
+        <div className="quick-windows">
+          {snapshot.limits.map((limit) => (
+            <QuotaGlanceRow
+              key={limit.kind}
+              limit={limit}
+              label={`${snapshot.displayName} ${limit.label}`}
+              fallbackColor={providerColor}
+              // The row has no room for the exact local time, and it is the one thing here
+              // that a countdown cannot be read off.
+              title={`${limit.label} — ${formatResetTimestamp(limit.resetsAt)}`}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="quick-provider-note">No quota window reported yet.</p>
+      )}
+      {/* Today's figures in their compact form: the exact count needs more width than the
+          whole panel has, and the dashboard is where it is read exactly. */}
+      <p className="quick-today">
+        <span>Today</span>
+        <strong>{formatCompactNumber(snapshot.today.total)}</strong>
+        <span>· {formatCurrency(snapshot.apiEquivalentCostUsd)}</span>
+      </p>
+    </section>
+  );
+}
 
 function ProviderColumn({ snapshot }: { snapshot: ProviderSnapshot }) {
   return (
@@ -83,6 +130,11 @@ function useReportedHeight() {
 
 export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSnapshot }) {
   const { workspace, error, loaded } = useSnapshot(initialWorkspace);
+  const { settings } = useAppSettings();
+  // The core sizes the window from the same setting, so the density the layout is drawn at
+  // and the width it is given agree. Until the settings arrive there is nothing to draw
+  // either way, and standard is what the core opened the window at.
+  const compact = settings?.quickPanelDensity === "compact";
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const shell = useReportedHeight();
@@ -105,7 +157,7 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
 
   const failure = refreshError ?? error;
   return (
-    <main className="quick-panel-shell" ref={shell}>
+    <main className={`quick-panel-shell${compact ? " compact" : ""}`} ref={shell}>
       {/* Each column carries its own provider's status, so the header repeats no aggregate. */}
       <header className="quick-panel-header">
         <strong>QuotaStation</strong>
@@ -120,9 +172,13 @@ export function QuickPanel({ initialWorkspace }: { initialWorkspace: WorkspaceSn
       </header>
       <div className={`quick-providers${providers.length <= 1 ? " single" : ""}`}>
         {providers.length > 0 ? (
-          providers.map((snapshot) => (
-            <ProviderColumn key={snapshot.provider} snapshot={snapshot} />
-          ))
+          providers.map((snapshot) =>
+            compact ? (
+              <CompactProvider key={snapshot.provider} snapshot={snapshot} />
+            ) : (
+              <ProviderColumn key={snapshot.provider} snapshot={snapshot} />
+            ),
+          )
         ) : !loaded ? null : workspace.providers.length > 0 ? (
           <p className="quick-provider-note">Quota tracking is off for every provider.</p>
         ) : (

@@ -635,6 +635,42 @@ button { font: inherit; }
 .quick-usage span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
 .quick-usage strong { overflow: hidden; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .quick-usage small { color: var(--muted); font-size: 9px; }
+/* The compact density: one narrow column whatever is enabled, so the providers stack and
+   each quota window is drawn as the glance row the taskbar widget already uses. Only what
+   differs from the standard density is written here. */
+.quick-panel-shell.compact { padding: 9px; gap: 8px; font-size: 11px; }
+.quick-panel-shell.compact .quick-panel-header strong { font-size: 13px; }
+.quick-panel-shell.compact .quick-panel-header button { width: 22px; height: 22px; }
+.quick-panel-shell.compact .quick-panel-header svg { width: 12px; height: 12px; }
+.quick-panel-shell.compact .quick-providers { grid-template-columns: minmax(0, 1fr); gap: 7px; }
+.quick-panel-shell.compact .quick-provider { gap: 5px; }
+.quick-panel-shell.compact .quick-provider + .quick-provider { padding-top: 7px; border-top: 1px solid var(--line-soft); }
+.quick-panel-shell.compact .quick-provider-header h2 { font-size: 12px; }
+.quick-panel-shell.compact .quick-provider-header span { font-size: 9px; }
+.quick-panel-shell.compact .quick-provider-note { padding: 7px 8px; border-radius: 4px; font-size: 10px; }
+.quick-panel-shell.compact .quick-windows { display: grid; gap: 4px; }
+/* The shared glance row, at panel scale. Both flanking cells are a fixed width and only
+   the bar takes what is left, so a row whose countdown is written with more characters is
+   still drawn on the same scale as the row above it. */
+.quick-panel-shell.compact .glance-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) 78px; align-items: center; gap: 6px; }
+.quick-panel-shell.compact .glance-badge { color: var(--muted); font-size: 9px; font-weight: 700; }
+.quick-panel-shell.compact .glance-row i { align-self: center; height: 5px; overflow: hidden; border-radius: 3px; background: var(--track); }
+.quick-panel-shell.compact .glance-row i.unknown { background: repeating-linear-gradient(90deg, var(--track-hatch-soft) 0 5px, var(--track-hatch-strong) 5px 9px); }
+.quick-panel-shell.compact .glance-row b { display: block; height: 100%; border-radius: inherit; }
+/* Fixed cells again inside the reading, so the percent, the dot and the countdown each sit
+   on one vertical axis down the whole panel. */
+.quick-panel-shell.compact .glance-reading { display: grid; grid-template-columns: 28px 8px 42px; align-items: baseline; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.quick-panel-shell.compact .glance-reading em { font-size: 11px; font-style: normal; font-weight: 700; text-align: right; }
+.quick-panel-shell.compact .glance-dot { grid-column: 2; color: var(--muted); font-size: 10px; text-align: center; }
+.quick-panel-shell.compact .glance-reading time { grid-column: 3; color: var(--muted); font-size: 10px; text-align: right; }
+/* A window with no reading at all draws one dash, which belongs on the middle of the
+   reading rather than in its percent cell. */
+.quick-panel-shell.compact .glance-reading em[role="img"] { grid-column: 1 / -1; text-align: center; }
+.quick-today { margin: 0; display: flex; align-items: baseline; gap: 5px; overflow: hidden; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.quick-today strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.quick-panel-shell.compact .quick-freshness { font-size: 10px; }
+.quick-panel-shell.compact .dashboard-link { min-height: 26px; font-size: 11px; gap: 6px; }
+.quick-panel-shell.compact .dashboard-link svg { width: 12px; height: 12px; }
 .quick-freshness { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
 .quick-freshness.failed { color: var(--danger-text); }
 .dashboard-link { margin-top: auto; width: 100%; min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--line-control); border-radius: 5px; color: var(--text); background: var(--raised); cursor: pointer; font-weight: 650; }
@@ -663,17 +699,16 @@ button { font: inherit; }
 .taskbar-provider + .taskbar-provider { padding-left: 8px; border-left: 1px solid var(--taskbar-rule); }
 .taskbar-name { color: var(--taskbar-status-color); font-size: 10px; font-weight: 750; letter-spacing: 0.04em; }
 .taskbar-windows { display: flex; flex-direction: column; justify-content: center; gap: 3px; }
-.taskbar-quota { display: grid; grid-template-columns: 14px 70px 64px; align-items: center; gap: 4px; }
-/* Not ".taskbar-window": the root element carries that class to make the surface
-   transparent, and a bare class selector would style the whole document through it. */
-.taskbar-window-badge { color: var(--taskbar-dim); font-size: 9px; font-weight: 700; text-transform: lowercase; }
+/* The shared glance row, at taskbar scale. */
+.taskbar-widget-shell .glance-row { display: grid; grid-template-columns: 14px 70px 64px; align-items: center; gap: 4px; }
+.taskbar-widget-shell .glance-badge { color: var(--taskbar-dim); font-size: 9px; font-weight: 700; text-transform: lowercase; }
 /* Centred, so a window with no reading yet puts its single dash on the same axis as the
    numbers of the window below it instead of against the right edge. */
-.taskbar-reading { display: flex; align-items: baseline; justify-content: center; white-space: nowrap; }
-.taskbar-reading em { color: var(--taskbar-status-color); font-size: 10px; font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; }
-.taskbar-dot { color: var(--taskbar-dot); font-size: 10px; }
-.taskbar-reading time { color: var(--taskbar-dim); font-size: 9px; font-variant-numeric: tabular-nums; }
-.taskbar-quota i { align-self: center; height: 4px; overflow: hidden; border-radius: 2px; background: var(--taskbar-rule); }
-.taskbar-quota i.unknown { background: repeating-linear-gradient(90deg, var(--track-hatch-soft) 0 5px, var(--track-hatch-strong) 5px 9px); }
-.taskbar-quota b { display: block; height: 100%; border-radius: inherit; background: var(--taskbar-status-color); }
+.taskbar-widget-shell .glance-reading { display: flex; align-items: baseline; justify-content: center; white-space: nowrap; }
+.taskbar-widget-shell .glance-reading em { color: var(--taskbar-status-color); font-size: 10px; font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; }
+.taskbar-widget-shell .glance-dot { color: var(--taskbar-dot); font-size: 10px; }
+.taskbar-widget-shell .glance-reading time { color: var(--taskbar-dim); font-size: 9px; font-variant-numeric: tabular-nums; }
+.taskbar-widget-shell .glance-row i { align-self: center; height: 4px; overflow: hidden; border-radius: 2px; background: var(--taskbar-rule); }
+.taskbar-widget-shell .glance-row i.unknown { background: repeating-linear-gradient(90deg, var(--track-hatch-soft) 0 5px, var(--track-hatch-strong) 5px 9px); }
+.taskbar-widget-shell .glance-row b { display: block; height: 100%; border-radius: inherit; background: var(--taskbar-status-color); }
 .taskbar-unavailable { color: var(--taskbar-status-color); font-size: 10px; white-space: nowrap; }

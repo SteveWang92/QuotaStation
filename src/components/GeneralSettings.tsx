@@ -4,7 +4,13 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import { saveAppSettings, useAppSettings } from "../appSettings";
 import { errorMessage } from "../errors";
-import type { AppSettings, ProviderChoice, TaskbarDisplay, ThemePreference } from "../types";
+import type {
+  AppSettings,
+  ProviderChoice,
+  QuickPanelDensity,
+  TaskbarDisplay,
+  ThemePreference,
+} from "../types";
 
 /**
  * How the application sits on the machine: whether Windows starts it, whether it draws the
@@ -75,6 +81,18 @@ export function GeneralSettings() {
     setError(null);
     try {
       await saveAppSettings({ theme });
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const changeQuickPanelDensity = useCallback(async (density: QuickPanelDensity) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await saveAppSettings({ quickPanelDensity: density });
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -224,6 +242,19 @@ export function GeneralSettings() {
                 <option value="system">Follow Windows</option>
                 <option value="dark">Dark</option>
                 <option value="light">Light</option>
+              </select>
+            </label>
+            <label>
+              Quick panel density
+              <select
+                value={settings?.quickPanelDensity ?? "standard"}
+                disabled={busy || settings === null}
+                onChange={(event) =>
+                  void changeQuickPanelDensity(event.target.value as QuickPanelDensity)
+                }
+              >
+                <option value="standard">Standard</option>
+                <option value="compact">Compact</option>
               </select>
             </label>
             <label>

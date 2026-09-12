@@ -22,6 +22,18 @@ pub enum ProviderLabelStyle {
     Full,
 }
 
+/// How much room the quick panel takes for the same readings.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum QuickPanelDensity {
+    /// A column per provider, each quota window drawn as label, meter and reset time.
+    #[default]
+    Standard,
+    /// One narrow column whatever the provider count, each quota window drawn as the
+    /// taskbar widget's single badge/bar/reading row.
+    Compact,
+}
+
 /// What the Claude Code status line shows, where, and how.
 ///
 /// Segments are named by string rather than by an enum so that a file naming a segment this
@@ -205,6 +217,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub taskbar_widget_display: Option<String>,
     #[serde(default)]
+    pub quick_panel_density: QuickPanelDensity,
+    #[serde(default)]
     pub status_line_provider_labels: ProviderLabelStyle,
     #[serde(default)]
     pub status_line_layout: StatusLineLayout,
@@ -276,6 +290,7 @@ impl Default for AppSettings {
             theme: crate::theme::ThemePreference::default(),
             taskbar_widget_enabled: enabled(),
             taskbar_widget_display: None,
+            quick_panel_density: QuickPanelDensity::default(),
             status_line_provider_labels: ProviderLabelStyle::default(),
             status_line_layout: StatusLineLayout::default(),
             notify_low_quota: enabled(),
@@ -444,6 +459,7 @@ mod tests {
             theme: crate::theme::ThemePreference::Light,
             taskbar_widget_enabled: false,
             taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
+            quick_panel_density: QuickPanelDensity::Compact,
             status_line_provider_labels: ProviderLabelStyle::Full,
             status_line_layout: StatusLineLayout {
                 quota: QuotaFormat { bar: true, ..QuotaFormat::default() },

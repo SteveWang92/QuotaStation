@@ -11,6 +11,7 @@ on `main`, with the matching section below as its notes.
 
 - The Claude Code status line can be laid out in Settings, choosing each segment, its row and order, the quota format, separators and colour, with a live preview.
 - The status line offers optional segments, off until switched on, for the session name, lines changed, session time, Git state, the last seven days' usage, quota resets and more.
+- The quick panel offers a compact density in Settings, fitting every provider into one 180px column with a single line per quota window.
 
 ### Changed
 

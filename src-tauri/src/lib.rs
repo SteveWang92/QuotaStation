@@ -742,6 +742,11 @@ async fn set_app_settings(
             });
         }
     }
+    // Every window holds its own copy of the settings, read when it was created. The
+    // dialog lives in one of them, so without this the others go on drawing the preference
+    // they were started with — a quick panel still laid out at the density it was opened at
+    // days ago.
+    let _ = app.emit("settings-changed", updated.clone());
     if taskbar_changed {
         set_taskbar_widget_visible(&app, updated.taskbar_widget_enabled);
     } else if display_changed && updated.taskbar_widget_enabled {
@@ -1129,6 +1134,9 @@ fn show_main(app: &tauri::AppHandle) {
 /// window; an unscaled width would squeeze the column and reflow the panel taller than the
 /// height the renderer measured.
 const QUICK_PANEL_COLUMN_WIDTH: f64 = 390.0;
+/// The compact density stacks its providers, so the one column holds all of them and the
+/// window is this wide whatever is enabled.
+const QUICK_PANEL_COMPACT_WIDTH: f64 = 180.0;
 /// Only what the window opens at before the renderer has measured anything. Every height
 /// after the first render comes from [`set_quick_panel_height`].
 const QUICK_PANEL_HEIGHT: u32 = 730;
@@ -1166,12 +1174,19 @@ fn resize_quick_panel(
 
 /// The window rect the panel needs for `providers` columns, given the height it already holds.
 fn quick_panel_size(
+    density: settings::QuickPanelDensity,
     providers: usize,
     height: u32,
     scale_factor: f64,
     frame: tauri::PhysicalSize<u32>,
 ) -> tauri::PhysicalSize<u32> {
-    let columns = QUICK_PANEL_COLUMN_WIDTH * providers.clamp(1, 2) as f64 * scale_factor.max(1.0);
+    let layout = match density {
+        settings::QuickPanelDensity::Standard => {
+            QUICK_PANEL_COLUMN_WIDTH * providers.clamp(1, 2) as f64
+        }
+        settings::QuickPanelDensity::Compact => QUICK_PANEL_COMPACT_WIDTH,
+    };
+    let columns = layout * scale_factor.max(1.0);
     tauri::PhysicalSize::new((columns.round() as u32).saturating_add(frame.width), height)
 }
 
@@ -1313,6 +1328,7 @@ fn toggle_quick_panel_beside(
     let frame = quick_panel_frame(&panel);
     let current_height = panel.outer_size().map(|size| size.height).unwrap_or(QUICK_PANEL_HEIGHT);
     let requested_size = quick_panel_size(
+        state.settings().quick_panel_density,
         state.quota_column_count(),
         current_height,
         panel.scale_factor().unwrap_or(1.0),
@@ -1459,19 +1475,30 @@ mod quick_panel_tests {
     #[test]
     fn a_column_is_reserved_in_layout_pixels_whatever_the_display_scales_by() {
         let frame = tauri::PhysicalSize::new(18, 10);
-        assert_eq!(quick_panel_size(2, 600, 1.0, frame).width, 780 + 18);
-        assert_eq!(quick_panel_size(2, 600, 1.25, frame).width, 975 + 18);
-        assert_eq!(quick_panel_size(1, 600, 1.0, frame).width, 390 + 18);
+        let standard = settings::QuickPanelDensity::Standard;
+        assert_eq!(quick_panel_size(standard, 2, 600, 1.0, frame).width, 780 + 18);
+        assert_eq!(quick_panel_size(standard, 2, 600, 1.25, frame).width, 975 + 18);
+        assert_eq!(quick_panel_size(standard, 1, 600, 1.0, frame).width, 390 + 18);
         assert_eq!(
-            quick_panel_size(3, 600, 1.0, frame).width,
+            quick_panel_size(standard, 3, 600, 1.0, frame).width,
             780 + 18,
             "two columns is the widest the panel goes"
         );
         assert_eq!(
-            quick_panel_size(2, 600, 1.0, frame).height,
+            quick_panel_size(standard, 2, 600, 1.0, frame).height,
             600,
             "the height is passed through"
         );
+    }
+
+    #[test]
+    fn the_compact_density_is_one_column_whatever_the_provider_count() {
+        let frame = tauri::PhysicalSize::new(18, 10);
+        let compact = settings::QuickPanelDensity::Compact;
+        for providers in [1, 2, 3] {
+            assert_eq!(quick_panel_size(compact, providers, 600, 1.0, frame).width, 180 + 18);
+        }
+        assert_eq!(quick_panel_size(compact, 2, 600, 1.25, frame).width, 225 + 18);
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowLeft, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { logActivity } from "./activity";
+import { watchAppSettings } from "./appSettings";
 import { hourlyUsageMatchesRange } from "./charts";
 import { ProviderSetup } from "./components/ProviderSetup";
 import { QuickPanel } from "./components/QuickPanel";
@@ -75,6 +76,7 @@ document.documentElement.classList.toggle(
   CURRENT_WINDOW_LABEL === "quick-panel",
 );
 watchTheme(IS_TASKBAR_WIDGET);
+watchAppSettings();
 
 /**
  * The two reads behind a provider fail independently — the quota windows can be current

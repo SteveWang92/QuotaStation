@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import { errorMessage } from "./errors";
 import type { AppSettings } from "./types";
@@ -81,6 +82,16 @@ export async function reloadAppSettings(): Promise<void> {
       loading = null;
     });
   await loading;
+}
+
+/**
+ * Keeps this window's copy of the settings current for as long as it is open. Called once,
+ * outside React, exactly as the theme watch is: each window read the settings when it was
+ * created and the dialog that changes them lives in one of them, so without this the
+ * others go on drawing the preference they were started with.
+ */
+export function watchAppSettings(): void {
+  void listen<AppSettings>("settings-changed", ({ payload }) => publish(payload));
 }
 
 /** The settings as last read or written, with a visible failure and retry path. */
