@@ -910,44 +910,61 @@ fn set_claude_notifications(installed: bool) -> Result<bool, String> {
     Ok(notifications::installed())
 }
 
+/// The one two-second tick the application runs on.
+///
+/// Three things have to be noticed at about this rate, and none of them costs anything next
+/// to the wake-up itself: a finished Claude Code turn the hook left behind, a Windows theme
+/// change, and a taskbar that moved out from under the docked status. One ticker keeps them
+/// on the same schedule instead of waking the process three times over.
+///
+/// `finished_turns` is off for a demo start, which has no hook and no session to report.
+fn watch_the_desktop(app: tauri::AppHandle, finished_turns: bool) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticks = tokio::time::interval(Duration::from_secs(2));
+        let mut last_theme = theme::snapshot(current_preference(&app));
+        loop {
+            ticks.tick().await;
+            if finished_turns {
+                raise_finished_turns(&app);
+            }
+            last_theme = follow_system_theme(&app, last_theme);
+            if app.state::<Arc<AppState>>().settings().taskbar_widget_enabled {
+                schedule_taskbar_widget_placement(&app);
+            }
+        }
+    });
+}
+
 /// Raises the desktop notification a finished Claude Code turn left behind.
 ///
 /// The hook process cannot show one itself — it has no window, no event loop, and a few
 /// milliseconds to live — so it writes an event and this picks it up. Polling one path is
 /// what that costs; the alternative is a filesystem watcher for a file written a handful of
 /// times an hour.
-fn watch_for_finished_turns(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let mut ticks = tokio::time::interval(Duration::from_secs(2));
-        loop {
-            ticks.tick().await;
-            // The title says which event this is, the same way the quota notifications do.
-            // Windows already prints the application's name above it, so spending the title
-            // on "QuotaStation" left every notification looking alike in the action centre.
-            for event in notifications::take_pending(jiff::Timestamp::now().as_second()) {
-                let body = finished_body(&event);
-                match event.terminal {
-                    // Clicking goes back to the terminal the turn ran in. The tab inside it
-                    // is the user's to pick: nothing outside Windows Terminal can choose one.
-                    Some(target) => {
-                        alerts::raise_with_action(
-                            &app,
-                            "Claude Code finished responding",
-                            &body,
-                            move || {
-                                if !terminal::focus(target) {
-                                    log::write(
-                                        "the terminal a finished turn ran in could not be raised",
-                                    );
-                                }
-                            },
-                        );
-                    }
-                    None => alerts::raise(&app, "Claude Code finished responding", &body),
-                }
+fn raise_finished_turns(app: &tauri::AppHandle) {
+    // The title says which event this is, the same way the quota notifications do. Windows
+    // already prints the application's name above it, so spending the title on
+    // "QuotaStation" left every notification looking alike in the action centre.
+    for event in notifications::take_pending(jiff::Timestamp::now().as_second()) {
+        let body = finished_body(&event);
+        match event.terminal {
+            // Clicking goes back to the terminal the turn ran in. The tab inside it is the
+            // user's to pick: nothing outside Windows Terminal can choose one.
+            Some(target) => {
+                alerts::raise_with_action(
+                    app,
+                    "Claude Code finished responding",
+                    &body,
+                    move || {
+                        if !terminal::focus(target) {
+                            log::write("the terminal a finished turn ran in could not be raised");
+                        }
+                    },
+                );
             }
+            None => alerts::raise(app, "Claude Code finished responding", &body),
         }
-    });
+    }
 }
 
 /// The palettes every window should be drawing in right now.
@@ -977,27 +994,21 @@ fn apply_theme(app: &tauri::AppHandle, preference: theme::ThemePreference) -> th
     snapshot
 }
 
-/// Notices a Windows theme change while QuotaStation is running.
+/// Notices a Windows theme change while QuotaStation is running, and answers with the
+/// palettes now in force.
 ///
 /// Windows announces this to windows that have not been told what theme to be, and every
 /// window here has been, so the announcement never arrives. Reading two registry values is
-/// cheap enough to do on the same tick everything else in this application already runs on,
-/// and only a change is published.
-fn watch_for_system_theme_changes(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let mut ticks = tokio::time::interval(Duration::from_secs(2));
-        let mut last = theme::snapshot(current_preference(&app));
-        loop {
-            ticks.tick().await;
-            let preference = current_preference(&app);
-            let snapshot = theme::snapshot(preference);
-            if snapshot == last {
-                continue;
-            }
-            last = snapshot;
-            apply_theme(&app, preference);
-        }
-    });
+/// cheap enough to do on the tick everything else in this application already runs on, and
+/// only a change is published.
+fn follow_system_theme(app: &tauri::AppHandle, last: theme::ThemeSnapshot) -> theme::ThemeSnapshot {
+    let preference = current_preference(app);
+    let snapshot = theme::snapshot(preference);
+    if snapshot == last {
+        return last;
+    }
+    apply_theme(app, preference);
+    snapshot
 }
 
 fn current_preference(app: &tauri::AppHandle) -> theme::ThemePreference {
@@ -1775,10 +1786,9 @@ pub fn run() {
             if !demo {
                 reinstall::restore_after_reinstall(app.handle());
                 autostart::refresh_logon_entry(app.handle());
-                watch_for_finished_turns(app.handle().clone());
             }
             apply_theme(app.handle(), state.settings().theme);
-            watch_for_system_theme_changes(app.handle().clone());
+            watch_the_desktop(app.handle().clone(), !demo);
             if state.settings().taskbar_widget_enabled {
                 set_taskbar_widget_visible(app.handle(), true);
             }
@@ -1816,17 +1826,6 @@ pub fn run() {
                     interval.tick().await;
                     if let Err(error) = retention_storage.run_retention_if_due().await {
                         log::write(format!("normalized data retention failed: {error:#}"));
-                    }
-                }
-            });
-            let app_handle = app.handle().clone();
-            let taskbar_state = app.state::<Arc<AppState>>().inner().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(2));
-                loop {
-                    interval.tick().await;
-                    if taskbar_state.settings().taskbar_widget_enabled {
-                        schedule_taskbar_widget_placement(&app_handle);
                     }
                 }
             });
