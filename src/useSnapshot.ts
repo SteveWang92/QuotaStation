@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import { errorMessage } from "./errors";
 import type { WorkspaceSnapshot } from "./types";
+import { onScreen } from "./visible";
 
 const POLL_INTERVAL_MS = 30_000;
 const FIRST_RETRY_MS = 250;
@@ -74,7 +75,13 @@ export function useSnapshot(
         if (!disposed) setError(errorMessage(cause));
       });
 
-    const poll = window.setInterval(() => void load(), POLL_INTERVAL_MS);
+    // The poll only reconciles: the core pushes every change as it happens, and this is the
+    // net under a push that was missed. A hidden window has nothing to reconcile against, so
+    // it skips the read and catches up on the first tick after it is shown again.
+    const reconcile = async () => {
+      if (await onScreen()) await load();
+    };
+    const poll = window.setInterval(() => void reconcile(), POLL_INTERVAL_MS);
     return () => {
       disposed = true;
       stopListening();

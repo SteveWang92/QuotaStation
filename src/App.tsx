@@ -37,6 +37,7 @@ import type {
   WorkspaceSnapshot,
 } from "./types";
 import { useSnapshot } from "./useSnapshot";
+import { onScreen } from "./visible";
 import { EMPTY_WORKSPACE, resolveProviderKey } from "./workspace";
 
 const INITIAL_RANGE = createPresetRange("today");
@@ -186,7 +187,7 @@ function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
-  const [historyEventError, setHistoryEventError] = useState<string | null>(null);
+  const [eventError, setEventError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
   // Settings is a page rather than an overlay: it is read and worked through — a source
   // set up, then checked, then the restart history read — and a dialog over the dashboard
@@ -291,7 +292,7 @@ function Dashboard() {
 
   // The shared subscription retries until the core is ready, so the first usage
   // range read waits for it instead of failing against an unmanaged state.
-  const onSnapshot = useCallback(
+  const readForSnapshot = useCallback(
     (nextWorkspace: WorkspaceSnapshot) => {
       void loadDiagnostics();
       const rangeProvider = resolveProviderKey(nextWorkspace.providers, providerRef.current);
@@ -316,6 +317,25 @@ function Dashboard() {
       }
     },
     [loadDiagnostics, loadUsageRange],
+  );
+
+  // A dismissed dashboard is hidden rather than closed, and the core goes on sending it every
+  // snapshot. Answering one costs a diagnostics read and a whole range read — several
+  // database queries — for a window nobody is looking at, so the reads wait until it is back
+  // on screen and are then made against the newest snapshot rather than the one that was
+  // skipped.
+  const latestWorkspace = useRef(EMPTY_WORKSPACE);
+  const readsDeferred = useRef(false);
+
+  const onSnapshot = useCallback(
+    (nextWorkspace: WorkspaceSnapshot) => {
+      latestWorkspace.current = nextWorkspace;
+      void onScreen().then((visible) => {
+        if (visible) readForSnapshot(nextWorkspace);
+        else readsDeferred.current = true;
+      });
+    },
+    [readForSnapshot],
   );
 
   const { workspace, error: snapshotError, loaded } = useSnapshot(EMPTY_WORKSPACE, onSnapshot);
@@ -375,30 +395,42 @@ function Dashboard() {
 
   useEffect(() => {
     let disposed = false;
-    let stopListening = () => {};
+    const stops: Array<() => void> = [];
+    const keep = (unlisten: () => void) => {
+      if (disposed) unlisten();
+      else stops.push(unlisten);
+    };
+    const failed = (error: unknown) => {
+      if (!disposed) setEventError(errorMessage(error));
+    };
     void listen("history-updated", () => {
       rangeRequested.current = true;
       void loadUsageRange(activeRangeRef.current, providerRef.current, deviceRef.current, {
         background: true,
       });
     })
-      .then((unlisten) => {
-        if (disposed) unlisten();
-        else stopListening = unlisten;
+      .then(keep)
+      .catch(failed);
+    // Showing the dashboard focuses it, so this is where a window that was hidden catches up
+    // on the snapshots it let pass.
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (!focused || !readsDeferred.current) return;
+        readsDeferred.current = false;
+        readForSnapshot(latestWorkspace.current);
       })
-      .catch((error) => {
-        if (!disposed) setHistoryEventError(errorMessage(error));
-      });
+      .then(keep)
+      .catch(failed);
     return () => {
       disposed = true;
-      stopListening();
+      for (const stop of stops) stop();
     };
-  }, [loadUsageRange]);
+  }, [loadUsageRange, readForSnapshot]);
 
   const showClaudeSettings = workspace.providers.some(
     (provider) => provider.provider === "claude" && !provider.remoteUsageOnly,
   );
-  const interfaceError = snapshotError ?? refreshError ?? historyEventError ?? diagnosticsError;
+  const interfaceError = snapshotError ?? refreshError ?? eventError ?? diagnosticsError;
   // The panel is behind a control now, so anything wrong inside it has to be visible from
   // outside it; otherwise a failed acquisition path is only found by looking for it.
   // Every quota window on display right now, in the vocabulary the dismissed early-restart

@@ -17,6 +17,7 @@ on `main`, with the matching section below as its notes.
 ### Changed
 
 - The activity log records a line whose content has not changed as a repeat count rather than writing it again, which roughly halves the file.
+- A hidden window no longer reads usage data or diagnostics, so the dashboard costs nothing while it is dismissed and catches up when it is shown again.
 
 ## [1.1.0] - 2026-09-02
 
