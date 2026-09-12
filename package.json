@@ -33,7 +33,10 @@
     "build:debug": "tauri build --debug --no-bundle",
     "build:release": "tauri build --no-bundle",
     "build:installer": "tauri build --bundles nsis",
-    "icons": "node scripts/icons.mjs"
+    "icons": "node scripts/icons.mjs",
+    "release:prep": "node scripts/release.mjs prep",
+    "release:reversion": "node scripts/release.mjs reversion",
+    "release:ship": "node scripts/release.mjs ship"
   },
   "engines": {
     "node": "24.18.1"
