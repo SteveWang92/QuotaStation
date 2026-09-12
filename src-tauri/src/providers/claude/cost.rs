@@ -1,4 +1,5 @@
-//! Claude Code's own cost accounting, beside the one QuotaStation computes.
+//! Claude Code's sessions, each priced from the pricing catalog and, where the client
+//! recorded a figure of its own, beside that too.
 //!
 //! Claude Code writes a `cost-state` record into a session's log carrying what it charged
 //! that session to. The usage parser ignores that record type, so reading it here adds a
@@ -8,9 +9,9 @@
 //! API-equivalent estimates and the pair says whether the pinned pricing catalog still
 //! agrees with Anthropic's own accounting.
 //!
-//! The comparison covers the sessions that carry the record and no others: Claude Code
-//! began writing it partway through its life, and a session logged before that can never
-//! be filled in.
+//! Every session the parser has entries for is listed. The client's own figure is there
+//! only where the record is: Claude Code began writing it partway through its life, and a
+//! session logged before that can never be filled in.
 
 use std::{
     collections::BTreeMap,
@@ -29,7 +30,7 @@ use crate::{
     providers::ProviderKind,
 };
 
-/// Every session both sides priced, oldest first.
+/// Every session the parser read, oldest first.
 pub async fn read_session_costs() -> Result<Vec<SessionCost>> {
     tokio::task::spawn_blocking(read_session_costs_blocking)
         .await
@@ -37,35 +38,49 @@ pub async fn read_session_costs() -> Result<Vec<SessionCost>> {
 }
 
 fn read_session_costs_blocking() -> Result<Vec<SessionCost>> {
-    let reported = reported_costs(&crate::providers::usage_files(ProviderKind::Claude)?);
-    if reported.is_empty() {
-        return Ok(Vec::new());
-    }
     let entries = load_entries(&SharedArgs { json: true, ..SharedArgs::default() }, None)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    Ok(compare(reported, computed_costs(&entries)))
+    let reported = reported_costs(&crate::providers::usage_files(ProviderKind::Claude)?);
+    Ok(sessions(computed_costs(&entries), reported))
 }
 
 /// What Claude Code recorded for each session it recorded anything for.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Reported {
     cost_usd: f64,
-    started_at_ms: i64,
     complete: bool,
-    total_duration_ms: i64,
     api_duration_ms: i64,
     lines_added: i64,
     lines_removed: i64,
 }
 
 /// What the pricing catalog makes of one session's entries.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Computed {
     cost_usd: f64,
     independent: bool,
     usage: TokenUsage,
+    /// The first and last entry of the session, which is where it is placed and how long
+    /// it is said to have run. The client's own duration is not used for that: only some
+    /// sessions have one, and a column that changed meaning between rows would be worse
+    /// than one that measures every session the same way.
+    first_entry_ms: i64,
+    last_entry_ms: i64,
     /// What each model cost, so the session can name them most expensive first.
     model_costs: BTreeMap<String, f64>,
+}
+
+impl Computed {
+    fn opened_at(first_entry_ms: i64) -> Self {
+        Self {
+            cost_usd: 0.0,
+            independent: true,
+            usage: TokenUsage::default(),
+            first_entry_ms,
+            last_entry_ms: first_entry_ms,
+            model_costs: BTreeMap::new(),
+        }
+    }
 }
 
 /// The record as Claude Code writes it. Only the fields the comparison needs are read;
@@ -79,14 +94,11 @@ struct CostState {
     // The only field whose name is not the camel case of its meaning.
     #[serde(rename = "totalCostUSD")]
     total_cost_usd: f64,
-    start_time: i64,
     #[serde(default)]
     has_unknown_model_cost: bool,
-    /// How long the session ran, and how much of that it spent waiting on the provider.
-    /// Defaulted like the flag above, so a record written before Claude Code carried one
-    /// of these still compares its costs rather than dropping out of the table.
-    #[serde(default)]
-    total_duration: i64,
+    /// How much of the session was spent waiting on the provider, and how much code it
+    /// changed. Defaulted like the flag above, so a record written before Claude Code
+    /// carried one of these still reports its cost rather than dropping out of the list.
     #[serde(default, rename = "totalAPIDuration")]
     total_api_duration: i64,
     #[serde(default)]
@@ -119,9 +131,7 @@ fn read_reported_costs(file: &Path, reported: &mut BTreeMap<String, Reported>) {
         }
         let entry = Reported {
             cost_usd: record.total_cost_usd,
-            started_at_ms: record.start_time,
             complete: !record.has_unknown_model_cost,
-            total_duration_ms: record.total_duration,
             api_duration_ms: record.total_api_duration,
             lines_added: record.total_lines_added,
             lines_removed: record.total_lines_removed,
@@ -147,9 +157,12 @@ fn read_reported_costs(file: &Path, reported: &mut BTreeMap<String, Reported>) {
 fn computed_costs(entries: &[ccusage_core::LoadedEntry]) -> BTreeMap<String, Computed> {
     let mut computed: BTreeMap<String, Computed> = BTreeMap::new();
     for entry in entries {
+        let moment = entry.timestamp.as_millis();
         let session = computed
             .entry(entry.session_id.to_string())
-            .or_insert(Computed { independent: true, ..Computed::default() });
+            .or_insert_with(|| Computed::opened_at(moment));
+        session.first_entry_ms = session.first_entry_ms.min(moment);
+        session.last_entry_ms = session.last_entry_ms.max(moment);
         session.cost_usd += entry.cost;
         session.independent &= entry.data.cost_usd.is_none();
         let usage = entry.data.message.usage;
@@ -176,30 +189,31 @@ fn models_of(computed: &Computed) -> Vec<String> {
     models.into_iter().map(|(model, _)| model.clone()).collect()
 }
 
-/// The sessions both sides know about. One the parser has no entries for is left out
-/// rather than compared against a nought it never spent — a session can be summarised in a
-/// log whose usage records were replayed into another one and deduplicated away.
-fn compare(
-    reported: BTreeMap<String, Reported>,
+/// Every session the parser read, with the client's own figures attached where it
+/// recorded them. A session the client summarised but the parser has no entries for is
+/// left out rather than listed with a nought it never spent — a session can be summarised
+/// in a log whose usage records were replayed into another one and deduplicated away.
+fn sessions(
     computed: BTreeMap<String, Computed>,
+    mut reported: BTreeMap<String, Reported>,
 ) -> Vec<SessionCost> {
-    let mut sessions: Vec<SessionCost> = reported
+    let mut sessions: Vec<SessionCost> = computed
         .into_iter()
-        .filter_map(|(session_id, reported)| {
-            let computed = computed.get(&session_id)?;
+        .filter_map(|(session_id, computed)| {
+            let reported = reported.remove(&session_id);
             Some(SessionCost {
-                session_started_at: started_at(reported.started_at_ms)?,
+                session_started_at: started_at(computed.first_entry_ms)?,
                 session_id,
-                reported_cost_usd: reported.cost_usd,
+                duration_ms: computed.last_entry_ms - computed.first_entry_ms,
                 computed_cost_usd: computed.cost_usd,
                 independent: computed.independent,
-                reported_complete: reported.complete,
-                total_duration_ms: reported.total_duration_ms,
-                api_duration_ms: reported.api_duration_ms,
-                lines_added: reported.lines_added,
-                lines_removed: reported.lines_removed,
+                reported_cost_usd: reported.map(|reported| reported.cost_usd),
+                reported_complete: reported.map(|reported| reported.complete),
+                api_duration_ms: reported.map(|reported| reported.api_duration_ms),
+                lines_added: reported.map(|reported| reported.lines_added),
+                lines_removed: reported.map(|reported| reported.lines_removed),
                 usage: computed.usage.clone(),
-                models: models_of(computed),
+                models: models_of(&computed),
             })
         })
         .collect();
@@ -211,33 +225,17 @@ fn started_at(milliseconds: i64) -> Option<String> {
     jiff::Timestamp::from_millisecond(milliseconds).ok().map(|start| start.to_string())
 }
 
-/// How far apart the two sides of a set of sessions are, as a share of what the client
-/// reported. `None` when nothing comparable was stored, which is the ordinary state of a
-/// machine whose sessions all predate the record.
-pub fn gap_percent(sessions: &[SessionCost]) -> Option<f64> {
-    let reported: f64 = sessions.iter().map(|session| session.reported_cost_usd).sum();
-    let computed: f64 = sessions.iter().map(|session| session.computed_cost_usd).sum();
-    (reported > 0.0).then(|| (computed - reported) / reported * 100.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::session_gap_percent;
 
     fn reported(cost_usd: f64) -> Reported {
-        Reported {
-            cost_usd,
-            started_at_ms: 1_788_187_073_329,
-            complete: true,
-            total_duration_ms: 0,
-            api_duration_ms: 0,
-            lines_added: 0,
-            lines_removed: 0,
-        }
+        Reported { cost_usd, complete: true, api_duration_ms: 0, lines_added: 0, lines_removed: 0 }
     }
 
     fn computed(cost_usd: f64) -> Computed {
-        Computed { cost_usd, independent: true, ..Computed::default() }
+        Computed { cost_usd, ..Computed::opened_at(1_788_187_073_329) }
     }
 
     #[test]
@@ -271,27 +269,45 @@ mod tests {
     }
 
     #[test]
-    fn a_session_the_parser_has_no_entries_for_is_not_compared() {
-        let sessions = compare(
+    fn a_session_the_parser_has_no_entries_for_is_not_listed() {
+        let listed = sessions(
+            BTreeMap::from([("known".to_string(), computed(2.2))]),
             BTreeMap::from([
                 ("known".to_string(), reported(2.0)),
                 ("gone".to_string(), reported(3.0)),
             ]),
-            BTreeMap::from([("known".to_string(), computed(2.2))]),
         );
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].session_id, "known");
-        assert_eq!(sessions[0].computed_cost_usd, 2.2);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id, "known");
+        assert_eq!(listed[0].computed_cost_usd, 2.2);
+    }
+
+    #[test]
+    fn a_session_the_client_never_priced_is_listed_without_the_clients_figures() {
+        let listed = sessions(
+            BTreeMap::from([
+                ("priced".to_string(), computed(2.2)),
+                ("unpriced".to_string(), computed(4.0)),
+            ]),
+            BTreeMap::from([("priced".to_string(), reported(2.0))]),
+        );
+        let unpriced =
+            listed.iter().find(|session| session.session_id == "unpriced").expect("the session");
+        assert_eq!(unpriced.computed_cost_usd, 4.0);
+        assert_eq!(unpriced.reported_cost_usd, None);
+        assert_eq!(unpriced.lines_added, None);
+        // The unpriced session's own cost must not move a comparison it is not part of.
+        assert!((session_gap_percent(&listed).expect("a gap") - 10.0).abs() < 1e-9);
     }
 
     #[test]
     fn the_gap_is_measured_against_what_the_client_reported() {
-        let sessions = compare(
-            BTreeMap::from([("a".to_string(), reported(2.0))]),
+        let listed = sessions(
             BTreeMap::from([("a".to_string(), computed(2.2))]),
+            BTreeMap::from([("a".to_string(), reported(2.0))]),
         );
-        assert!((gap_percent(&sessions).expect("a gap") - 10.0).abs() < 1e-9);
-        assert_eq!(gap_percent(&[]), None);
+        assert!((session_gap_percent(&listed).expect("a gap") - 10.0).abs() < 1e-9);
+        assert_eq!(session_gap_percent(&[]), None);
     }
 
     /// Compares this machine's own sessions. Ignored by default because it needs a
@@ -302,15 +318,17 @@ mod tests {
     async fn claude_session_costs_pair_with_the_computed_estimate() {
         let sessions = read_session_costs().await.expect("read session costs");
         println!(
-            "{} session(s) compared, {:.1}% apart, {} independent",
+            "{} session(s) read, {:.1}% apart, {} independent",
             sessions.len(),
-            gap_percent(&sessions).unwrap_or_default(),
+            session_gap_percent(&sessions).unwrap_or_default(),
             sessions.iter().filter(|session| session.independent).count()
         );
-        for session in sessions.iter().take(5) {
+        for session in sessions.iter().rev().take(5) {
             println!(
-                "{}: reported ${:.4} computed ${:.4}",
-                session.session_started_at, session.reported_cost_usd, session.computed_cost_usd
+                "{}: reported {} computed ${:.4}",
+                session.session_started_at,
+                session.reported_cost_usd.map_or("none".to_string(), |cost| format!("${cost:.4}")),
+                session.computed_cost_usd
             );
         }
     }

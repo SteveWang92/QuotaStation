@@ -263,7 +263,7 @@ export function UsageSummary({
       : `${formatRangeDate(range.startDate)} – ${formatRangeDate(range.endDate)}`;
   const sessionNotes = [
     activeProvider === "codex"
-      ? "Only Claude Code records a cost of its own, so there is nothing here to compare it against."
+      ? "Codex records no cost of its own, so its sessions carry the catalog's estimate alone."
       : null,
     selection.startHour === undefined
       ? null

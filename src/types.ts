@@ -240,26 +240,32 @@ export interface UsageRangeSnapshot {
 }
 
 /**
- * One session priced twice: by the provider's own client, and by the pricing catalog this
- * machine parses its logs with. Neither figure is a bill — nothing is charged per token on
- * a subscription — so the pair says whether the local estimate still tracks the vendor's
- * own accounting.
+ * One session as the parser read it, with what the provider's own client said it cost
+ * where the client said anything at all.
+ *
+ * Every session the parser has entries for is here. Claude Code records a cost of its own
+ * only in recent sessions and Codex records none, so the client's side is optional.
+ * Neither cost is a bill — nothing is charged per token on a subscription — so the pair,
+ * where there is a pair, says whether the local estimate still tracks the vendor's own
+ * accounting.
  */
 export interface SessionCost {
   /** The client's own identifier. It never leaves this machine. */
   sessionId: string;
   sessionStartedAt: string;
-  reportedCostUsd: number;
+  /** From the session's first entry to its last, measured the same way for every session. */
+  durationMs: number;
   computedCostUsd: number;
   /** False once the client's own per-message costs priced the session, which makes both
       figures the same number and their agreement meaningless. */
   independent: boolean;
+  /** All null for a session whose client recorded nothing. */
+  reportedCostUsd: number | null;
   /** False when the client met a model it has no price for, so its total is short. */
-  reportedComplete: boolean;
-  totalDurationMs: number;
-  apiDurationMs: number;
-  linesAdded: number;
-  linesRemoved: number;
+  reportedComplete: boolean | null;
+  apiDurationMs: number | null;
+  linesAdded: number | null;
+  linesRemoved: number | null;
   usage: TokenUsage;
   /** The models the session used, most expensive first. */
   models: string[];
@@ -268,10 +274,12 @@ export interface SessionCost {
 export interface SessionCostSnapshot {
   /** Newest first. */
   sessions: SessionCost[];
+  /** Both sums cover only the sessions the client also priced, so the two can be compared
+      with each other. */
   reportedCostUsd: number;
   computedCostUsd: number;
-  /** How far back comparisons are kept, which is what makes an empty older range
-      explainable rather than a claim that nothing was done. */
+  /** How far back sessions are kept, which is what makes an empty older range explainable
+      rather than a claim that nothing was done. */
   retentionDays: number;
 }
 

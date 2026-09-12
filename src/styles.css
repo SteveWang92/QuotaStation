@@ -433,6 +433,7 @@ button { font: inherit; }
 .daily-table-row strong { color: var(--text); font-weight: 590; }
 .daily-table-header { min-height: 32px; position: sticky; top: 0; z-index: 1; border-top: 1px solid var(--line); color: var(--muted); background: var(--surface); font-size: 10px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; }
 .session-card { display: flex; flex-direction: column; gap: 14px; }
+.session-card .card-heading { margin-bottom: 0; align-items: center; }
 .session-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .session-table {
   width: 100%;

@@ -11,7 +11,7 @@ on `main`, with the matching section below as its notes.
 
 - The Claude Code status line can be laid out in Settings, choosing each segment, its row and order, the quota format, separators and colour, with a live preview.
 - The status line offers optional segments, off until switched on, for the session name, lines changed, session time, Git state, the last seven days' usage, quota resets and more.
-- The usage history can be read by session as well as by day, listing each Claude Code session's own cost against QuotaStation's estimate of it, with its tokens, models, duration and lines changed.
+- The usage history can be read by session as well as by day, listing every Codex and Claude Code session with its cost, tokens, models, duration and lines changed, and a filter for the sessions whose client reported a cost of its own to compare against.
 - The quick panel offers a compact density in Settings, fitting every provider into one 180px column with a line per quota window, a pace marker on each, a seven-day token trend, the last quota restart and today's model mix.
 
 ### Changed

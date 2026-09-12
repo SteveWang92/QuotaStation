@@ -56,11 +56,11 @@ fn session_cost_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionCost {
     SessionCost {
         session_id: row.get("session_id"),
         session_started_at: row.get("session_started_at"),
-        reported_cost_usd: row.get("reported_cost_usd"),
+        duration_ms: row.get("duration_ms"),
         computed_cost_usd: row.get("computed_cost_usd"),
         independent: row.get("independent"),
+        reported_cost_usd: row.get("reported_cost_usd"),
         reported_complete: row.get("reported_complete"),
-        total_duration_ms: row.get("total_duration_ms"),
         api_duration_ms: row.get("api_duration_ms"),
         lines_added: row.get("lines_added"),
         lines_removed: row.get("lines_removed"),
@@ -756,8 +756,8 @@ impl Storage {
         Ok(())
     }
 
-    /// Stores what a provider's own client said each session cost beside what this
-    /// machine's catalog makes of it. A session is written once and then corrected, since
+    /// Stores each session the parser read, priced from the catalog, with the client's own
+    /// figures where it recorded any. A session is written once and then corrected, since
     /// a session logged today is summarised again once more work goes through it.
     pub async fn save_session_costs(
         &self,
@@ -770,19 +770,19 @@ impl Storage {
         for session in sessions {
             sqlx::query(
                 "INSERT INTO session_costs \
-                 (provider_instance_id, session_id, session_started_at, reported_cost_usd, \
-                  computed_cost_usd, independent, reported_complete, total_duration_ms, \
+                 (provider_instance_id, session_id, session_started_at, duration_ms, \
+                  computed_cost_usd, independent, reported_cost_usd, reported_complete, \
                   api_duration_ms, lines_added, lines_removed, input_tokens, cache_read_tokens, \
                   output_tokens, reasoning_tokens, total_tokens, models, parser_revision, \
                   pricing_catalog_revision, updated_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(provider_instance_id, session_id) DO UPDATE SET \
                  session_started_at=excluded.session_started_at, \
-                 reported_cost_usd=excluded.reported_cost_usd, \
+                 duration_ms=excluded.duration_ms, \
                  computed_cost_usd=excluded.computed_cost_usd, \
                  independent=excluded.independent, \
+                 reported_cost_usd=excluded.reported_cost_usd, \
                  reported_complete=excluded.reported_complete, \
-                 total_duration_ms=excluded.total_duration_ms, \
                  api_duration_ms=excluded.api_duration_ms, \
                  lines_added=excluded.lines_added, \
                  lines_removed=excluded.lines_removed, \
@@ -799,11 +799,11 @@ impl Storage {
             .bind(provider_id)
             .bind(&session.session_id)
             .bind(&session.session_started_at)
-            .bind(session.reported_cost_usd)
+            .bind(session.duration_ms)
             .bind(session.computed_cost_usd)
             .bind(session.independent)
+            .bind(session.reported_cost_usd)
             .bind(session.reported_complete)
-            .bind(session.total_duration_ms)
             .bind(session.api_duration_ms)
             .bind(session.lines_added)
             .bind(session.lines_removed)
@@ -823,8 +823,8 @@ impl Storage {
         Ok(())
     }
 
-    /// Every session of one provider that started inside a range, newest first, with the
-    /// two sides of the comparison summed.
+    /// Every session that started inside a range, newest first, with the costs of the
+    /// comparable ones summed. `None` is the combined view, as it is for usage.
     ///
     /// The range is read in local days like every other history query, because the dates
     /// on screen are the ones the reader picked in their own timezone.
@@ -839,8 +839,8 @@ impl Storage {
             None => None,
         };
         let rows = sqlx::query(
-            "SELECT session_id, session_started_at, reported_cost_usd, computed_cost_usd, \
-             independent, reported_complete, total_duration_ms, api_duration_ms, lines_added, \
+            "SELECT session_id, session_started_at, duration_ms, computed_cost_usd, \
+             independent, reported_cost_usd, reported_complete, api_duration_ms, lines_added, \
              lines_removed, input_tokens, cache_read_tokens, output_tokens, reasoning_tokens, \
              total_tokens, models \
              FROM session_costs \
@@ -855,8 +855,13 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
         let sessions: Vec<SessionCost> = rows.iter().map(session_cost_from_row).collect();
-        let reported_cost_usd = sessions.iter().map(|session| session.reported_cost_usd).sum();
-        let computed_cost_usd = sessions.iter().map(|session| session.computed_cost_usd).sum();
+        // Only the sessions the client also priced belong in either sum: adding every
+        // computed cost to a reported total that covers a few of them would state a gap
+        // that measures which sessions carry the record, not how the two sides differ.
+        let compared = sessions.iter().filter(|session| session.reported_cost_usd.is_some());
+        let reported_cost_usd =
+            compared.clone().filter_map(|session| session.reported_cost_usd).sum();
+        let computed_cost_usd = compared.map(|session| session.computed_cost_usd).sum();
         Ok(SessionCostSnapshot {
             sessions,
             reported_cost_usd,
@@ -2135,18 +2140,23 @@ mod tests {
         assert_eq!(days.days.len(), 1, "the daily rows are untouched by the hourly cutoff");
     }
 
-    fn session(session_id: &str, started_at: &str, reported: f64, computed: f64) -> SessionCost {
+    fn session(
+        session_id: &str,
+        started_at: &str,
+        reported: Option<f64>,
+        computed: f64,
+    ) -> SessionCost {
         SessionCost {
             session_id: session_id.to_string(),
             session_started_at: started_at.to_string(),
-            reported_cost_usd: reported,
+            duration_ms: 900_000,
             computed_cost_usd: computed,
             independent: true,
-            reported_complete: true,
-            total_duration_ms: 900_000,
-            api_duration_ms: 300_000,
-            lines_added: 40,
-            lines_removed: 5,
+            reported_cost_usd: reported,
+            reported_complete: reported.map(|_| true),
+            api_duration_ms: reported.map(|_| 300_000),
+            lines_added: reported.map(|_| 40),
+            lines_removed: reported.map(|_| 5),
             usage: TokenUsage {
                 input: 1_000,
                 cache_read: 2_000,
@@ -2165,8 +2175,8 @@ mod tests {
             .save_session_costs(
                 CODEX,
                 &[
-                    session("old", "2026-05-01T09:00:00Z", 1.0, 1.1),
-                    session("running", "2026-08-20T09:00:00Z", 2.0, 2.2),
+                    session("old", "2026-05-01T09:00:00Z", Some(1.0), 1.1),
+                    session("running", "2026-08-20T09:00:00Z", Some(2.0), 2.2),
                 ],
                 "2026-08-20T15:00:00Z",
             )
@@ -2175,7 +2185,7 @@ mod tests {
         storage
             .save_session_costs(
                 CODEX,
-                &[session("running", "2026-08-20T09:00:00Z", 3.0, 3.3)],
+                &[session("running", "2026-08-20T09:00:00Z", Some(3.0), 3.3)],
                 "2026-08-20T16:00:00Z",
             )
             .await
@@ -2198,8 +2208,11 @@ mod tests {
             .save_session_costs(
                 CODEX,
                 &[
-                    session("earlier", "2026-08-18T09:00:00Z", 1.0, 1.5),
-                    session("wanted", "2026-08-20T09:00:00Z", 2.0, 2.5),
+                    session("earlier", "2026-08-18T09:00:00Z", Some(1.0), 1.5),
+                    session("wanted", "2026-08-20T09:00:00Z", Some(2.0), 2.5),
+                    // Listed like any other, but never part of a total that compares the
+                    // two sides.
+                    session("unpriced", "2026-08-20T11:00:00Z", None, 9.0),
                 ],
                 "2026-08-20T15:00:00Z",
             )
@@ -2218,12 +2231,12 @@ mod tests {
 
         assert_eq!(
             snapshot.sessions.iter().map(|s| s.session_id.as_str()).collect::<Vec<_>>(),
-            ["wanted"]
+            ["unpriced", "wanted"]
         );
-        let wanted = &snapshot.sessions[0];
+        let wanted = &snapshot.sessions[1];
         assert_eq!(wanted.usage.total, 3_400);
         assert_eq!(wanted.models, ["claude-opus-5", "claude-haiku-4-5"]);
-        assert_eq!(wanted.total_duration_ms, 900_000);
+        assert_eq!(wanted.duration_ms, 900_000);
         assert_eq!((snapshot.reported_cost_usd, snapshot.computed_cost_usd), (2.0, 2.5));
     }
 

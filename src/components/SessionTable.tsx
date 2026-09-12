@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   formatCurrency,
   formatDayAndTime,
@@ -17,6 +18,13 @@ const WIDE_GAP_PERCENT = 10;
 /** How much of the client's session identifier is enough to recognise it by. */
 const SESSION_ID_LENGTH = 8;
 
+/**
+ * Which sessions the table lists. Every session is worth reading — what it cost, how long
+ * it ran, what it changed — and only some of them can be checked against the client's own
+ * accounting, so the comparison is a filter over the list rather than the list itself.
+ */
+type SessionFilter = "all" | "compared";
+
 interface SessionTableProps {
   snapshot: SessionCostSnapshot | null;
   /** What the table covers, in the words of the range control above it. */
@@ -27,14 +35,18 @@ interface SessionTableProps {
 }
 
 /**
- * Every session in the range, priced twice.
+ * Every session in the range, priced from the catalog, and priced again by the client
+ * where the client keeps a figure of its own.
  *
  * Neither column is a bill: a subscription charges nothing per token, so the pair says
  * whether this machine's pricing catalog still tracks what the provider's own client
  * charged the same session to.
  */
 export function SessionTable({ snapshot, rangeLabel, notes, loading }: SessionTableProps) {
+  const [filter, setFilter] = useState<SessionFilter>("all");
   const sessions = snapshot?.sessions ?? [];
+  const compared = sessions.filter((session) => session.reportedCostUsd !== null);
+  const shown = filter === "compared" ? compared : sessions;
   const gap =
     snapshot === null ? null : formatDelta(snapshot.computedCostUsd, snapshot.reportedCostUsd);
 
@@ -44,10 +56,32 @@ export function SessionTable({ snapshot, rangeLabel, notes, loading }: SessionTa
         <div>
           <h3>Sessions</h3>
           <span>
-            {rangeLabel} · {sessions.length} session{sessions.length === 1 ? "" : "s"}
+            {rangeLabel} · {shown.length} session{shown.length === 1 ? "" : "s"}
+            {filter === "all" && sessions.length > 0
+              ? ` · ${compared.length} priced by the client too`
+              : ""}
           </span>
         </div>
-        <span>What the client charged against what the catalog makes of it</span>
+        <div className="view-tabs" role="tablist" aria-label="Which sessions to list">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={filter === "all"}
+            className={filter === "all" ? "active" : ""}
+            onClick={() => setFilter("all")}
+          >
+            All
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={filter === "compared"}
+            className={filter === "compared" ? "active" : ""}
+            onClick={() => setFilter("compared")}
+          >
+            Compared
+          </button>
+        </div>
       </div>
 
       {notes.map((note) => (
@@ -56,6 +90,9 @@ export function SessionTable({ snapshot, rangeLabel, notes, loading }: SessionTa
         </p>
       ))}
 
+      {/* The three figures describe the comparable sessions whichever list is on screen:
+          a total that added every computed cost to a reported one covering a few of them
+          would state a gap that measures which sessions carry the record. */}
       <div className="summary-strip">
         <SessionTotal label="Reported by the client" value={snapshot?.reportedCostUsd ?? null} />
         <SessionTotal label="Priced from the catalog" value={snapshot?.computedCostUsd ?? null} />
@@ -65,10 +102,11 @@ export function SessionTable({ snapshot, rangeLabel, notes, loading }: SessionTa
         </div>
       </div>
 
-      {sessions.length === 0 ? (
+      {shown.length === 0 ? (
         <p className="empty-copy">
-          No session comparisons in this range. Only sessions whose client recorded a cost of its
-          own can be compared, and comparisons are kept for {snapshot?.retentionDays ?? 90} days.
+          {filter === "compared" && sessions.length > 0
+            ? "No session in this range carries the client's own cost. Claude Code began recording it partway through its life, and Codex records none at all."
+            : `No sessions in this range. Sessions are kept for ${snapshot?.retentionDays ?? 90} days.`}
         </p>
       ) : (
         <div
@@ -88,7 +126,7 @@ export function SessionTable({ snapshot, rangeLabel, notes, loading }: SessionTa
             <span role="columnheader">Lines</span>
             <span role="columnheader">Notes</span>
           </div>
-          {sessions.map((session) => (
+          {shown.map((session) => (
             <SessionRow key={session.sessionId} session={session} />
           ))}
         </div>
@@ -98,12 +136,12 @@ export function SessionTable({ snapshot, rangeLabel, notes, loading }: SessionTa
 }
 
 function SessionRow({ session }: { session: SessionCost }) {
-  const gap = formatDelta(session.computedCostUsd, session.reportedCostUsd);
+  const reported = session.reportedCostUsd;
+  const gap = reported === null ? null : formatDelta(session.computedCostUsd, reported);
   const wide =
+    reported !== null &&
     gap !== null &&
-    Math.abs(
-      ((session.computedCostUsd - session.reportedCostUsd) / session.reportedCostUsd) * 100,
-    ) >= WIDE_GAP_PERCENT;
+    Math.abs(((session.computedCostUsd - reported) / reported) * 100) >= WIDE_GAP_PERCENT;
   const [first, ...rest] = session.models;
 
   return (
@@ -112,15 +150,24 @@ function SessionRow({ session }: { session: SessionCost }) {
         {session.sessionId.slice(0, SESSION_ID_LENGTH)}
       </strong>
       <span role="cell">{formatDayAndTime(session.sessionStartedAt)}</span>
-      <span role="cell" title={`${formatDuration(session.apiDurationMs)} waiting on the provider`}>
-        {formatDuration(session.totalDurationMs)}
+      <span
+        role="cell"
+        title={
+          session.apiDurationMs === null
+            ? undefined
+            : `${formatDuration(session.apiDurationMs)} waiting on the provider`
+        }
+      >
+        {formatDuration(session.durationMs)}
       </span>
       <span role="cell" title={session.models.join(", ")}>
         {first ?? "—"}
         {rest.length > 0 ? ` +${rest.length}` : ""}
       </span>
       <span role="cell">{formatNumber(session.usage.total)}</span>
-      <span role="cell">{formatCurrency(session.reportedCostUsd)}</span>
+      {/* A client that priced nothing is not a nought: the column stays empty rather than
+          claiming the session was free. */}
+      <span role="cell">{reported === null ? "—" : formatCurrency(reported)}</span>
       <span role="cell">{formatCurrency(session.computedCostUsd)}</span>
       {/* Neither direction is better than the other — both figures are estimates of the
           same work — so only the width of the gap is marked, and only once it is wide
@@ -129,19 +176,21 @@ function SessionRow({ session }: { session: SessionCost }) {
         {gap ?? "—"}
       </span>
       <span role="cell">
-        +{formatNumber(session.linesAdded)} −{formatNumber(session.linesRemoved)}
+        {session.linesAdded === null || session.linesRemoved === null
+          ? "—"
+          : `+${formatNumber(session.linesAdded)} −${formatNumber(session.linesRemoved)}`}
       </span>
       <span role="cell" className="session-flags">
-        {session.independent ? null : (
+        {session.reportedCostUsd === null || session.independent ? null : (
           <em title="The client's own per-message costs priced this session, so both figures are the same number.">
             Same source
           </em>
         )}
-        {session.reportedComplete ? null : (
+        {session.reportedComplete === false ? (
           <em title="The client met a model it has no price for, so its total is short of the session.">
             Client short
           </em>
-        )}
+        ) : null}
       </span>
     </div>
   );

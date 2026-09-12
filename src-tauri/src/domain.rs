@@ -724,38 +724,42 @@ pub struct HistoryDay {
     pub model_rows: Vec<ModelUsageRow>,
 }
 
-/// One session priced twice: by the provider's own client, and by the catalog this
-/// machine parses its logs with.
+/// One session as the parser read it, with what the provider's own client said it cost
+/// where the client said anything at all.
 ///
-/// Neither figure is a bill. Nothing is charged per token on a subscription, so the pair
-/// says whether the local catalog still agrees with the vendor's accounting, not what was
-/// spent. Only the sessions whose client recorded a total of its own appear at all.
+/// Every session the parser has entries for is here. Claude Code records a cost of its own
+/// only in recent sessions and Codex records none, so the client's side is optional and
+/// the parser's side is what every row carries.
+///
+/// Neither cost is a bill. Nothing is charged per token on a subscription, so both figures
+/// are API-equivalent estimates, and the pair — where there is a pair — says whether the
+/// local catalog still agrees with the vendor's accounting.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionCost {
     /// The client's own identifier for the session. It stays on this machine: the shared
     /// folder export carries aggregates, and nothing that names a session goes into it.
     pub session_id: String,
-    /// When the session began, as the client recorded it. A session's records carry no
-    /// time of their own, so this is the only moment the comparison can be placed at.
+    /// The first entry the parser read for this session, and the span to its last. Both
+    /// are measured the same way for every session, whatever its client recorded.
     pub session_started_at: String,
-    /// What the client accounted the session to.
-    pub reported_cost_usd: f64,
-    /// What the pricing catalog makes of the same session's tokens.
+    pub duration_ms: i64,
+    /// What the pricing catalog makes of the session's tokens.
     pub computed_cost_usd: f64,
-    /// Whether the computed figure was reached without the client's own numbers. The
-    /// parser prices an entry from the catalog only while the entry carries no cost of its
-    /// own; once one does, both sides are the same number and their agreement means
-    /// nothing.
+    /// Whether that figure was reached without the client's own numbers. The parser prices
+    /// an entry from the catalog only while the entry carries no cost of its own; once one
+    /// does, both sides are the same number and their agreement means nothing.
     pub independent: bool,
+    /// What the client accounted the session to, and the rest of what only it can say.
+    /// `None` throughout for a session whose client recorded nothing.
+    pub reported_cost_usd: Option<f64>,
     /// Whether the client could price every model the session used. A client that met a
     /// model it has no price for reports a total that is short of the session.
-    pub reported_complete: bool,
-    /// How long the session ran, and how much of that it spent waiting on the provider.
-    pub total_duration_ms: i64,
-    pub api_duration_ms: i64,
-    pub lines_added: i64,
-    pub lines_removed: i64,
+    pub reported_complete: Option<bool>,
+    /// How much of the session was spent waiting on the provider.
+    pub api_duration_ms: Option<i64>,
+    pub lines_added: Option<i64>,
+    pub lines_removed: Option<i64>,
     /// The session's tokens as the parser deduplicated them, so a session agrees with the
     /// day it belongs to rather than with the client's own second count of the same work.
     pub usage: TokenUsage,
@@ -763,16 +767,29 @@ pub struct SessionCost {
     pub models: Vec<String>,
 }
 
-/// Every session in a range, with the two sides summed.
+/// Every session in a range, with the costs summed.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionCostSnapshot {
     pub sessions: Vec<SessionCost>,
+    /// Both sums cover only the sessions whose client reported a cost, because a total
+    /// that compared all of one side against some of the other would be a wrong number
+    /// rather than a partial one.
     pub reported_cost_usd: f64,
     pub computed_cost_usd: f64,
-    /// How far back comparisons are kept, so a range reaching past that says why it is
-    /// empty rather than implying no work was done then.
+    /// How far back sessions are kept, so a range reaching past that says why it is empty
+    /// rather than implying no work was done then.
     pub retention_days: i64,
+}
+
+/// How far the catalog's pricing is from the client's own, over the sessions that carry
+/// both. `None` when a set holds nothing comparable, which is every Codex session and any
+/// Claude Code session older than the record.
+pub fn session_gap_percent(sessions: &[SessionCost]) -> Option<f64> {
+    let compared = sessions.iter().filter(|session| session.reported_cost_usd.is_some());
+    let reported: f64 = compared.clone().filter_map(|session| session.reported_cost_usd).sum();
+    let computed: f64 = compared.map(|session| session.computed_cost_usd).sum();
+    (reported > 0.0).then(|| (computed - reported) / reported * 100.0)
 }
 
 #[derive(Debug, Clone)]
