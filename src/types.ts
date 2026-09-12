@@ -27,11 +27,19 @@ export interface ThemeSnapshot {
   taskbar: "dark" | "light";
 }
 
+/**
+ * Whether a window is being spent faster or slower than it is elapsing. The core compares
+ * the share used against the share of the window that has passed, so no surface decides it
+ * for itself; `onTrack` is also what a window missing any part of that comparison reads.
+ */
+export type PaceLevel = "onTrack" | "ahead" | "behind";
+
 export interface LimitWindow {
   kind: "primary" | "secondary";
   label: string;
   /** How loud this window's own reading is, on the thresholds every surface shares. */
   statusLevel: "healthy" | "warning" | "critical";
+  pace: PaceLevel;
   usedPercent: number | null;
   windowDurationMins: number | null;
   resetsAt: number | null;
@@ -92,6 +100,11 @@ export interface ProviderSnapshot {
   today: TokenUsage;
   apiEquivalentCostUsd: number | null;
   models: ModelUsage[];
+  /**
+   * The last seven local days of tokens, oldest first and today last, with a day nothing
+   * was recorded on carried as a nought. The comparison with yesterday is its last pair.
+   */
+  dailyTotals: number[];
   freshness: Freshness;
   /**
    * The snapshot mirrors the Rust type exactly, so several fields arrive already folded

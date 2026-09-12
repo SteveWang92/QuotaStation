@@ -27,7 +27,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    CRITICAL_PERCENT, Freshness, LimitKind, LimitWindow, QuotaLevel, WARNING_PERCENT, WindowSource,
+    CRITICAL_PERCENT, Freshness, LimitKind, LimitWindow, PaceLevel, QuotaLevel, WARNING_PERCENT,
+    WindowSource, pace_level,
 };
 use crate::providers::ProviderKind;
 use crate::settings::{
@@ -228,6 +229,7 @@ fn windows_from(reading: &Reading, now: i64) -> Result<Vec<LimitWindow>> {
             observed_at: reading.observed_at,
             freshness: Freshness::Fresh,
             status_level: QuotaLevel::Healthy,
+            pace: PaceLevel::OnTrack,
         });
     }
     if reading.five_hour.is_some() || reading.seven_day.is_some() {
@@ -654,8 +656,7 @@ fn window_text(window: &QuotaWindow, format: QuotaFormat, colour: bool, now: i64
     if format.remaining {
         values.push(format!("{:.0}% left", 100.0 - used));
     }
-    let marker =
-        format.pace.then(|| pace(used, window.resets_at, window.window_minutes, now)).flatten();
+    let marker = format.pace.then(|| pace_marker(window, now)).flatten();
     if let (Some(first), Some(marker)) = (values.first_mut(), marker) {
         first.push_str(marker);
     }
@@ -686,28 +687,13 @@ fn cache_hit(usage: &CurrentUsage) -> Option<f64> {
     (total > 0).then(|| read as f64 / total as f64 * 100.0)
 }
 
-/// How wide a lead or a lag has to be before the pace is worth marking. A burst of work
-/// early in a window is ordinary, and a marker that appears constantly says nothing.
-const PACE_BAND: f64 = 10.0;
-
-/// Whether a window is being spent faster or slower than it is elapsing.
-///
-/// This is deliberately the cheap comparison: the share consumed against the share of the
-/// window that has passed. It needs no history and no rate estimate, and it answers the one
-/// question worth a character here — at this pace, does the allowance outlast the window?
-fn pace(
-    used: f64,
-    resets_at: Option<i64>,
-    window_minutes: Option<i64>,
-    now: i64,
-) -> Option<&'static str> {
-    let minutes = window_minutes.filter(|minutes| *minutes > 0)? as f64;
-    let remaining = (resets_at? - now) as f64 / 60.0;
-    let elapsed = (minutes - remaining).clamp(0.0, minutes);
-    match used - elapsed / minutes * 100.0 {
-        difference if difference > PACE_BAND => Some("\u{2191}"),
-        difference if difference < -PACE_BAND => Some("\u{2193}"),
-        _ => None,
+/// The one character a pace worth marking is written as. The rule behind it is the core's,
+/// so the arrow here and the marker in the panel are never drawn from two comparisons.
+fn pace_marker(window: &QuotaWindow, now: i64) -> Option<&'static str> {
+    match pace_level(Some(window.used_percent), window.resets_at, window.window_minutes, now) {
+        PaceLevel::Ahead => Some("\u{2191}"),
+        PaceLevel::Behind => Some("\u{2193}"),
+        PaceLevel::OnTrack => None,
     }
 }
 
@@ -1715,14 +1701,17 @@ cache 78.4%"
     }
 
     #[test]
-    fn the_pace_marker_compares_the_share_used_against_the_share_elapsed() {
+    fn each_pace_a_window_can_be_at_is_drawn_as_its_own_marker() {
         // Half of a five-hour window has passed.
-        let halfway = Some(NOW + 150 * 60);
-        assert_eq!(pace(80.0, halfway, Some(300), NOW), Some("↑"), "spent well ahead of time");
-        assert_eq!(pace(20.0, halfway, Some(300), NOW), Some("↓"), "spent well behind time");
-        assert_eq!(pace(55.0, halfway, Some(300), NOW), None, "inside the band");
-        assert_eq!(pace(80.0, None, Some(300), NOW), None, "no restart time, no pace");
-        assert_eq!(pace(80.0, halfway, None, NOW), None, "no duration, no pace");
+        let halfway = |used| QuotaWindow {
+            label: "5h".to_string(),
+            used_percent: used,
+            resets_at: Some(NOW + 150 * 60),
+            window_minutes: Some(300),
+        };
+        assert_eq!(pace_marker(&halfway(80.0), NOW), Some("↑"), "spent well ahead of time");
+        assert_eq!(pace_marker(&halfway(20.0), NOW), Some("↓"), "spent well behind time");
+        assert_eq!(pace_marker(&halfway(55.0), NOW), None, "inside the band");
     }
 
     #[test]

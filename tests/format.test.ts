@@ -7,6 +7,7 @@ import {
   formatEarlyBy,
   formatResetTimestamp,
   formatRevision,
+  formatShortMoment,
   formatTimestamp,
   formatWindowBadge,
 } from "../src/format";
@@ -78,6 +79,17 @@ describe("clock times", () => {
       expect(formatTimestamp(new Date(instant).toISOString())).not.toMatch(/[ap]\.?m\.?/i);
       expect(formatResetTimestamp(instant / 1_000)).not.toMatch(/[ap]\.?m\.?/i);
     }
+  });
+});
+
+describe("a past moment at panel width", () => {
+  it("carries the date only once the moment is not today", () => {
+    freezeClock();
+    const today = formatShortMoment((NOW - 3 * 3_600_000) / 1_000);
+    const earlier = formatShortMoment((NOW - 3 * 86_400_000) / 1_000);
+    expect(today).toMatch(/^\d{2}:\d{2}$/);
+    expect(earlier).toMatch(/\d{2}:\d{2}$/);
+    expect(earlier.length).toBeGreaterThan(today.length);
   });
 });
 

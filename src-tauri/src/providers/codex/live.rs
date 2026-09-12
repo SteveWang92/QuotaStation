@@ -15,7 +15,9 @@ use tokio::{
 };
 
 use crate::{
-    domain::{Freshness, LimitKind, LimitWindow, LiveSnapshot, QuotaLevel, WindowSource},
+    domain::{
+        Freshness, LimitKind, LimitWindow, LiveSnapshot, PaceLevel, QuotaLevel, WindowSource,
+    },
     providers::{ProviderKind, SignInRequired, is_sign_in_required},
 };
 
@@ -263,6 +265,7 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
             observed_at,
             freshness: Freshness::Fresh,
             status_level: QuotaLevel::Healthy,
+            pace: PaceLevel::OnTrack,
         });
     }
     if limits.is_empty() {

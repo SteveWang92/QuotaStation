@@ -53,6 +53,49 @@ pub fn quota_level(used_percent: Option<f64>) -> QuotaLevel {
     }
 }
 
+/// How wide a lead or a lag has to be before the pace is worth marking. A burst of work
+/// early in a window is ordinary, and a marker that appears constantly says nothing.
+const PACE_BAND: f64 = 10.0;
+
+/// Whether a window is being spent faster or slower than it is elapsing.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PaceLevel {
+    /// Inside the band, and also where a window is missing the percentage, the restart
+    /// time or the duration the comparison needs: nothing to say rather than on the line.
+    #[default]
+    OnTrack,
+    Ahead,
+    Behind,
+}
+
+/// The share consumed against the share of the window that has passed.
+///
+/// This is deliberately the cheap comparison: it needs no history and no rate estimate, and
+/// it answers the one question a bar and a countdown together still cannot — at this pace,
+/// does the allowance outlast the window? Every surface reads the answer from here, so the
+/// status line and the panel never mark the same window differently.
+pub fn pace_level(
+    used_percent: Option<f64>,
+    resets_at: Option<i64>,
+    window_duration_mins: Option<i64>,
+    now: i64,
+) -> PaceLevel {
+    let Some(used) = used_percent else { return PaceLevel::OnTrack };
+    let Some(minutes) = window_duration_mins.filter(|minutes| *minutes > 0) else {
+        return PaceLevel::OnTrack;
+    };
+    let Some(resets_at) = resets_at else { return PaceLevel::OnTrack };
+    let minutes = minutes as f64;
+    let remaining = (resets_at - now) as f64 / 60.0;
+    let elapsed = (minutes - remaining).clamp(0.0, minutes);
+    match used.clamp(0.0, 100.0) - elapsed / minutes * 100.0 {
+        difference if difference > PACE_BAND => PaceLevel::Ahead,
+        difference if difference < -PACE_BAND => PaceLevel::Behind,
+        _ => PaceLevel::OnTrack,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactStatus {
@@ -177,6 +220,11 @@ pub struct LimitWindow {
     /// decide how loud the reading is.
     #[serde(default)]
     pub status_level: QuotaLevel,
+    /// Whether this window is being spent ahead of or behind the clock. Filled beside
+    /// `status_level`, for the same reason: how a reading compares with its own window is
+    /// one rule, and a surface that decided it for itself would be a second copy of it.
+    #[serde(default)]
+    pub pace: PaceLevel,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -277,6 +325,10 @@ pub struct ProviderSnapshot {
     pub today: TokenUsage,
     pub api_equivalent_cost_usd: Option<f64>,
     pub models: Vec<ModelUsage>,
+    /// The last seven local days of tokens, oldest first and today last, with the days
+    /// nothing was recorded on carried as zeroes. One series answers both the trend and
+    /// the comparison with yesterday, which is its last pair.
+    pub daily_totals: Vec<u64>,
     pub freshness: Freshness,
     pub stale_age_seconds: Option<u64>,
     pub compact_status: CompactStatus,
@@ -311,6 +363,7 @@ impl ProviderSnapshot {
             today: TokenUsage::default(),
             api_equivalent_cost_usd: None,
             models: Vec::new(),
+            daily_totals: Vec::new(),
             freshness: Freshness::Unavailable,
             stale_age_seconds: None,
             compact_status: CompactStatus::unavailable(),
@@ -372,6 +425,8 @@ impl ProviderSnapshot {
             };
             limit.freshness = if age <= max_age { Freshness::Fresh } else { Freshness::Stale };
             limit.status_level = quota_level(limit.used_percent);
+            limit.pace =
+                pace_level(limit.used_percent, limit.resets_at, limit.window_duration_mins, now);
         }
         self.freshness = if self.last_live_success_at.is_none() || self.limits.is_empty() {
             Freshness::Unavailable
@@ -479,11 +534,37 @@ mod tests {
                 observed_at: jiff::Timestamp::now().as_second(),
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             }],
             ..ProviderSnapshot::new(provider)
         };
         snapshot.update_compact_status();
         snapshot
+    }
+
+    #[test]
+    fn pace_compares_the_share_used_against_the_share_of_the_window_elapsed() {
+        // Half of a five-hour window has passed.
+        const NOW: i64 = 1_800_000_000;
+        let halfway = Some(NOW + 150 * 60);
+        assert_eq!(pace_level(Some(80.0), halfway, Some(300), NOW), PaceLevel::Ahead);
+        assert_eq!(pace_level(Some(20.0), halfway, Some(300), NOW), PaceLevel::Behind);
+        assert_eq!(pace_level(Some(55.0), halfway, Some(300), NOW), PaceLevel::OnTrack);
+        assert_eq!(
+            pace_level(None, halfway, Some(300), NOW),
+            PaceLevel::OnTrack,
+            "no percentage, nothing to compare"
+        );
+        assert_eq!(
+            pace_level(Some(80.0), None, Some(300), NOW),
+            PaceLevel::OnTrack,
+            "no restart time, no elapsed share"
+        );
+        assert_eq!(
+            pace_level(Some(80.0), halfway, None, NOW),
+            PaceLevel::OnTrack,
+            "no duration, no elapsed share"
+        );
     }
 
     #[test]
@@ -515,6 +596,7 @@ mod tests {
                 observed_at: now.as_second() - 901,
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             }],
             last_live_success_at: Some(now.to_string()),
             last_history_success_at: Some(now.to_string()),
@@ -539,6 +621,7 @@ mod tests {
                 observed_at: now.as_second() - 3_601,
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             }],
             last_live_success_at: Some(now.to_string()),
             ..ProviderSnapshot::new(ProviderKind::Claude)
@@ -561,6 +644,7 @@ mod tests {
             observed_at: jiff::Timestamp::now().as_second(),
             freshness: Freshness::Fresh,
             status_level: QuotaLevel::Healthy,
+            pace: PaceLevel::OnTrack,
         });
         snapshot.last_live_success_at = Some(jiff::Timestamp::now().to_string());
         snapshot.resolve_derived_state();

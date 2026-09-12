@@ -1,6 +1,13 @@
 import { formatCompactCountdown, formatWindowBadge } from "../format";
 import { quotaColor } from "../theme";
-import type { LimitWindow } from "../types";
+import type { LimitWindow, PaceLevel } from "../types";
+
+/** What each pace is drawn as, and how it is read out. Nothing is drawn for `onTrack`. */
+const PACE: Record<PaceLevel, { marker: string; label: string } | null> = {
+  onTrack: null,
+  ahead: { marker: "↑", label: "ahead of the window" },
+  behind: { marker: "↓", label: "behind the window" },
+};
 
 /**
  * One quota window on one line: badge, bar, reading.
@@ -16,6 +23,7 @@ export function QuotaGlanceRow({
   label,
   fallbackColor,
   title,
+  showPace,
 }: {
   limit: LimitWindow;
   /** Names this window where the row has no reading for a screen reader to read out. */
@@ -24,8 +32,15 @@ export function QuotaGlanceRow({
   fallbackColor: string;
   /** The exact local reset time, for a surface with no room to print it beside the row. */
   title?: string;
+  /**
+   * Whether to mark a window being spent ahead of or behind its own clock. The taskbar
+   * crops this row to the taskbar's height and has no character to spare for it, so the
+   * surface says rather than the row assuming.
+   */
+  showPace?: boolean;
 }) {
   const percent = limit.usedPercent === null ? null : `${Math.round(limit.usedPercent)}%`;
+  const pace = showPace ? PACE[limit.pace] : null;
   const countdown = limit.resetsAt === null ? null : formatCompactCountdown(limit.resetsAt);
   return (
     <div className="glance-row" title={title}>
@@ -52,7 +67,16 @@ export function QuotaGlanceRow({
           </em>
         ) : (
           <>
-            {percent !== null && <em style={{ color: quotaColor(limit) }}>{percent}</em>}
+            {percent !== null && (
+              <em style={{ color: quotaColor(limit) }}>
+                {percent}
+                {pace ? (
+                  <span role="img" aria-label={pace.label}>
+                    {pace.marker}
+                  </span>
+                ) : null}
+              </em>
+            )}
             {percent !== null && countdown !== null && (
               <span className="glance-dot" aria-hidden="true">
                 ·

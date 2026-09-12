@@ -341,7 +341,7 @@ pub fn raise_with_action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{CompactStatus, LimitResetEvent, QuotaLevel, WindowSource};
+    use crate::domain::{CompactStatus, LimitResetEvent, PaceLevel, QuotaLevel, WindowSource};
 
     fn window(kind: LimitKind, used: f64, resets_at: i64) -> LimitWindow {
         LimitWindow {
@@ -354,6 +354,7 @@ mod tests {
             observed_at: 1_800_000_000,
             freshness: Freshness::Fresh,
             status_level: QuotaLevel::Healthy,
+            pace: PaceLevel::OnTrack,
         }
     }
 

@@ -166,7 +166,41 @@ fn describe_history(
     }
 }
 
+/// The last seven local days of one provider's tokens, oldest first.
+///
+/// The stored range carries only the days usage was recorded on, and a trend has to show an
+/// unused day as the nought it was rather than closing the gap, so the series is laid out
+/// against the calendar instead of against the rows.
+fn daily_series(range: &crate::domain::UsageRangeSnapshot, days: &[String]) -> Vec<u64> {
+    days.iter()
+        .map(|date| {
+            range.days.iter().find(|day| &day.date == date).map_or(0, |day| day.usage.total)
+        })
+        .collect()
+}
+
 async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSnapshot {
+    // The status line's weekly total and the panel's seven-day trend describe the same week,
+    // so it is read once per provider and both are filled from it. A provider whose range
+    // cannot be read keeps the series it already has rather than being blanked.
+    let today = jiff::Zoned::now().date();
+    let week: Vec<String> = (0..7)
+        .rev()
+        .map(|back| today.checked_sub(jiff::Span::new().days(back)).unwrap_or(today).to_string())
+        .collect();
+    let mut weeks = Vec::new();
+    for provider in state.enabled_providers() {
+        let Ok(range) = state
+            .storage
+            .load_usage_range(Some(provider), None, &week[0], &week[week.len() - 1])
+            .await
+        else {
+            continue;
+        };
+        let series = daily_series(&range, &week);
+        state.with_snapshot(provider, |snapshot| snapshot.daily_totals = series).await;
+        weeks.push((provider, range.usage.total, range.api_equivalent_cost_usd));
+    }
     let workspace = state.workspace_snapshot().await;
     // One line for the state every surface is about to draw, which is what makes a window
     // that drew something unexpected answerable from the log rather than from a guess.
@@ -195,19 +229,9 @@ async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSn
     // The event reaches this application's own windows and nothing else. The status-line
     // bridge is a separate process with no way to receive it, so the same snapshot is also
     // left on disk for it to read.
-    // The status line's weekly totals are the one figure the snapshot does not carry, and
-    // the bridge has no database to ask. A provider whose range cannot be read is left out,
-    // which costs its share of the weekly figure and nothing else.
-    let end = jiff::Zoned::now().date();
-    let start = end.checked_sub(jiff::Span::new().days(6)).unwrap_or(end).to_string();
-    let end = end.to_string();
-    let mut weeks = Vec::new();
-    for provider in workspace.providers.iter().map(|provider| provider.provider) {
-        if let Ok(range) = state.storage.load_usage_range(Some(provider), None, &start, &end).await
-        {
-            weeks.push((provider, range.usage.total, range.api_equivalent_cost_usd));
-        }
-    }
+    // The weekly totals read above go with it: they are the one figure the snapshot does
+    // not carry, and the bridge has no database to ask. A provider whose range could not be
+    // read is simply left out of them.
     crate::summary::publish(&workspace, &weeks);
     // Every refresh passes through here, whichever scheduler or watcher asked for it, so it
     // is the one place that sees every change a notification could be about.
@@ -361,8 +385,9 @@ fn now() -> String {
 mod tests {
     use super::*;
     use crate::domain::{
-        Freshness, HistoryDay, HistorySnapshot, LimitKind, LimitWindow, LiveSnapshot, ModelUsage,
-        ModelUsageRow, ProviderSnapshot, QuotaLevel, TokenUsage, WindowSource,
+        DailyUsagePoint, Freshness, HistoryDay, HistorySnapshot, LimitKind, LimitWindow,
+        LiveSnapshot, ModelUsage, ModelUsageRow, PaceLevel, ProviderSnapshot, QuotaLevel,
+        TokenUsage, WindowSource,
     };
     use crate::storage::test_support::{TempDatabase, open_storage};
 
@@ -384,6 +409,7 @@ mod tests {
             observed_at: 1_799_000_000,
             freshness: Freshness::Fresh,
             status_level: QuotaLevel::Healthy,
+            pace: PaceLevel::OnTrack,
         }
     }
 
@@ -428,6 +454,34 @@ mod tests {
             .find(|entry| entry.acquisition_path == path)
             .expect("the refresh recorded this path");
         (entry.status, entry.error)
+    }
+
+    #[test]
+    fn the_seven_day_series_reads_a_day_with_no_usage_as_a_nought() {
+        let range = crate::domain::UsageRangeSnapshot {
+            start_date: "2026-09-06".to_string(),
+            end_date: "2026-09-08".to_string(),
+            usage: usage(900),
+            api_equivalent_cost_usd: None,
+            models: Vec::new(),
+            days: vec![
+                DailyUsagePoint {
+                    date: "2026-09-06".to_string(),
+                    usage: usage(400),
+                    api_equivalent_cost_usd: None,
+                    models: Vec::new(),
+                },
+                DailyUsagePoint {
+                    date: "2026-09-08".to_string(),
+                    usage: usage(500),
+                    api_equivalent_cost_usd: None,
+                    models: Vec::new(),
+                },
+            ],
+            devices: Vec::new(),
+        };
+        let week = ["2026-09-06", "2026-09-07", "2026-09-08"].map(str::to_string);
+        assert_eq!(daily_series(&range, &week), vec![400, 0, 500]);
     }
 
     #[tokio::test]

@@ -74,6 +74,22 @@ export function formatResetTimestamp(epochSeconds: number | null): string {
 }
 
 /**
+ * A past moment at panel width: the clock alone for today, the day in front of it before
+ * that. The date is what a weekly window's restart needs and a five-hour one never does.
+ */
+export function formatShortMoment(epochSeconds: number): string {
+  const moment = new Date(epochSeconds * 1_000);
+  const today = moment.toDateString() === new Date().toDateString();
+  return new Intl.DateTimeFormat(LOCALE, {
+    day: today ? undefined : "numeric",
+    month: today ? undefined : "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(moment);
+}
+
+/**
  * How far ahead of its published expiry a window restarted. Whole days carry the point
  * on their own; anything shorter is the polling interval and reads better in hours.
  */

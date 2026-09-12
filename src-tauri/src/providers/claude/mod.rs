@@ -12,7 +12,7 @@ use anyhow::Result;
 use crate::domain::{LimitKind, LimitWindow, LiveSnapshot};
 
 #[cfg(test)]
-use crate::domain::{Freshness, QuotaLevel, WindowSource};
+use crate::domain::{Freshness, PaceLevel, QuotaLevel, WindowSource};
 
 pub use history::read_history;
 
@@ -106,6 +106,7 @@ mod tests {
             observed_at: 100,
             freshness: Freshness::Fresh,
             status_level: QuotaLevel::Healthy,
+            pace: PaceLevel::OnTrack,
         }
     }
 

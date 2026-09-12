@@ -13,7 +13,7 @@ use sqlx::{
 use crate::domain::{
     AcquisitionDiagnostics, CCUSAGE_REVISION, DailyUsagePoint, DeviceUsage, DeviceUsageRow,
     Freshness, HOURLY_HISTORY_DAYS, HistorySnapshot, HourlyUsagePoint, LimitKind, LimitResetEvent,
-    LimitWindow, LiveSnapshot, ModelUsage, ModelUsageRow, PRICING_CATALOG_REVISION,
+    LimitWindow, LiveSnapshot, ModelUsage, ModelUsageRow, PRICING_CATALOG_REVISION, PaceLevel,
     ProviderSnapshot, QuotaHistoryPoint, QuotaHistorySnapshot, QuotaHistoryWindow, QuotaLevel,
     ResetClassification, RetentionDiagnostics, TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot,
     UsageWindowSnapshot, WindowSource,
@@ -1166,6 +1166,7 @@ impl Storage {
                     observed_at: epoch_seconds(&row.try_get::<String, _>("observed_at").ok()?)?,
                     freshness: Freshness::Stale,
                     status_level: QuotaLevel::Healthy,
+                    pace: PaceLevel::OnTrack,
                 })
             })
             .collect();
@@ -2394,6 +2395,7 @@ mod tests {
                 observed_at: jiff::Timestamp::now().as_second(),
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             }],
         };
         storage.save_live(CODEX, &live, "2026-08-11T00:00:00Z").await.expect("save live");
@@ -2427,6 +2429,7 @@ mod tests {
                 observed_at: resets_at - WEEK_MINUTES * 60,
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             }],
         }
     }

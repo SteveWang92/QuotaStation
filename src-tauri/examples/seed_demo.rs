@@ -29,7 +29,7 @@ use quotastation_lib::{
     demo,
     domain::{
         Freshness, HistoryDay, HistoryHour, HistorySnapshot, LimitKind, LimitWindow, LiveSnapshot,
-        ModelUsage, ModelUsageRow, QuotaLevel, TokenUsage, WindowSource,
+        ModelUsage, ModelUsageRow, PaceLevel, QuotaLevel, TokenUsage, WindowSource,
     },
     providers::ProviderKind,
     settings,
@@ -278,6 +278,7 @@ fn window(
         observed_at,
         freshness: Freshness::Fresh,
         status_level: QuotaLevel::default(),
+        pace: PaceLevel::default(),
     }
 }
 

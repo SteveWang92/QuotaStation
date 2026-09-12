@@ -186,7 +186,9 @@ pub fn load_fresh(now: i64) -> Option<QuotaSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Freshness, LimitWindow, ProviderSnapshot, QuotaLevel, WindowSource};
+    use crate::domain::{
+        Freshness, LimitWindow, PaceLevel, ProviderSnapshot, QuotaLevel, WindowSource,
+    };
     use crate::providers::ProviderKind;
 
     fn workspace() -> WorkspaceSnapshot {
@@ -202,6 +204,7 @@ mod tests {
                 observed_at: 1_800_000_000,
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             },
             // Reported but unreadable: no percentage, so there is nothing to render.
             LimitWindow {
@@ -214,6 +217,7 @@ mod tests {
                 observed_at: 1_800_000_000,
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             },
             // A percentage is not enough: stale quota must not be restamped as current
             // merely because the application has just published another summary.
@@ -227,6 +231,7 @@ mod tests {
                 observed_at: 1_799_000_000,
                 freshness: Freshness::Stale,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             },
         ];
         codex.today.total = 1_234;
