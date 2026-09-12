@@ -239,6 +239,42 @@ export interface UsageRangeSnapshot {
   devices: DeviceUsage[];
 }
 
+/**
+ * One session priced twice: by the provider's own client, and by the pricing catalog this
+ * machine parses its logs with. Neither figure is a bill — nothing is charged per token on
+ * a subscription — so the pair says whether the local estimate still tracks the vendor's
+ * own accounting.
+ */
+export interface SessionCost {
+  /** The client's own identifier. It never leaves this machine. */
+  sessionId: string;
+  sessionStartedAt: string;
+  reportedCostUsd: number;
+  computedCostUsd: number;
+  /** False once the client's own per-message costs priced the session, which makes both
+      figures the same number and their agreement meaningless. */
+  independent: boolean;
+  /** False when the client met a model it has no price for, so its total is short. */
+  reportedComplete: boolean;
+  totalDurationMs: number;
+  apiDurationMs: number;
+  linesAdded: number;
+  linesRemoved: number;
+  usage: TokenUsage;
+  /** The models the session used, most expensive first. */
+  models: string[];
+}
+
+export interface SessionCostSnapshot {
+  /** Newest first. */
+  sessions: SessionCost[];
+  reportedCostUsd: number;
+  computedCostUsd: number;
+  /** How far back comparisons are kept, which is what makes an empty older range
+      explainable rather than a claim that nothing was done. */
+  retentionDays: number;
+}
+
 export interface AcquisitionDiagnostics {
   /** `<provider>_live` or `<provider>_history`. */
   acquisitionPath: string;

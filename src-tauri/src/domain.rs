@@ -770,9 +770,6 @@ pub struct SessionCostSnapshot {
     pub sessions: Vec<SessionCost>,
     pub reported_cost_usd: f64,
     pub computed_cost_usd: f64,
-    /// How far the computed side is from the reported one, as a share of what the client
-    /// reported. `None` when the range holds nothing to compare.
-    pub gap_percent: Option<f64>,
     /// How far back comparisons are kept, so a range reaching past that says why it is
     /// empty rather than implying no work was done then.
     pub retention_days: i64,

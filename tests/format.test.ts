@@ -4,6 +4,7 @@ import {
   formatCompactCountdown,
   formatCountdown,
   formatCurrency,
+  formatDuration,
   formatEarlyBy,
   formatResetTimestamp,
   formatRevision,
@@ -124,5 +125,13 @@ describe("hour buckets", () => {
   it("says the clock hour and nothing else, because the axis carries the date", () => {
     expect(formatAxisHour("2026-08-20T00:00")).toBe("00:00");
     expect(formatAxisHour("2026-08-20T14:00")).toBe("14:00");
+  });
+});
+
+describe("how long a session ran", () => {
+  it("drops to the unit the reader can act on", () => {
+    expect(formatDuration(36_000)).toBe("36s");
+    expect(formatDuration(48 * 60_000)).toBe("48m");
+    expect(formatDuration(134 * 60_000)).toBe("2h 14m");
   });
 });

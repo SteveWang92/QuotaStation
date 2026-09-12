@@ -147,6 +147,29 @@ export function formatDelta(current: number, previous: number): string | null {
   return `${change > 0 ? "+" : ""}${rounded}%`;
 }
 
+/**
+ * A past moment written out with its day, for example 20 Sep 14:32. Sessions are listed
+ * against each other rather than against now, so the day is always there to read.
+ */
+export function formatDayAndTime(value: string): string {
+  return new Intl.DateTimeFormat(LOCALE, {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
+}
+
+/** How long something ran, at table width: 2h 14m, 48m, or 36s under a minute. */
+export function formatDuration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.round(milliseconds / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 /** A calendar day at chart-axis length, for example 3 Aug. */
 export function formatAxisDate(value: string): string {
   return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short" }).format(

@@ -830,21 +830,25 @@ impl Storage {
     /// on screen are the ones the reader picked in their own timezone.
     pub async fn session_costs(
         &self,
-        provider: ProviderKind,
+        provider: Option<ProviderKind>,
         start_date: &str,
         end_date: &str,
     ) -> Result<SessionCostSnapshot> {
-        let provider_id = self.provider_id(provider).await?;
+        let provider_id = match provider {
+            Some(kind) => Some(self.provider_id(kind).await?),
+            None => None,
+        };
         let rows = sqlx::query(
             "SELECT session_id, session_started_at, reported_cost_usd, computed_cost_usd, \
              independent, reported_complete, total_duration_ms, api_duration_ms, lines_added, \
              lines_removed, input_tokens, cache_read_tokens, output_tokens, reasoning_tokens, \
              total_tokens, models \
              FROM session_costs \
-             WHERE provider_instance_id = ? \
+             WHERE (? IS NULL OR provider_instance_id = ?) \
              AND date(session_started_at, 'localtime') BETWEEN ? AND ? \
              ORDER BY session_started_at DESC",
         )
+        .bind(provider_id)
         .bind(provider_id)
         .bind(start_date)
         .bind(end_date)
@@ -857,8 +861,6 @@ impl Storage {
             sessions,
             reported_cost_usd,
             computed_cost_usd,
-            gap_percent: (reported_cost_usd > 0.0)
-                .then(|| (computed_cost_usd - reported_cost_usd) / reported_cost_usd * 100.0),
             retention_days: SESSION_COST_HISTORY_DAYS,
         })
     }
@@ -2211,7 +2213,8 @@ mod tests {
             .await
             .expect("the local day of the wanted session");
 
-        let snapshot = storage.session_costs(CODEX, &day, &day).await.expect("read the range");
+        let snapshot =
+            storage.session_costs(Some(CODEX), &day, &day).await.expect("read the range");
 
         assert_eq!(
             snapshot.sessions.iter().map(|s| s.session_id.as_str()).collect::<Vec<_>>(),
@@ -2221,7 +2224,7 @@ mod tests {
         assert_eq!(wanted.usage.total, 3_400);
         assert_eq!(wanted.models, ["claude-opus-5", "claude-haiku-4-5"]);
         assert_eq!(wanted.total_duration_ms, 900_000);
-        assert_eq!(snapshot.gap_percent, Some(25.0));
+        assert_eq!((snapshot.reported_cost_usd, snapshot.computed_cost_usd), (2.0, 2.5));
     }
 
     #[tokio::test]

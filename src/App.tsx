@@ -30,6 +30,7 @@ import type {
   ProviderKey,
   ProviderSnapshot,
   QuotaHistorySnapshot,
+  SessionCostSnapshot,
   UsageHoursSnapshot,
   UsageRangeSnapshot,
   UsageWindowSnapshot,
@@ -176,6 +177,9 @@ function Dashboard() {
   // is what puts the charts back on the daily axis.
   const [usageHours, setUsageHours] = useState<UsageHoursSnapshot | null>(null);
   const [quotaHistory, setQuotaHistory] = useState<QuotaHistorySnapshot | null>(null);
+  // Session comparisons are placed by the day a session started, so they are read for the
+  // same range as everything else and need no hourly counterpart.
+  const [sessionCosts, setSessionCosts] = useState<SessionCostSnapshot | null>(null);
   const [activeRange, setActiveRange] = useState<DateRangeSelection>(INITIAL_RANGE);
   const [rangeLoading, setRangeLoading] = useState(false);
   const [rangeError, setRangeError] = useState<string | null>(null);
@@ -235,7 +239,7 @@ function Dashboard() {
         const earlier = resolvedRange.preset === "all" ? null : previousPeriod(resolvedRange);
         const window = hourBounds(resolvedRange);
         const earlierWindow = earlier === null ? null : hourBounds(earlier);
-        const [usage, quota] = await Promise.all([
+        const [usage, quota, sessions] = await Promise.all([
           window !== null && earlierWindow !== null
             ? readRollingWindow(provider, device, window, earlierWindow)
             : readCalendarRange(provider, device, resolvedRange, earlier),
@@ -250,12 +254,18 @@ function Dashboard() {
                 startDate: resolvedRange.startDate,
                 endDate: resolvedRange.endDate,
               }),
+          invoke<SessionCostSnapshot>("get_session_costs", {
+            provider,
+            startDate: resolvedRange.startDate,
+            endDate: resolvedRange.endDate,
+          }),
         ]);
         if (requestId === rangeRequestId.current) {
           setUsageRange(usage.range);
           setPreviousRange(usage.previous);
           setUsageHours(usage.hours);
           setQuotaHistory(quota);
+          setSessionCosts(sessions);
           setActiveRange(resolvedRange);
           setRangeError(null);
         }
@@ -515,6 +525,7 @@ function Dashboard() {
               hours={usageHours}
               previousRange={previousRange}
               quotaHistory={quotaHistory}
+              sessionCosts={sessionCosts}
               selection={activeRange}
               loading={rangeLoading}
               error={rangeError}

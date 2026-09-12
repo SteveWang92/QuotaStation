@@ -494,20 +494,23 @@ async fn get_quota_history(
     result.map_err(|error| error.to_string())
 }
 
-/// Every session comparison one provider recorded inside a range.
+/// Every session comparison recorded inside a range, for one provider or all of them.
 ///
 /// Only Claude Code writes a cost of its own, so another provider answers with an empty
 /// range rather than an error: nothing is wrong, there is simply nothing to compare.
 #[tauri::command]
 async fn get_session_costs(
-    provider: ProviderKind,
+    provider: Option<ProviderKind>,
     start_date: String,
     end_date: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<SessionCostSnapshot, String> {
     let result = state.storage.session_costs(provider, &start_date, &end_date).await;
     log_query(
-        &format!("session costs {start_date}..{end_date} for {}", provider.key()),
+        &format!(
+            "session costs {start_date}..{end_date} for {}",
+            provider.map_or("every provider", |kind| kind.key())
+        ),
         &result,
         |snapshot| format!("{} session(s)", snapshot.sessions.len()),
     );

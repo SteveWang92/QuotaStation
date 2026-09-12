@@ -90,7 +90,9 @@ pricing catalog can be checked against the vendor's own numbers instead of being
 trust. Neither figure is a bill, and the comparison covers only the sessions Claude Code
 recorded the figure for; older sessions cannot be filled in. A session whose entries already
 carry a cost of their own is marked as no longer independently priced, because the parser
-then reports the client's number back rather than a second opinion.
+then reports the client's number back rather than a second opinion. The same record carries
+how long the session ran, how much of that it waited on the provider, and how much code it
+changed, which the sessions view lists beside the two figures.
 
 See [Third-party notices](../THIRD_PARTY_NOTICES.md) for revisions, licenses, and local changes.
 
