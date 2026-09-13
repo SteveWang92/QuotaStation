@@ -97,8 +97,11 @@ function Dashboard() {
   // database queries — for a window nobody is looking at, so the reads wait until it is back
   // on screen and are then made against the newest snapshot rather than the one that was
   // skipped.
+  // The core's history event is answered the same way: the range read it asks for waits for
+  // the window to be shown again.
   const latestWorkspace = useRef(EMPTY_WORKSPACE);
   const readsDeferred = useRef(false);
+  const historyDeferred = useRef(false);
 
   const onSnapshot = useCallback(
     (nextWorkspace: WorkspaceSnapshot) => {
@@ -141,16 +144,27 @@ function Dashboard() {
     const failed = (error: unknown) => {
       if (!disposed) setEventError(errorMessage(error));
     };
-    void listen("history-updated", () => void reload({ background: true }))
+    void listen("history-updated", () => {
+      void onScreen().then((visible) => {
+        if (visible) void reload({ background: true });
+        else historyDeferred.current = true;
+      });
+    })
       .then(keep)
       .catch(failed);
     // Showing the dashboard focuses it, so this is where a window that was hidden catches up
-    // on the snapshots it let pass.
+    // on the snapshots and history updates it let pass.
     void getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
-        if (!focused || !readsDeferred.current) return;
-        readsDeferred.current = false;
-        readForSnapshot(latestWorkspace.current);
+        if (!focused) return;
+        if (readsDeferred.current) {
+          readsDeferred.current = false;
+          readForSnapshot(latestWorkspace.current);
+        }
+        if (historyDeferred.current) {
+          historyDeferred.current = false;
+          void reload({ background: true });
+        }
       })
       .then(keep)
       .catch(failed);
