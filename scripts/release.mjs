@@ -171,7 +171,7 @@ const replaceOnce = async (relPath, pattern, replacer) => {
   const matches = content.match(
     new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`),
   );
-  if (!matches || matches.length !== 1) {
+  if (matches?.length !== 1) {
     throw new Error(
       `Expected exactly one version field in ${relPath}, found ${matches?.length ?? 0}.`,
     );
