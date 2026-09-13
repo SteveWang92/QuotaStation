@@ -85,10 +85,13 @@ async fn refresh_history_for(state: &Arc<AppState>, providers: &[ProviderKind]) 
             })
             .await;
         let began = Instant::now();
-        let history = providers::read_history(provider).await;
+        let (history, sessions) = match providers::read_history(provider).await {
+            Ok((history, timezone, sessions)) => (Ok((history, timezone)), sessions),
+            Err(error) => (Err(error), None),
+        };
         crate::log::write(describe_history(provider, began, &history));
         apply_history(state, provider, &started_at, history).await;
-        record_sessions(state, provider).await;
+        record_sessions(state, provider, sessions).await;
     }
     // The parse has just replaced this machine's rows. Publishing them and reading in what
     // the other machines published belongs to the same refresh, so the snapshot below
@@ -377,13 +380,19 @@ async fn apply_history(
 /// Stores each of a provider's sessions, priced from the catalog and — where the client
 /// recorded a figure of its own, which only recent Claude Code sessions do — beside that.
 ///
-/// It runs with the history parse because it reads the same logs. Failing to read it
-/// changes nothing on any other surface, so it is logged and left rather than turned into
-/// a provider error.
-async fn record_sessions(state: &Arc<AppState>, provider: ProviderKind) {
-    let read = match provider {
-        ProviderKind::Claude => providers::claude::read_session_costs().await,
-        ProviderKind::Codex => providers::codex::read_sessions().await,
+/// It runs with the history parse because it reads the same logs. Codex's parse hands its
+/// sessions over, and a failed one has none to record; Claude's sessions come from a
+/// separate read of the logs. Failing to read them changes nothing on any other surface, so
+/// it is logged and left rather than turned into a provider error.
+async fn record_sessions(
+    state: &Arc<AppState>,
+    provider: ProviderKind,
+    parsed_sessions: Option<Vec<crate::domain::SessionCost>>,
+) {
+    let read = match (provider, parsed_sessions) {
+        (_, Some(sessions)) => Ok(sessions),
+        (ProviderKind::Claude, None) => providers::claude::read_session_costs().await,
+        (ProviderKind::Codex, None) => return,
     };
     let sessions = match read {
         Ok(sessions) => sessions,

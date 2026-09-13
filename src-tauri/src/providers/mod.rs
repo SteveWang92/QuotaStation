@@ -13,7 +13,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    domain::{HistorySnapshot, LiveSnapshot, WindowSource},
+    domain::{HistorySnapshot, LiveSnapshot, SessionCost, WindowSource},
     resets::WindowObservation,
 };
 
@@ -153,12 +153,20 @@ pub async fn read_live(kind: ProviderKind) -> Result<LiveSnapshot> {
     }
 }
 
-pub async fn read_history(kind: ProviderKind) -> Result<(HistorySnapshot, String)> {
+/// A provider's history, its timezone, and — where the same parse yields them, which only
+/// Codex's does — its sessions.
+pub async fn read_history(
+    kind: ProviderKind,
+) -> Result<(HistorySnapshot, String, Option<Vec<SessionCost>>)> {
     let before = usage_file_state(kind)?;
     let timezone = jiff::tz::TimeZone::system().iana_name().unwrap_or("UTC").to_string();
-    let history = match kind {
-        ProviderKind::Codex => codex::read_history(&timezone).await,
-        ProviderKind::Claude => claude::read_history(&timezone).await,
+    let (history, sessions) = match kind {
+        ProviderKind::Codex => codex::read_history(&timezone)
+            .await
+            .map(|(history, sessions)| (history, Some(sessions))),
+        ProviderKind::Claude => {
+            claude::read_history(&timezone).await.map(|history| (history, None))
+        }
     }?;
     let quality = inspect_history_quality(kind, recent_quality_files(&before))?;
     let after = usage_file_state(kind)?;
@@ -171,7 +179,7 @@ pub async fn read_history(kind: ProviderKind) -> Result<(HistorySnapshot, String
         before.is_empty() || !history.days.is_empty(),
         "Provider session files exist but no usage records could be parsed"
     );
-    Ok((history, timezone))
+    Ok((history, timezone, sessions))
 }
 
 const QUALITY_TAIL_BYTES: u64 = 256 * 1024;

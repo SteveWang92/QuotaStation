@@ -7,32 +7,22 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ccusage_adapter_codex::{
-    CodexServiceTier, CodexSpeedPolicy, CodexTokenUsageEvent, aggregate_events,
-    calculate_codex_model_cost, calculate_group_cost, load_codex_events,
+    CodexSpeedPolicy, CodexTokenUsageEvent, aggregate_events, calculate_codex_model_cost,
+    calculate_group_cost,
 };
-use ccusage_core::{
-    PricingMap,
-    cli::{AgentReportKind, SharedArgs},
-    parse_ts_timestamp,
-};
+use ccusage_core::{PricingMap, cli::AgentReportKind, parse_ts_timestamp};
 
 use crate::domain::{SessionCost, TokenUsage};
 
-/// Every session the parser read, oldest first.
-pub async fn read_sessions() -> Result<Vec<SessionCost>> {
-    tokio::task::spawn_blocking(read_sessions_blocking)
-        .await
-        .context("Codex session reader stopped unexpectedly")?
-}
-
-fn read_sessions_blocking() -> Result<Vec<SessionCost>> {
-    let events = load_codex_events(&SharedArgs { json: true, ..SharedArgs::default() })
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let pricing = PricingMap::load_embedded();
-    let speed = CodexSpeedPolicy::Auto(CodexServiceTier::Standard);
-
+/// Every session in the events the history parse loaded, oldest first. It takes the same
+/// events rather than loading its own, so a refresh reads the rollout logs once.
+pub(super) fn sessions_from(
+    events: Vec<CodexTokenUsageEvent>,
+    pricing: &PricingMap,
+    speed: CodexSpeedPolicy,
+) -> Result<Vec<SessionCost>> {
     let mut by_session: BTreeMap<String, Vec<CodexTokenUsageEvent>> = BTreeMap::new();
     for event in events {
         by_session.entry(event.session_id.clone()).or_default().push(event);
@@ -40,7 +30,7 @@ fn read_sessions_blocking() -> Result<Vec<SessionCost>> {
 
     let mut sessions = Vec::with_capacity(by_session.len());
     for (session_id, events) in by_session {
-        if let Some(session) = session_of(session_id, &events, &pricing, speed)? {
+        if let Some(session) = session_of(session_id, &events, pricing, speed)? {
             sessions.push(session);
         }
     }
@@ -156,7 +146,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires local Codex session history"]
     async fn codex_sessions_are_priced_from_the_catalog_alone() {
-        let sessions = read_sessions().await.expect("read sessions");
+        let (_, sessions) =
+            super::super::history::read_history("UTC").await.expect("read sessions");
         println!("{} session(s) read", sessions.len());
         for session in sessions.iter().rev().take(5) {
             println!(
