@@ -7,6 +7,20 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-13
+
+### Added
+
+- The Claude Code status line can be laid out in Settings, choosing each segment, its row and order, the quota format, separators and colour, with a live preview.
+- The status line offers optional segments, off until switched on, for the session name, lines changed, session time, Git state, the last seven days' usage, quota resets and more.
+- The usage history can be read by session as well as by day, listing every Codex and Claude Code session with its cost, tokens, models, duration and lines changed, and a filter for the sessions whose client reported a cost of its own to compare against.
+- The quick panel offers a compact density in Settings, fitting every provider into one 180px column with a line per quota window, a pace marker on each, a seven-day token trend, the last quota restart and today's model mix.
+
+### Changed
+
+- The activity log records a line whose content has not changed as a repeat count rather than writing it again, which roughly halves the file.
+- A hidden window no longer reads usage data or diagnostics, so the dashboard costs nothing while it is dismissed and catches up when it is shown again.
+
 ## [1.1.0] - 2026-09-02
 
 ### Added
@@ -218,7 +232,8 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.6.0...v1.0.0
 [0.6.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.5.0...v0.6.0

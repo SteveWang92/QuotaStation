@@ -40,10 +40,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24.18.1
           cache: npm
@@ -69,7 +69,7 @@ jobs:
       # them through the cache. A run that matches the key restores without re-uploading,
       # so only a Cargo.lock change pays the save cost.
       - name: Cache Rust build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 pub enum ThemePreference {
     /// Follow the Windows app theme, and change with it while running.
     System,
-    /// The default, because it is what QuotaStation looked like before there was a choice.
+    /// The default.
     #[default]
     Dark,
     Light,
@@ -78,6 +78,9 @@ fn personalize(value: &str) -> Option<bool> {
     let name = wide(value);
     let mut data = 0u32;
     let mut size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: the two name pointers come from `wide`, whose NUL-terminated buffers `key` and
+    // `name` outlive the call. The output pointer addresses `data` and `size` starts as its
+    // byte length, so a DWORD is the largest value that can be written.
     let status = unsafe {
         RegGetValueW(
             HKEY_CURRENT_USER,

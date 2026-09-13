@@ -3,7 +3,8 @@ import { useCallback, useEffect, useState } from "react";
 import { saveAppSettings, useAppSettings } from "../appSettings";
 import { errorMessage } from "../errors";
 import { formatResetTimestamp } from "../format";
-import type { AppSettings, ClaudeStatusLineStatus, ProviderLabelStyle } from "../types";
+import type { ClaudeStatusLineStatus } from "../types";
+import { StatusLineLayoutEditor } from "./StatusLineLayoutEditor";
 
 /**
  * Registering QuotaStation as Claude Code's status line is the only way to see the
@@ -39,7 +40,7 @@ export function ClaudeStatusLine() {
     }
   }, []);
 
-  const change = useCallback(async (patch: Partial<AppSettings>) => {
+  const change = useCallback(async (patch: Parameters<typeof saveAppSettings>[0]) => {
     setSavingSettings(true);
     setError(null);
     try {
@@ -88,46 +89,7 @@ export function ClaudeStatusLine() {
         ) : null}
         {error ? <p className="provider-consent-error">{error}</p> : null}
         {status.installed && settings ? (
-          <div className="consent-options">
-            <label>
-              <input
-                type="checkbox"
-                checked={settings.statusLineOtherProviders}
-                disabled={savingSettings}
-                onChange={(event) =>
-                  void change({ statusLineOtherProviders: event.target.checked })
-                }
-              />
-              Show the other providers' usage, not only Claude's own windows
-            </label>
-            {/* Claude Code has no status line of its own to fall back to, so turning this
-                off leaves the model and the quota — as close to installing nothing as an
-                installed status line gets. */}
-            <label>
-              <input
-                type="checkbox"
-                checked={settings.statusLineExtraDetails}
-                disabled={savingSettings}
-                onChange={(event) => void change({ statusLineExtraDetails: event.target.checked })}
-              />
-              Show what Claude Code does not: the project, branch, context, cache and cost
-            </label>
-            <label>
-              Provider names
-              <select
-                value={settings.statusLineProviderLabels}
-                disabled={savingSettings}
-                onChange={(event) =>
-                  void change({
-                    statusLineProviderLabels: event.target.value as ProviderLabelStyle,
-                  })
-                }
-              >
-                <option value="short">Short (CDX, CLD)</option>
-                <option value="full">Full (Codex, Claude Code)</option>
-              </select>
-            </label>
-          </div>
+          <StatusLineLayoutEditor settings={settings} disabled={savingSettings} onChange={change} />
         ) : null}
       </div>
       <button
@@ -198,9 +160,8 @@ export function ClaudeFinishedNotifications() {
 }
 
 /**
- * What installing actually does, at the moment it is being decided. The same words sat
- * permanently on the card before, where they were a wall of text in front of a setting
- * most people had already made up their mind about.
+ * What installing actually does, at the moment it is being decided, rather than as a
+ * permanent wall of text on the card.
  */
 function ConfirmInstall({
   busy,

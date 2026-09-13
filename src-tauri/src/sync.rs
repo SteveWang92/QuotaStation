@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState,
     domain::{CCUSAGE_REVISION, DeviceUsageRow, SharedFolderDiagnostics, SharedResetEvent},
-    resets::{MAX_WINDOW_DURATION_MINS, UNPLANNED_THRESHOLD_SECONDS},
+    resets::MAX_WINDOW_DURATION_MINS,
     sanitize::sanitize_error,
     storage::DeviceImport,
 };
@@ -145,14 +145,8 @@ async fn export(
     if std::fs::read(&path).is_ok_and(|published| published == content) {
         return Ok(());
     }
-    // Written beside the file and renamed onto it, so a sync client watching the folder
-    // never picks up half a document.
-    let staging = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&staging, &content).context("write the exported aggregates")?;
-    std::fs::rename(&staging, &path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&staging);
-    })?;
-    Ok(())
+    // A sync client watching the folder must never pick up half a document.
+    crate::fs_atomic::write(&path, &content).context("write the exported aggregates")
 }
 
 /// Reads every other machine's file that has moved since it was last read.
@@ -267,15 +261,14 @@ fn check_resets(resets: &[SharedResetEvent]) -> Result<()> {
                     == Some(reset.early_by_seconds),
             "carries an inconsistent reset window"
         );
-        let expected_classification = if reset.early_by_seconds > UNPLANNED_THRESHOLD_SECONDS {
-            crate::domain::ResetClassification::Unplanned
-        } else {
-            crate::domain::ResetClassification::Scheduled
-        };
-        anyhow::ensure!(
-            reset.classification == expected_classification,
-            "carries an inconsistent reset classification"
-        );
+        // The classification is imported as the writing machine recorded it, and deliberately
+        // not re-derived from `UNPLANNED_THRESHOLD_SECONDS`. That threshold is a local
+        // constant rather than part of the exported format, so checking against it would
+        // reject every file another machine had written under the old value the day it
+        // moves — the whole device reading as failing over a judgement that was correct
+        // when it was made. The arithmetic above is checkable because the identities it
+        // asserts are part of the format; this is not. Serde already limits the field to
+        // the two variants the enum defines.
         anyhow::ensure!(
             jiff::Timestamp::from_str(&reset.detected_at).is_ok(),
             "carries an unreadable reset timestamp"
@@ -393,5 +386,26 @@ mod tests {
 
         reset.new_resets_at += 1;
         assert!(check_resets(&[reset]).is_err());
+    }
+
+    #[test]
+    fn shared_resets_keep_the_classification_the_writing_machine_recorded() {
+        // An hour early is Scheduled under the current threshold. A machine that had
+        // recorded it as Unplanned still imports, because the threshold behind that call
+        // is local to whichever machine made it.
+        let reset = SharedResetEvent {
+            provider: "codex".into(),
+            window_kind: crate::domain::LimitKind::Primary,
+            window_duration_mins: 300,
+            anchored_at: 1_800_000_000,
+            new_resets_at: 1_800_018_000,
+            previous_resets_at: 1_800_003_600,
+            used_percent_before: 82.0,
+            early_by_seconds: 3_600,
+            classification: crate::domain::ResetClassification::Unplanned,
+            source: "live".into(),
+            detected_at: "2027-01-15T08:00:00Z".into(),
+        };
+        assert!(check_resets(&[reset]).is_ok());
     }
 }

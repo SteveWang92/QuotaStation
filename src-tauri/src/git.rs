@@ -5,10 +5,13 @@
 //! the branch stands from its upstream. Both are read for the directory Claude Code is
 //! running in, and neither ever leaves the machine.
 //!
-//! The branch is read straight from `.git/HEAD` because one file read costs nothing. The
-//! two counts cannot be had that cheaply — they need the index compared against the working
-//! tree and the commit graph walked — so they come from `git` itself, and a short-lived
-//! cache keeps the client from paying for a process on every render of a streaming turn.
+//! The branch is read straight from `.git/HEAD` because one file read costs nothing, and so
+//! are the stash and an operation left in progress. The two counts cannot be had that
+//! cheaply — they need the index compared against the working tree and the commit graph
+//! walked — so they come from `git` itself, as do the last commit's time and its distance
+//! from the newest tag. A short-lived cache keeps the client from paying for a process on
+//! every render of a streaming turn, and each process runs only when the line shows what it
+//! answers.
 
 use std::{
     io::Read,
@@ -55,6 +58,29 @@ pub struct WorkTreeStatus {
     pub tracked: bool,
 }
 
+/// The checked-out commit: when it was made, and how it stands against the newest tag.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct HeadCommit {
+    pub committed_at: i64,
+    /// `git describe --tags`: `v1.1.0-6-gde36776`, or the tag alone on a tagged commit.
+    /// Unset in a repository with no tags.
+    pub describe: Option<String>,
+}
+
+/// Which of the `git` readings the status line is going to show.
+#[derive(Clone, Copy)]
+pub struct Wanted {
+    pub status: bool,
+    pub head: bool,
+}
+
+/// What was asked for and could be read.
+#[derive(Default)]
+pub struct Reading {
+    pub status: Option<WorkTreeStatus>,
+    pub head: Option<HeadCommit>,
+}
+
 /// The repository containing `start`, found by walking up from it.
 ///
 /// A worktree and a submodule leave a `gitdir:` pointer where the directory would be; the
@@ -79,53 +105,142 @@ pub fn repository_root(start: &Path) -> Option<PathBuf> {
 /// monitor's convenience. One short file read is not. A detached head names no branch and
 /// reports none.
 pub fn branch_at(root: &Path) -> Option<String> {
-    let git = root.join(".git");
-    let head = if git.is_dir() {
-        git.join("HEAD")
-    } else {
-        let pointer = std::fs::read_to_string(&git).ok()?;
-        let admin = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
-        let admin = if admin.is_absolute() { admin } else { root.join(admin) };
-        admin.join("HEAD")
-    };
-    std::fs::read_to_string(head).ok()?.trim().strip_prefix("ref: refs/heads/").map(str::to_string)
+    std::fs::read_to_string(admin_dir(root)?.join("HEAD"))
+        .ok()?
+        .trim()
+        .strip_prefix("ref: refs/heads/")
+        .map(str::to_string)
 }
 
-/// The two counts for a repository, from the cache when it is current and from `git`
-/// otherwise. Anything that goes wrong — no `git` on the path, a repository mid-rebase, a
-/// checkout too large to answer in time — costs the counts and nothing else.
-pub fn work_tree_status(root: &Path, now: i64) -> Option<WorkTreeStatus> {
+/// Where the checkout's own administrative files are: `.git` itself, or the directory a
+/// worktree's or submodule's `gitdir:` pointer names.
+fn admin_dir(root: &Path) -> Option<PathBuf> {
+    let git = root.join(".git");
+    if git.is_dir() {
+        return Some(git);
+    }
+    let pointer = std::fs::read_to_string(&git).ok()?;
+    let admin = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
+    Some(if admin.is_absolute() { admin } else { root.join(admin) })
+}
+
+/// The directory every worktree of the repository shares, which is where the stash lives.
+fn common_dir(admin: &Path) -> PathBuf {
+    match std::fs::read_to_string(admin.join("commondir")) {
+        Ok(pointer) => {
+            let common = PathBuf::from(pointer.trim());
+            if common.is_absolute() { common } else { admin.join(common) }
+        }
+        Err(_) => admin.to_path_buf(),
+    }
+}
+
+/// How many entries the stash holds, from its reflog: one line per entry.
+pub fn stash_count(root: &Path) -> Option<usize> {
+    let log =
+        std::fs::read_to_string(common_dir(&admin_dir(root)?).join("logs/refs/stash")).ok()?;
+    Some(log.lines().filter(|line| !line.is_empty()).count())
+}
+
+/// A rebase, merge, cherry-pick, revert or bisect left in progress, named the way `git`'s
+/// own prompt names it, with a rebase's step when `git` recorded one.
+pub fn operation(root: &Path) -> Option<String> {
+    let admin = admin_dir(root)?;
+    let number =
+        |path: PathBuf| -> Option<u32> { std::fs::read_to_string(path).ok()?.trim().parse().ok() };
+    for (directory, step, last) in
+        [("rebase-merge", "msgnum", "end"), ("rebase-apply", "next", "last")]
+    {
+        let directory = admin.join(directory);
+        if directory.is_dir() {
+            return Some(match (number(directory.join(step)), number(directory.join(last))) {
+                (Some(step), Some(last)) => format!("REBASE {step}/{last}"),
+                _ => "REBASE".to_string(),
+            });
+        }
+    }
+    [
+        ("MERGE_HEAD", "MERGE"),
+        ("CHERRY_PICK_HEAD", "CHERRY-PICK"),
+        ("REVERT_HEAD", "REVERT"),
+        ("BISECT_LOG", "BISECT"),
+    ]
+    .into_iter()
+    .find(|(file, _)| admin.join(file).exists())
+    .map(|(_, name)| name.to_string())
+}
+
+/// The readings asked for, from the cache when it is current and from `git` otherwise.
+/// Anything that goes wrong — no `git` on the path, a checkout too large to answer in time —
+/// costs that reading and nothing else.
+pub fn read(root: &Path, now: i64, wanted: Wanted) -> Reading {
+    if !wanted.status && !wanted.head {
+        return Reading::default();
+    }
     let key = root.to_string_lossy().into_owned();
     let mut cache = load_cache();
-    if let Some(entry) = cache.iter().find(|entry| entry.root == key)
-        && (0..=CACHE_TTL_SECS).contains(&(now - entry.observed_at))
-    {
-        return Some(entry.status);
+    let mut entry = cache
+        .iter()
+        .find(|entry| {
+            entry.root == key && (0..=CACHE_TTL_SECS).contains(&(now - entry.observed_at))
+        })
+        .cloned()
+        .unwrap_or_else(|| CacheEntry {
+            root: key.clone(),
+            observed_at: now,
+            status: None,
+            head: None,
+        });
+    let mut read_now = false;
+    if wanted.status && entry.status.is_none() {
+        entry.status = read_status(root);
+        read_now = true;
     }
-    let status = read_status(root)?;
-    cache.retain(|entry| entry.root != key);
-    cache.insert(0, CacheEntry { root: key, observed_at: now, status });
-    cache.truncate(CACHE_LIMIT);
-    store_cache(&cache);
-    Some(status)
+    if wanted.head && entry.head.is_none() {
+        entry.head = read_head(root);
+        read_now = true;
+    }
+    if read_now {
+        cache.retain(|cached| cached.root != key);
+        cache.insert(0, entry.clone());
+        cache.truncate(CACHE_LIMIT);
+        store_cache(&cache);
+    }
+    Reading {
+        status: entry.status.filter(|_| wanted.status),
+        head: entry.head.filter(|_| wanted.head),
+    }
 }
 
 /// One `git status` in the machine-readable form, which reports the working tree and the
 /// distance from the upstream in a single pass. `--no-optional-locks` keeps a status line
 /// from taking the index lock out from under the person actually using the repository.
 fn read_status(root: &Path) -> Option<WorkTreeStatus> {
+    run_git(
+        root,
+        &["--no-optional-locks", "status", "--porcelain=v2", "--branch", "--untracked-files=all"],
+    )
+    .map(|output| parse_status(&output))
+}
+
+/// The last commit's time and its description against the newest tag, in one process.
+fn read_head(root: &Path) -> Option<HeadCommit> {
+    run_git(root, &["--no-optional-locks", "log", "-1", "--format=%ct%x00%(describe:tags)"])
+        .and_then(|output| parse_head(&output))
+}
+
+fn parse_head(output: &str) -> Option<HeadCommit> {
+    let (time, describe) = output.trim_end().split_once('\0')?;
+    Some(HeadCommit {
+        committed_at: time.parse().ok()?,
+        describe: Some(describe.trim()).filter(|describe| !describe.is_empty()).map(str::to_string),
+    })
+}
+
+/// What `git` printed, or nothing if it failed or outran [`STATUS_TIMEOUT`].
+fn run_git(root: &Path, args: &[&str]) -> Option<String> {
     let mut command = Command::new("git");
-    command
-        .args([
-            "--no-optional-locks",
-            "status",
-            "--porcelain=v2",
-            "--branch",
-            "--untracked-files=all",
-        ])
-        .current_dir(root)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    command.args(args).current_dir(root).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -154,7 +269,7 @@ fn read_status(root: &Path) -> Option<WorkTreeStatus> {
         return None;
     }
     let output = receiver.recv_timeout(Duration::from_millis(100)).ok()??;
-    Some(parse_status(&String::from_utf8_lossy(&output)))
+    Some(String::from_utf8_lossy(&output).into_owned())
 }
 
 /// Reads the porcelain v2 report. Entry lines are counted rather than interpreted: what
@@ -186,12 +301,15 @@ fn parse_status(output: &str) -> WorkTreeStatus {
     status
 }
 
-/// One repository's counts and when they were read.
+/// One repository's readings and when they were taken. A reading nobody has asked for yet
+/// is absent rather than stale.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CacheEntry {
     root: String,
     observed_at: i64,
-    status: WorkTreeStatus,
+    status: Option<WorkTreeStatus>,
+    #[serde(default)]
+    head: Option<HeadCommit>,
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -207,18 +325,12 @@ fn load_cache() -> Vec<CacheEntry> {
 }
 
 /// Best effort throughout: a cache that cannot be written costs a process on the next
-/// render, which is not worth reporting to anyone. Published by rename, because several
-/// Claude Code sessions render at once.
+/// render, which is not worth reporting to anyone. Replaced whole, because several Claude
+/// Code sessions render at once.
 fn store_cache(cache: &[CacheEntry]) {
     let Some(path) = cache_path() else { return };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let staging = path.with_extension(format!("{}.tmp", std::process::id()));
     let Ok(encoded) = serde_json::to_string(cache) else { return };
-    if std::fs::write(&staging, encoded).is_ok() && std::fs::rename(&staging, &path).is_err() {
-        let _ = std::fs::remove_file(&staging);
-    }
+    let _ = crate::fs_atomic::write(&path, encoded);
 }
 
 #[cfg(test)]
@@ -252,6 +364,43 @@ mod tests {
         let status = parse_status("# branch.head main\n# branch.ab +0 -0\n");
         assert_eq!(status.changed, 0);
         assert!(status.tracked);
+    }
+
+    #[test]
+    fn the_head_is_read_as_its_time_and_its_distance_from_the_newest_tag() {
+        assert_eq!(
+            parse_head("1789135495\0v1.1.0-6-gde36776\n"),
+            Some(HeadCommit {
+                committed_at: 1_789_135_495,
+                describe: Some("v1.1.0-6-gde36776".to_string())
+            })
+        );
+        assert_eq!(parse_head("1789135495\0\n").unwrap().describe, None, "no tags at all");
+    }
+
+    #[test]
+    fn an_operation_left_in_progress_and_the_stash_are_read_from_files() {
+        let root = std::env::temp_dir().join(format!(
+            "quotastation-git-operation-{}-{}",
+            std::process::id(),
+            jiff::Timestamp::now().as_nanosecond()
+        ));
+        let rebase = root.join(".git/rebase-merge");
+        std::fs::create_dir_all(&rebase).unwrap();
+        std::fs::write(rebase.join("msgnum"), "3\n").unwrap();
+        std::fs::write(rebase.join("end"), "7\n").unwrap();
+        assert_eq!(operation(&root).as_deref(), Some("REBASE 3/7"));
+
+        std::fs::remove_dir_all(&rebase).unwrap();
+        std::fs::write(root.join(".git/MERGE_HEAD"), "abc\n").unwrap();
+        assert_eq!(operation(&root).as_deref(), Some("MERGE"));
+
+        assert_eq!(stash_count(&root), None, "no stash has ever been made");
+        std::fs::create_dir_all(root.join(".git/logs/refs")).unwrap();
+        std::fs::write(root.join(".git/logs/refs/stash"), "a b\nc d\n").unwrap();
+        assert_eq!(stash_count(&root), Some(2));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

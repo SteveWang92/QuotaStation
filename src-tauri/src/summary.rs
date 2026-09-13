@@ -13,7 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{Freshness, LimitKind, WorkspaceSnapshot};
+use crate::domain::{Freshness, LimitKind, ResetClassification, WorkspaceSnapshot};
+use crate::providers::ProviderKind;
 use crate::providers::claude::statusline::app_data_dir;
 
 const SUMMARY_FILE: &str = "quota-summary.json";
@@ -46,6 +47,28 @@ pub struct ProviderQuota {
     pub windows: Vec<QuotaWindow>,
     pub today_tokens: u64,
     pub api_equivalent_cost_usd: Option<f64>,
+    /// The last seven days, today included. Defaulted, like everything added to this shape
+    /// after it was first written, so an older file still loads.
+    #[serde(default)]
+    pub week_tokens: u64,
+    #[serde(default)]
+    pub week_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub last_reset: Option<RecentReset>,
+    #[serde(default)]
+    pub earned_reset_count: Option<u64>,
+}
+
+/// The provider's most recent confirmed window restart.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentReset {
+    /// The window's short label, such as `5h`.
+    pub window: String,
+    /// When the restarted window began.
+    pub at: i64,
+    /// Whether the server restarted it before its published expiry.
+    pub early: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -75,37 +98,54 @@ fn short_window_label(duration_mins: Option<i64>, kind: LimitKind) -> String {
     }
 }
 
-fn summarize(workspace: &WorkspaceSnapshot, now: i64) -> QuotaSummary {
+/// One provider's tokens and API-equivalent cost over the last seven days.
+pub type WeekTotals = (ProviderKind, u64, Option<f64>);
+
+fn summarize(workspace: &WorkspaceSnapshot, now: i64, weeks: &[WeekTotals]) -> QuotaSummary {
     QuotaSummary {
         schema: SCHEMA,
         generated_at: now,
         providers: workspace
             .providers
             .iter()
-            .map(|snapshot| ProviderQuota {
-                provider: snapshot.provider.key().to_string(),
-                short_name: snapshot.short_name.clone(),
-                display_name: snapshot.display_name.clone(),
-                windows: snapshot
-                    .limits
-                    .iter()
-                    // A stale window cannot be explained in the status line's available
-                    // space, so omitting it is safer than restamping an old percentage as
-                    // current. A window with no percentage likewise has nothing to render.
-                    .filter_map(|limit| {
-                        if limit.freshness != Freshness::Fresh {
-                            return None;
-                        }
-                        Some(QuotaWindow {
-                            label: short_window_label(limit.window_duration_mins, limit.kind),
-                            used_percent: limit.used_percent?,
-                            resets_at: limit.resets_at,
-                            window_minutes: limit.window_duration_mins,
+            .map(|snapshot| {
+                let week = weeks.iter().find(|(provider, ..)| *provider == snapshot.provider);
+                ProviderQuota {
+                    provider: snapshot.provider.key().to_string(),
+                    short_name: snapshot.short_name.clone(),
+                    display_name: snapshot.display_name.clone(),
+                    windows: snapshot
+                        .limits
+                        .iter()
+                        // A stale window cannot be explained in the status line's available
+                        // space, so omitting it is safer than restamping an old percentage as
+                        // current. A window with no percentage likewise has nothing to render.
+                        .filter_map(|limit| {
+                            if limit.freshness != Freshness::Fresh {
+                                return None;
+                            }
+                            Some(QuotaWindow {
+                                label: short_window_label(limit.window_duration_mins, limit.kind),
+                                used_percent: limit.used_percent?,
+                                resets_at: limit.resets_at,
+                                window_minutes: limit.window_duration_mins,
+                            })
                         })
-                    })
-                    .collect(),
-                today_tokens: snapshot.today.total,
-                api_equivalent_cost_usd: snapshot.api_equivalent_cost_usd,
+                        .collect(),
+                    today_tokens: snapshot.today.total,
+                    api_equivalent_cost_usd: snapshot.api_equivalent_cost_usd,
+                    week_tokens: week.map_or(0, |(_, tokens, _)| *tokens),
+                    week_cost_usd: week.and_then(|(_, _, cost)| *cost),
+                    last_reset: snapshot.recent_resets.first().map(|reset| RecentReset {
+                        window: short_window_label(
+                            Some(reset.window_duration_mins),
+                            reset.window_kind,
+                        ),
+                        at: reset.anchored_at,
+                        early: matches!(reset.classification, ResetClassification::Unplanned),
+                    }),
+                    earned_reset_count: snapshot.earned_reset_count,
+                }
             })
             .collect(),
     }
@@ -118,24 +158,13 @@ fn summary_path() -> Option<std::path::PathBuf> {
 /// Records the current snapshot for readers outside this process. Failures are silent: a
 /// summary that cannot be written must never become a second fault to report, and the
 /// application's own surfaces already have the data.
-pub fn publish(workspace: &WorkspaceSnapshot) {
-    let summary = summarize(workspace, jiff::Timestamp::now().as_second());
+pub fn publish(workspace: &WorkspaceSnapshot, weeks: &[WeekTotals]) {
+    let summary = summarize(workspace, jiff::Timestamp::now().as_second(), weeks);
     let Some(path) = summary_path() else { return };
-    let _ = write_atomically(&path, &summary);
-}
-
-fn write_atomically(path: &std::path::Path, summary: &QuotaSummary) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let Ok(content) = serde_json::to_string(summary) else { return Ok(()) };
-    // A refresh and a status-line render can coincide, so the file is published by rename:
-    // a reader never sees a half-written summary.
-    let staging = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&staging, content)?;
-    std::fs::rename(&staging, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&staging);
-    })
+    let Ok(content) = serde_json::to_string(&summary) else { return };
+    // A refresh and a status-line render can coincide, so a reader must never see a
+    // half-written summary.
+    let _ = crate::fs_atomic::write(&path, content);
 }
 
 /// The published summary, if one describes the present.
@@ -157,7 +186,9 @@ pub fn load_fresh(now: i64) -> Option<QuotaSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Freshness, LimitWindow, ProviderSnapshot, QuotaLevel, WindowSource};
+    use crate::domain::{
+        Freshness, LimitWindow, PaceLevel, ProviderSnapshot, QuotaLevel, WindowSource,
+    };
     use crate::providers::ProviderKind;
 
     fn workspace() -> WorkspaceSnapshot {
@@ -173,6 +204,7 @@ mod tests {
                 observed_at: 1_800_000_000,
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             },
             // Reported but unreadable: no percentage, so there is nothing to render.
             LimitWindow {
@@ -185,6 +217,7 @@ mod tests {
                 observed_at: 1_800_000_000,
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             },
             // A percentage is not enough: stale quota must not be restamped as current
             // merely because the application has just published another summary.
@@ -198,6 +231,7 @@ mod tests {
                 observed_at: 1_799_000_000,
                 freshness: Freshness::Stale,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             },
         ];
         codex.today.total = 1_234;
@@ -209,7 +243,7 @@ mod tests {
 
     #[test]
     fn a_summary_carries_the_windows_a_reader_could_draw_and_no_others() {
-        let summary = summarize(&workspace(), 1_800_000_000);
+        let summary = summarize(&workspace(), 1_800_000_000, &[]);
         assert_eq!(summary.schema, SCHEMA);
         let codex = &summary.providers[0];
         assert_eq!(codex.short_name, "CDX");
@@ -229,7 +263,7 @@ mod tests {
 
     #[test]
     fn the_summary_survives_a_round_trip_through_the_file_format() {
-        let summary = summarize(&workspace(), 1_800_000_000);
+        let summary = summarize(&workspace(), 1_800_000_000, &[]);
         let encoded = serde_json::to_string(&summary).expect("encode the summary");
         let decoded: QuotaSummary = serde_json::from_str(&encoded).expect("decode the summary");
         assert_eq!(decoded, summary);

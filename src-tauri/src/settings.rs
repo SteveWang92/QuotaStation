@@ -22,6 +22,185 @@ pub enum ProviderLabelStyle {
     Full,
 }
 
+/// How much room the quick panel takes for the same readings.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum QuickPanelDensity {
+    /// A column per provider, each quota window drawn as label, meter and reset time.
+    #[default]
+    Standard,
+    /// One narrow column whatever the provider count, each quota window drawn as the
+    /// taskbar widget's single badge/bar/reading row.
+    Compact,
+}
+
+/// What the Claude Code status line shows, where, and how.
+///
+/// Segments are named by string rather than by an enum so that a file naming a segment this
+/// build does not know — written by a later version, or by hand — still loads every other
+/// preference in it. [`StatusLineLayout::normalized`] reconciles the list with what this
+/// build can draw.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusLineLayout {
+    /// Every segment this build knows, in the order it is drawn within its row.
+    pub segments: Vec<SegmentPlacement>,
+    #[serde(default)]
+    pub quota: QuotaFormat,
+    #[serde(default)]
+    pub separators: SeparatorStyle,
+    #[serde(default)]
+    pub colour: ColourMode,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentPlacement {
+    pub id: String,
+    pub enabled: bool,
+    /// One of the rows, numbered from 1.
+    pub row: u8,
+}
+
+/// Which parts of each quota window are printed.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct QuotaFormat {
+    pub used: bool,
+    pub remaining: bool,
+    pub countdown: bool,
+    pub pace: bool,
+    pub bar: bool,
+}
+
+impl Default for QuotaFormat {
+    fn default() -> Self {
+        Self { used: true, remaining: false, countdown: true, pace: true, bar: false }
+    }
+}
+
+/// The marks between segments: one inside a group of related readings, one between groups.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SeparatorStyle {
+    /// ` · ` and ` | `.
+    #[default]
+    Classic,
+    /// ` · ` and ` › `.
+    Arrow,
+    /// ` · ` and the Powerline thin arrow, which needs a Powerline or Nerd Font.
+    Powerline,
+}
+
+/// Which readings carry a threshold colour.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ColourMode {
+    /// Quota and context shares.
+    #[default]
+    Full,
+    QuotaOnly,
+    None,
+}
+
+pub const STATUS_LINE_ROWS: u8 = 3;
+
+/// Every segment but the quotas, with the row it takes by default: the first says what the
+/// session and the project are, the second what Claude Code reported about this session,
+/// and the third what QuotaStation itself counted, after the quotas that open it.
+const SEGMENTS: [(&str, u8); 25] = [
+    ("model", 1),
+    ("mode", 1),
+    ("sessionName", 1),
+    ("agent", 1),
+    ("outputStyle", 1),
+    ("vimMode", 1),
+    ("version", 1),
+    ("directory", 1),
+    ("branch", 1),
+    ("gitOperation", 1),
+    ("stash", 1),
+    ("lastCommit", 1),
+    ("tag", 1),
+    ("pullRequest", 1),
+    ("context", 2),
+    ("largeContext", 2),
+    ("cache", 2),
+    ("sessionCost", 2),
+    ("linesChanged", 2),
+    ("duration", 2),
+    ("today", 3),
+    ("week", 3),
+    ("lastReset", 3),
+    ("resetCredits", 3),
+    ("quotaAge", 3),
+];
+
+/// What the line showed before it was configurable. Everything else starts switched off, so
+/// an existing installation renders unchanged until the user asks for more.
+const ON_BY_DEFAULT: [&str; 8] =
+    ["model", "mode", "directory", "branch", "pullRequest", "context", "cache", "sessionCost"];
+
+pub fn quota_segment_id(provider: crate::providers::ProviderKind) -> String {
+    format!("quota:{}", provider.key())
+}
+
+impl Default for StatusLineLayout {
+    fn default() -> Self {
+        Self::legacy(true, true)
+    }
+}
+
+impl StatusLineLayout {
+    /// The layout the two switches that came before it described. Both on is the default
+    /// line: the session on two rows and every provider's quota on the third. Without the
+    /// detail only the model and the quota are left, on one row.
+    pub(crate) fn legacy(extra_details: bool, other_providers: bool) -> Self {
+        use crate::providers::ProviderKind;
+        let placed = |(id, row): &(&str, u8)| SegmentPlacement {
+            id: id.to_string(),
+            enabled: (extra_details || *id == "model") && ON_BY_DEFAULT.contains(id),
+            row: if extra_details { *row } else { 1 },
+        };
+        let session = SEGMENTS.iter().filter(|(_, row)| *row < STATUS_LINE_ROWS).map(placed);
+        let counted = SEGMENTS.iter().filter(|(_, row)| *row == STATUS_LINE_ROWS).map(placed);
+        // This client's own quota first, as it always has been.
+        let providers = std::iter::once(ProviderKind::Claude)
+            .chain(ProviderKind::ALL.into_iter().filter(|kind| *kind != ProviderKind::Claude));
+        let quotas = providers.map(|kind| SegmentPlacement {
+            id: quota_segment_id(kind),
+            enabled: other_providers || kind == ProviderKind::Claude,
+            row: if extra_details { STATUS_LINE_ROWS } else { 1 },
+        });
+        Self {
+            segments: session.chain(quotas).chain(counted).collect(),
+            quota: QuotaFormat::default(),
+            separators: SeparatorStyle::default(),
+            colour: ColourMode::default(),
+        }
+    }
+
+    /// The stored layout reconciled with this build: unknown and repeated segments dropped,
+    /// rows kept in range, and a segment the file never mentioned added switched off, so
+    /// the settings page can still offer it.
+    pub fn normalized(mut self) -> Self {
+        let known = Self::default().segments;
+        let mut seen = std::collections::HashSet::new();
+        self.segments.retain(|segment| {
+            known.iter().any(|known| known.id == segment.id) && seen.insert(segment.id.clone())
+        });
+        for segment in &mut self.segments {
+            segment.row = segment.row.clamp(1, STATUS_LINE_ROWS);
+        }
+        for missing in known {
+            if !seen.contains(&missing.id) {
+                self.segments.push(SegmentPlacement { enabled: false, ..missing });
+            }
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -38,15 +217,11 @@ pub struct AppSettings {
     #[serde(default)]
     pub taskbar_widget_display: Option<String>,
     #[serde(default)]
+    pub quick_panel_density: QuickPanelDensity,
+    #[serde(default)]
     pub status_line_provider_labels: ProviderLabelStyle,
-    /// Whether the status line reports every provider QuotaStation watches, or only the
-    /// client it is being rendered inside.
-    #[serde(default = "enabled")]
-    pub status_line_other_providers: bool,
-    /// Whether the status line carries the session detail Claude Code's own footer never
-    /// shows — the project, the request and the spend. Off leaves the model and the quota.
-    #[serde(default = "enabled")]
-    pub status_line_extra_details: bool,
+    #[serde(default)]
+    pub status_line_layout: StatusLineLayout,
     /// Whether a quota window crossing the shared warning or critical share is announced.
     #[serde(default = "enabled")]
     pub notify_low_quota: bool,
@@ -115,9 +290,9 @@ impl Default for AppSettings {
             theme: crate::theme::ThemePreference::default(),
             taskbar_widget_enabled: enabled(),
             taskbar_widget_display: None,
+            quick_panel_density: QuickPanelDensity::default(),
             status_line_provider_labels: ProviderLabelStyle::default(),
-            status_line_other_providers: enabled(),
-            status_line_extra_details: enabled(),
+            status_line_layout: StatusLineLayout::default(),
             notify_low_quota: enabled(),
             notify_read_failures: enabled(),
             notify_quota_resets: enabled(),
@@ -138,18 +313,18 @@ pub fn load(path: &Path) -> AppSettings {
         .and_then(|content| {
             let stored: serde_json::Value = serde_json::from_str(&content).ok()?;
             let mut settings: AppSettings = serde_json::from_value(stored.clone()).ok()?;
-            // v0.2 had one switch for both choices v0.3 split apart. Preserve an expressed
-            // choice wherever the old file does not yet carry its replacement.
-            if let Some(legacy) =
-                stored.get("statusLineFullDetails").and_then(serde_json::Value::as_bool)
-            {
-                if stored.get("statusLineOtherProviders").is_none() {
-                    settings.status_line_other_providers = legacy;
-                }
-                if stored.get("statusLineExtraDetails").is_none() {
-                    settings.status_line_extra_details = legacy;
-                }
+            // A file without a layout may still carry the switches that came before it —
+            // `statusLineFullDetails`, or the pair that replaced it — and a choice expressed
+            // there is kept.
+            if stored.get("statusLineLayout").is_none() {
+                let switch = |key: &str| stored.get(key).and_then(serde_json::Value::as_bool);
+                let full = switch("statusLineFullDetails").unwrap_or(true);
+                settings.status_line_layout = StatusLineLayout::legacy(
+                    switch("statusLineExtraDetails").unwrap_or(full),
+                    switch("statusLineOtherProviders").unwrap_or(full),
+                );
             }
+            settings.status_line_layout = settings.status_line_layout.normalized();
             Some(settings)
         })
         .unwrap_or_default()
@@ -165,19 +340,11 @@ fn default_path() -> Option<PathBuf> {
 }
 
 pub fn save(path: &Path, settings: &AppSettings) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
     let content = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
     // The status-line process reads this file while the application is running. Publish a
     // complete replacement so it never sees a truncated JSON document, and a failed write
     // leaves the last saved preferences intact.
-    let staging = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&staging, content).map_err(|error| error.to_string())?;
-    std::fs::rename(&staging, path).map_err(|error| {
-        let _ = std::fs::remove_file(&staging);
-        error.to_string()
-    })?;
+    crate::fs_atomic::write(path, content).map_err(|error| error.to_string())?;
     remove_abandoned_staging(path);
     Ok(())
 }
@@ -227,32 +394,79 @@ mod tests {
             "no display chosen means the primary one"
         );
         assert_eq!(settings.status_line_provider_labels, ProviderLabelStyle::Short);
-        assert!(settings.status_line_other_providers, "an unrecorded choice takes its default");
-        assert!(settings.status_line_extra_details, "an unrecorded choice takes its default");
+        assert_eq!(settings.status_line_layout, StatusLineLayout::default());
         assert!(settings.notify_low_quota, "an unrecorded choice takes its default");
         assert!(settings.notify_read_failures, "an unrecorded choice takes its default");
         assert!(settings.notify_quota_resets, "an unrecorded choice takes its default");
     }
 
+    fn enabled_ids(layout: &StatusLineLayout) -> Vec<(&str, u8)> {
+        layout
+            .segments
+            .iter()
+            .filter(|segment| segment.enabled)
+            .map(|segment| (segment.id.as_str(), segment.row))
+            .collect()
+    }
+
     #[test]
-    fn the_old_combined_status_line_choice_migrates_to_both_new_choices() {
+    fn the_old_status_line_switches_become_the_layout_they_described() {
         let path = scratch("legacy-status-line-details");
         std::fs::write(&path, r#"{"statusLineFullDetails":false}"#).expect("write old settings");
-        let settings = load(&path);
-        assert!(!settings.status_line_other_providers);
-        assert!(!settings.status_line_extra_details);
+        assert_eq!(
+            enabled_ids(&load(&path).status_line_layout),
+            [("model", 1), ("quota:claude", 1)]
+        );
+
+        std::fs::write(
+            &path,
+            r#"{"statusLineExtraDetails":false,"statusLineOtherProviders":true}"#,
+        )
+        .expect("write old settings");
+        assert_eq!(
+            enabled_ids(&load(&path).status_line_layout),
+            [("model", 1), ("quota:claude", 1), ("quota:codex", 1)]
+        );
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn settings_survive_a_round_trip_through_the_file_format() {
-        let settings = AppSettings {
+    fn a_hand_edited_layout_is_reconciled_with_what_this_build_can_draw() {
+        let path = scratch("edited-layout");
+        std::fs::write(
+            &path,
+            r#"{"statusLineLayout":{"segments":[
+                {"id":"quota:codex","enabled":true,"row":9},
+                {"id":"weather","enabled":true,"row":1},
+                {"id":"model","enabled":true,"row":1},
+                {"id":"model","enabled":false,"row":2}
+            ]}}"#,
+        )
+        .expect("write edited settings");
+        let layout = load(&path).status_line_layout;
+        assert_eq!(enabled_ids(&layout), [("quota:codex", STATUS_LINE_ROWS), ("model", 1)]);
+        assert_eq!(
+            layout.segments.len(),
+            StatusLineLayout::default().segments.len(),
+            "every known segment is still offered"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Every field moved away from its default, so a field the file format drops shows up.
+    fn customised() -> AppSettings {
+        AppSettings {
             theme: crate::theme::ThemePreference::Light,
             taskbar_widget_enabled: false,
             taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
+            quick_panel_density: QuickPanelDensity::Compact,
             status_line_provider_labels: ProviderLabelStyle::Full,
-            status_line_other_providers: false,
-            status_line_extra_details: false,
+            status_line_layout: StatusLineLayout {
+                quota: QuotaFormat { bar: true, ..QuotaFormat::default() },
+                separators: SeparatorStyle::Powerline,
+                colour: ColourMode::QuotaOnly,
+                ..StatusLineLayout::legacy(false, false)
+            },
             notify_low_quota: false,
             notify_read_failures: false,
             notify_quota_resets: false,
@@ -261,7 +475,12 @@ mod tests {
             dismissed_reset_notices: vec!["codex:primary:1781654400".to_string()],
             quota_disabled_providers: vec!["codex".to_string()],
             shared_usage_folder: Some("D:\\Sync\\QuotaStation".to_string()),
-        };
+        }
+    }
+
+    #[test]
+    fn settings_survive_a_round_trip_through_the_file_format() {
+        let settings = customised();
         let encoded = serde_json::to_string(&settings).expect("encode");
         assert_eq!(serde_json::from_str::<AppSettings>(&encoded).expect("decode"), settings);
     }
@@ -281,22 +500,7 @@ mod tests {
     fn replacing_the_settings_file_keeps_the_last_complete_record() {
         let path = scratch("atomic");
         save(&path, &AppSettings::default()).expect("write the first settings");
-        let expected = AppSettings {
-            theme: crate::theme::ThemePreference::System,
-            taskbar_widget_enabled: false,
-            taskbar_widget_display: Some("\\\\.\\DISPLAY2".to_string()),
-            status_line_provider_labels: ProviderLabelStyle::Full,
-            status_line_other_providers: false,
-            status_line_extra_details: false,
-            notify_low_quota: false,
-            notify_read_failures: false,
-            notify_quota_resets: false,
-            device_id: Some("18f3c".to_string()),
-            device_name: Some("Workshop".to_string()),
-            dismissed_reset_notices: vec!["codex:primary:1781654400".to_string()],
-            quota_disabled_providers: vec!["codex".to_string()],
-            shared_usage_folder: Some("D:\\Sync\\QuotaStation".to_string()),
-        };
+        let expected = customised();
         save(&path, &expected).expect("replace the settings");
         assert_eq!(load(&path), expected);
         let _ = std::fs::remove_file(path);

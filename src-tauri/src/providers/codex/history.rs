@@ -12,18 +12,22 @@ use ccusage_core::{
 };
 
 use crate::{
-    domain::{HistoryDay, HistoryHour, HistorySnapshot, ModelUsage, ModelUsageRow, TokenUsage},
+    domain::{
+        HistoryDay, HistoryHour, HistorySnapshot, ModelUsage, ModelUsageRow, SessionCost,
+        TokenUsage,
+    },
     providers::hours,
 };
 
-pub async fn read_history(timezone: &str) -> Result<HistorySnapshot> {
+/// The daily and hourly history, and every session, from one load of the rollout logs.
+pub async fn read_history(timezone: &str) -> Result<(HistorySnapshot, Vec<SessionCost>)> {
     let timezone = timezone.to_string();
     tokio::task::spawn_blocking(move || read_history_blocking(&timezone))
         .await
         .context("Codex history parser stopped unexpectedly")?
 }
 
-fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
+fn read_history_blocking(timezone: &str) -> Result<(HistorySnapshot, Vec<SessionCost>)> {
     let events = load_codex_events(&SharedArgs { json: true, ..SharedArgs::default() })
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let groups = aggregate_events(&events, AgentReportKind::Daily, Some(timezone))
@@ -62,7 +66,9 @@ fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
         });
     }
     days.sort_by(|a, b| a.date.cmp(&b.date));
-    Ok(HistorySnapshot { days, hours: hourly_buckets(&events, timezone, &pricing, speed)? })
+    let hours = hourly_buckets(&events, timezone, &pricing, speed)?;
+    let sessions = super::sessions::sessions_from(events, &pricing, speed)?;
+    Ok((HistorySnapshot { days, hours }, sessions))
 }
 
 /// The same events grouped by the local hour they fell in.

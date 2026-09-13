@@ -1,6 +1,7 @@
 mod history;
 mod live;
 mod rollout;
+mod sessions;
 
 pub use history::read_history;
 pub use live::read_live;

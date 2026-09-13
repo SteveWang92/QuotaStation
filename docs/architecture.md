@@ -84,6 +84,19 @@ Estimated API costs use the LiteLLM pricing data embedded at build time by `ccus
 comparisons, not provider bills. The application displays the pricing revision so a result can
 be traced to the catalog used to calculate it.
 
+Every session the parsers read is stored on its own as well as in the day it belongs to:
+its cost from the catalog, its tokens, its models, and the span from its first entry to its
+last. Recent Claude Code sessions also carry the client's own cost accounting in their logs,
+and that figure is stored beside the computed one, so the pricing catalog can be checked
+against the vendor's own numbers instead of being taken on trust. Neither figure is a bill,
+and only some sessions can be compared at all: Claude Code began recording its figure
+partway through its life and Codex records none, so a session without one carries the
+catalog's estimate alone. A session whose entries already carry a cost of their own is
+marked as no longer independently priced, because the parser then reports the client's
+number back rather than a second opinion. The client's record also says how much of the
+session was spent waiting on the provider and how much code it changed, which the sessions
+view lists beside the costs.
+
 See [Third-party notices](../THIRD_PARTY_NOTICES.md) for revisions, licenses, and local changes.
 
 ## Shared application model
@@ -101,7 +114,9 @@ the Windows taskbar rather than the application's own preference.
 
 SQLite stores processed usage totals, quota readings, reset history, refresh results, and the
 source information needed by diagnostics. It never stores credentials, prompts, source code,
-raw session records, or complete provider paths.
+raw session records, or complete provider paths. The one identifier it keeps is the client's
+own session id on a stored cost comparison, which is what lets a growing session correct its
+own row; it stays in the local database and is not part of the shared-folder export.
 
 | Data | Retention |
 | --- | --- |
@@ -110,6 +125,7 @@ raw session records, or complete provider paths.
 | Hourly usage totals | 14 days |
 | Daily usage totals | Indefinitely |
 | Confirmed quota reset events | Indefinitely |
+| Per-session summaries | 90 days |
 | Successful refresh records | 30 days |
 | Failed refresh records | 180 days |
 
@@ -182,6 +198,8 @@ details. See [Multi-machine usage](multi-machine.md) for the file contents and s
 - Provider access is read-only.
 - Credentials stay in the provider client or operating-system credential store.
 - Prompts, source code, raw sessions, account details, and complete paths are not collected.
+- A session identifier is stored only so a session's row can be corrected as it grows, and
+  it is never exported or shared.
 - Diagnostic export is an explicit user action and omits account and machine identifiers.
 - The activity log records what the application did — reads, publications, queries, window
   and settings changes, renderer failures — but no session content, credential, or provider

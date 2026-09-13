@@ -4,9 +4,11 @@ import {
   formatCompactCountdown,
   formatCountdown,
   formatCurrency,
+  formatDuration,
   formatEarlyBy,
   formatResetTimestamp,
   formatRevision,
+  formatShortMoment,
   formatTimestamp,
   formatWindowBadge,
 } from "../src/format";
@@ -81,6 +83,17 @@ describe("clock times", () => {
   });
 });
 
+describe("a past moment at panel width", () => {
+  it("carries the date only once the moment is not today", () => {
+    freezeClock();
+    const today = formatShortMoment((NOW - 3 * 3_600_000) / 1_000);
+    const earlier = formatShortMoment((NOW - 3 * 86_400_000) / 1_000);
+    expect(today).toMatch(/^\d{2}:\d{2}$/);
+    expect(earlier).toMatch(/\d{2}:\d{2}$/);
+    expect(earlier.length).toBeGreaterThan(today.length);
+  });
+});
+
 describe("how early a window restarted", () => {
   it("keeps a fraction of a day so a reset days early stays legible", () => {
     expect(formatEarlyBy(Math.round(4.8 * 86_400))).toBe("4.8 days early");
@@ -112,5 +125,13 @@ describe("hour buckets", () => {
   it("says the clock hour and nothing else, because the axis carries the date", () => {
     expect(formatAxisHour("2026-08-20T00:00")).toBe("00:00");
     expect(formatAxisHour("2026-08-20T14:00")).toBe("14:00");
+  });
+});
+
+describe("how long a session ran", () => {
+  it("drops to the unit the reader can act on", () => {
+    expect(formatDuration(36_000)).toBe("36s");
+    expect(formatDuration(48 * 60_000)).toBe("48m");
+    expect(formatDuration(134 * 60_000)).toBe("2h 14m");
   });
 });

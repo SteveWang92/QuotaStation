@@ -1,17 +1,22 @@
 mod alerts;
 mod autostart;
+mod commands;
 mod diagnostic_export;
+mod fs_atomic;
 mod git;
 mod log;
+mod quick_panel;
 mod refresh;
 mod reinstall;
 mod sanitize;
 mod session_watcher;
+mod shell;
 mod summary;
 mod sync;
 mod taskbar;
 mod terminal;
 mod theme;
+mod tray;
 
 // The application is the only consumer of this library, with one exception: the
 // `seed_demo` example fills the demonstration database described in `demo`, and writes it
@@ -24,20 +29,18 @@ pub mod resets;
 pub mod settings;
 pub mod storage;
 
+use crate::commands::on_off;
 use crate::settings::AppSettings;
+use crate::tray::{build_tray, show_main};
 
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex as StdMutex, OnceLock},
     time::{Duration, Instant},
 };
 
-use domain::{
-    DeviceDiagnostics, DiagnosticsSnapshot, ProviderSnapshot, QuotaHistorySnapshot,
-    SharedFolderDiagnostics, UsageHoursSnapshot, UsageRangeSnapshot, UsageWindowSnapshot,
-    WatcherDiagnostics, WorkspaceSnapshot,
-};
+use domain::{ProviderSnapshot, SharedFolderDiagnostics, WatcherDiagnostics, WorkspaceSnapshot};
 use providers::{ProviderKind, claude::notifications, claude::statusline};
 use storage::Storage;
 
@@ -96,15 +99,8 @@ fn ensure_device_identity(path: &std::path::Path, mut settings: AppSettings) -> 
 pub fn run_claude_hook() -> bool {
     statusline::run_bridge_if_requested() || notifications::run_hook_if_requested()
 }
-use tauri::{
-    Emitter, Manager, PhysicalPosition, State,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-};
+use tauri::{Emitter, Manager};
 use tokio::sync::{Mutex, RwLock};
-
-#[cfg(desktop)]
-use tauri_plugin_autostart::ManagerExt;
 
 /// The handle the taskbar click watch reaches the application through: it is called from a
 /// system mouse hook, which is a bare C callback with nowhere to carry one.
@@ -119,34 +115,49 @@ pub struct AppState {
     watcher_diagnostics: RwLock<WatcherDiagnostics>,
     /// What the shared usage folder last did, written by the refresh that ran it.
     shared_folder_diagnostics: RwLock<SharedFolderDiagnostics>,
-    quick_panel_focus_lost_at: StdMutex<Option<Instant>>,
-    quick_panel_toggled_at: StdMutex<Option<Instant>>,
-    quick_panel_shown_at: StdMutex<Option<Instant>>,
+    quick_panel: StdMutex<QuickPanelTiming>,
     settings: StdMutex<AppSettings>,
     detected_providers: StdMutex<Vec<ProviderKind>>,
     settings_path: PathBuf,
 }
 
+/// When the quick panel last changed hands, which is what tells one click reaching it twice,
+/// or a focus loss caused by the click that opened it, apart from a real request.
+#[derive(Default)]
+struct QuickPanelTiming {
+    focus_lost_at: Option<Instant>,
+    toggled_at: Option<Instant>,
+    shown_at: Option<Instant>,
+}
+
 impl AppState {
-    /// The state a test drives, over a throwaway database and with no window behind it.
-    /// Only the parts the refresh path reads are populated.
-    #[cfg(test)]
-    pub(crate) fn for_tests(storage: Storage) -> Self {
+    fn new(
+        storage: Storage,
+        settings: AppSettings,
+        settings_path: PathBuf,
+        snapshots: BTreeMap<ProviderKind, ProviderSnapshot>,
+        providers: Vec<ProviderKind>,
+    ) -> Self {
         Self {
             storage,
-            snapshots: RwLock::new(BTreeMap::new()),
+            snapshots: RwLock::new(snapshots),
             refresh_publish_lock: Mutex::new(()),
             live_refresh_lock: Mutex::new(()),
             history_refresh_lock: Mutex::new(()),
             watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
             shared_folder_diagnostics: RwLock::new(SharedFolderDiagnostics::default()),
-            quick_panel_focus_lost_at: StdMutex::new(None),
-            quick_panel_toggled_at: StdMutex::new(None),
-            quick_panel_shown_at: StdMutex::new(None),
-            settings: StdMutex::new(AppSettings::default()),
-            detected_providers: StdMutex::new(Vec::new()),
-            settings_path: PathBuf::new(),
+            quick_panel: StdMutex::new(QuickPanelTiming::default()),
+            settings: StdMutex::new(settings),
+            detected_providers: StdMutex::new(providers),
+            settings_path,
         }
+    }
+
+    /// The state a test drives, over a throwaway database and with no window behind it.
+    /// Only the parts the refresh path reads are populated.
+    #[cfg(test)]
+    pub(crate) fn for_tests(storage: Storage) -> Self {
+        Self::new(storage, AppSettings::default(), PathBuf::new(), BTreeMap::new(), Vec::new())
     }
 
     fn settings(&self) -> AppSettings {
@@ -231,12 +242,7 @@ impl AppState {
         for &provider in enabled.iter().filter(|provider| !local.contains(provider)) {
             let mut snapshot = self.storage.load_snapshot(provider).await?;
             snapshot.remote_usage_only = true;
-            snapshot.limits.clear();
-            snapshot.earned_reset_count = None;
-            snapshot.earned_reset_expires_at = None;
-            snapshot.recent_resets.clear();
-            snapshot.live_error = None;
-            snapshot.sign_in_required = false;
+            snapshot.clear_quota();
             snapshot.resolve_derived_state();
             remote.push((provider, snapshot));
         }
@@ -278,8 +284,10 @@ impl AppState {
         provider: ProviderKind,
         read: impl FnOnce(&ProviderSnapshot) -> T,
     ) -> T {
-        let mut snapshots = self.snapshots.write().await;
-        read(snapshots.entry(provider).or_insert_with(|| ProviderSnapshot::new(provider)))
+        if let Some(snapshot) = self.snapshots.read().await.get(&provider) {
+            return read(snapshot);
+        }
+        read(&ProviderSnapshot::new(provider))
     }
 
     /// The payload every surface consumes. Derived state is resolved here so a snapshot
@@ -300,12 +308,7 @@ impl AppState {
                 snapshot.quota_disabled =
                     !snapshot.remote_usage_only && !Self::quota_tracked(&settings, provider);
                 if snapshot.remote_usage_only || snapshot.quota_disabled {
-                    snapshot.limits.clear();
-                    snapshot.earned_reset_count = None;
-                    snapshot.earned_reset_expires_at = None;
-                    snapshot.recent_resets.clear();
-                    snapshot.live_error = None;
-                    snapshot.sign_in_required = false;
+                    snapshot.clear_quota();
                 }
                 snapshot.resolve_derived_state();
                 snapshot
@@ -313,195 +316,6 @@ impl AppState {
             .collect();
         WorkspaceSnapshot::new(providers)
     }
-}
-
-#[tauri::command]
-async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<WorkspaceSnapshot, String> {
-    // Not logged: every window re-reads this on a timer, and a line per poll would bury
-    // the log in the one event that carries no information.
-    Ok(state.workspace_snapshot().await)
-}
-
-/// One line for a stored-data query, so a dashboard that drew the wrong thing can be
-/// explained from the log rather than from a reproduction.
-fn log_query<T, E: std::fmt::Display>(
-    request: &str,
-    result: &Result<T, E>,
-    summarize: impl FnOnce(&T) -> String,
-) {
-    match result {
-        Ok(value) => log::write(format!("query {request}: {}", summarize(value))),
-        Err(error) => log::write(format!("query {request} failed: {error}")),
-    }
-}
-
-/// What a query was asked for, in the vocabulary the commands take it in.
-fn query_scope(provider: Option<ProviderKind>, device: Option<&str>) -> String {
-    format!(
-        "{} on {}",
-        provider.map_or("all providers", ProviderKind::key),
-        device.map_or("this device", |_| "one device"),
-    )
-}
-
-/// What the renderer did, in the renderer's own words.
-///
-/// Everything a window does starts there and reaches the core only as whichever command it
-/// ends in, so a window that drew nothing, or a script that threw before it drew anything,
-/// leaves no trace at all without this. It is the one way in, it writes to the same file as
-/// every other line, and what it is handed is redacted and truncated the same way.
-#[tauri::command]
-fn log_activity(detail: String) {
-    log::write(format!("ui: {detail}"));
-}
-
-#[tauri::command]
-async fn get_usage_range(
-    // No provider is the combined history: the dashboard's "All" tab reads every
-    // provider in one query rather than adding up separate answers in the renderer.
-    provider: Option<ProviderKind>,
-    device: Option<String>,
-    start_date: String,
-    end_date: String,
-    state: State<'_, Arc<AppState>>,
-) -> Result<UsageRangeSnapshot, String> {
-    let result =
-        state.storage.load_usage_range(provider, device.as_deref(), &start_date, &end_date).await;
-    log_query(
-        &format!(
-            "daily usage {start_date}..{end_date} for {}",
-            query_scope(provider, device.as_deref())
-        ),
-        &result,
-        |range| format!("{} day(s), {} model(s)", range.days.len(), range.models.len()),
-    );
-    result.map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn get_usage_start_date(
-    provider: Option<ProviderKind>,
-    device: Option<String>,
-    state: State<'_, Arc<AppState>>,
-) -> Result<Option<String>, String> {
-    let result = state.storage.load_usage_start_date(provider, device.as_deref()).await;
-    log_query(
-        &format!("earliest usage for {}", query_scope(provider, device.as_deref())),
-        &result,
-        |start| format!("{start:?}"),
-    );
-    result.map_err(|error| error.to_string())
-}
-
-/// The same range hour by hour, for the short ranges the dashboard draws that way.
-#[tauri::command]
-async fn get_usage_hours(
-    provider: Option<ProviderKind>,
-    device: Option<String>,
-    start_date: String,
-    end_date: String,
-    state: State<'_, Arc<AppState>>,
-) -> Result<UsageHoursSnapshot, String> {
-    let result =
-        state.storage.load_usage_hours(provider, device.as_deref(), &start_date, &end_date).await;
-    log_query(
-        &format!(
-            "hourly usage {start_date}..{end_date} for {}",
-            query_scope(provider, device.as_deref())
-        ),
-        &result,
-        |hours| format!("{} hour(s)", hours.hours.len()),
-    );
-    result.map_err(|error| error.to_string())
-}
-
-/// A rolling window of hours — the last twenty-four of them — with its totals summed
-/// from exactly those hours rather than from the two partial days they fall in.
-#[tauri::command]
-async fn get_usage_window(
-    provider: Option<ProviderKind>,
-    device: Option<String>,
-    start_hour: String,
-    end_hour: String,
-    state: State<'_, Arc<AppState>>,
-) -> Result<UsageWindowSnapshot, String> {
-    let result =
-        state.storage.load_usage_window(provider, device.as_deref(), &start_hour, &end_hour).await;
-    log_query(
-        &format!(
-            "usage window {start_hour}..{end_hour} for {}",
-            query_scope(provider, device.as_deref())
-        ),
-        &result,
-        |window| format!("{} hour(s)", window.hours.hours.len()),
-    );
-    result.map_err(|error| error.to_string())
-}
-
-/// Every restart QuotaStation has recorded, per provider. The dashboard annotates the
-/// window running now; this is the list the settings page shows in full.
-#[tauri::command]
-async fn get_reset_history(
-    state: State<'_, Arc<AppState>>,
-) -> Result<Vec<ProviderResetHistory>, String> {
-    let mut history = Vec::new();
-    for provider in state.enabled_providers() {
-        let result = state.storage.load_reset_history(provider).await;
-        log_query(&format!("reset history for {}", provider.key()), &result, |resets| {
-            format!("{} restart(s)", resets.len())
-        });
-        history.push(ProviderResetHistory {
-            provider,
-            display_name: provider.display_name().to_string(),
-            resets: result.map_err(|error| error.to_string())?,
-        });
-    }
-    Ok(history)
-}
-
-/// One provider's whole restart history, named so the settings page can head the list.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderResetHistory {
-    provider: ProviderKind,
-    display_name: String,
-    resets: Vec<domain::LimitResetEvent>,
-}
-
-#[tauri::command]
-async fn get_quota_history(
-    provider: ProviderKind,
-    start_date: String,
-    end_date: String,
-    state: State<'_, Arc<AppState>>,
-) -> Result<QuotaHistorySnapshot, String> {
-    let result = state.storage.load_quota_history(provider, &start_date, &end_date).await;
-    log_query(
-        &format!("quota history {start_date}..{end_date} for {}", provider.key()),
-        &result,
-        |history| {
-            format!("{} window(s), {} restart(s)", history.windows.len(), history.resets.len())
-        },
-    );
-    result.map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn refresh_now(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<AppState>>,
-) -> Result<WorkspaceSnapshot, String> {
-    log::write("refresh requested by hand");
-    Ok(refresh::refresh_all(&app, state.inner()).await)
-}
-
-#[tauri::command]
-fn open_dashboard(app: tauri::AppHandle) {
-    log::write("dashboard opened from the quick panel");
-    if let Some(panel) = app.get_webview_window("quick-panel") {
-        let _ = panel.hide();
-    }
-    show_main(&app);
 }
 
 /// Placement runs on a short loop so the widget follows taskbar changes. Repeating the
@@ -571,303 +385,29 @@ pub(crate) fn preferred_taskbar_display(app: &tauri::AppHandle) -> Option<String
     app.try_state::<Arc<AppState>>()?.settings().taskbar_widget_display
 }
 
-/// The displays the status can be shown on. Read live rather than stored: a monitor is
-/// attached and detached while the application runs.
-#[tauri::command]
-fn get_taskbar_displays() -> Vec<taskbar::TaskbarDisplay> {
-    taskbar::taskbar_displays()
-}
-
-#[tauri::command]
-fn set_taskbar_widget_size(app: tauri::AppHandle, provider_count: u32) -> Result<(), String> {
-    // A hidden widget still runs its renderer; resizing it must not bring it back.
-    if !app.state::<Arc<AppState>>().settings().taskbar_widget_enabled {
-        return Ok(());
-    }
-    let handle = app.clone();
-    app.run_on_main_thread(move || {
-        if let Err(error) = taskbar::set_widget_size(&handle, provider_count) {
-            log::write(format!("taskbar status resize: {error}"));
-        }
-    })
-    .map_err(|error| error.to_string())
-}
-
-/// A provider whose quota this machine could read, for the switch that decides whether it
-/// does. Only a provider with a client here can be asked for a quota at all.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderChoice {
-    provider: ProviderKind,
-    display_name: String,
-}
-
-#[tauri::command]
-fn get_provider_choices() -> Vec<ProviderChoice> {
-    ProviderKind::ALL
-        .into_iter()
-        .filter(|provider| demo::requested() || provider.is_installed())
-        .map(|provider| ProviderChoice {
-            provider,
-            display_name: provider.display_name().to_string(),
-        })
-        .collect()
-}
-
-#[tauri::command]
-fn get_app_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
-    state.settings()
-}
-
-/// Which preferences a save actually moved, named rather than valued wherever the value is
-/// this machine's own — a device name or a folder is recorded as changed and no further.
-fn settings_changes(previous: &AppSettings, next: &AppSettings) -> Vec<String> {
-    let mut changes = Vec::new();
-    if previous.theme != next.theme {
-        changes.push(format!("theme {:?}", next.theme));
-    }
-    if previous.taskbar_widget_enabled != next.taskbar_widget_enabled {
-        changes.push(format!("taskbar status {}", on_off(next.taskbar_widget_enabled)));
-    }
-    if previous.taskbar_widget_display != next.taskbar_widget_display {
-        changes.push("taskbar display".to_string());
-    }
-    if previous.status_line_provider_labels != next.status_line_provider_labels {
-        changes.push(format!("status line labels {:?}", next.status_line_provider_labels));
-    }
-    if previous.status_line_other_providers != next.status_line_other_providers {
-        changes.push(format!(
-            "status line other providers {}",
-            on_off(next.status_line_other_providers)
-        ));
-    }
-    if previous.status_line_extra_details != next.status_line_extra_details {
-        changes.push(format!("status line details {}", on_off(next.status_line_extra_details)));
-    }
-    if previous.notify_low_quota != next.notify_low_quota {
-        changes.push(format!("low quota alerts {}", on_off(next.notify_low_quota)));
-    }
-    if previous.notify_read_failures != next.notify_read_failures {
-        changes.push(format!("read failure alerts {}", on_off(next.notify_read_failures)));
-    }
-    if previous.notify_quota_resets != next.notify_quota_resets {
-        changes.push(format!("reset alerts {}", on_off(next.notify_quota_resets)));
-    }
-    if previous.quota_disabled_providers != next.quota_disabled_providers {
-        changes.push(format!(
-            "quota tracked for [{}]",
-            ProviderKind::ALL
-                .into_iter()
-                .filter(|provider| AppState::quota_tracked(next, *provider))
-                .map(ProviderKind::key)
-                .collect::<Vec<_>>()
-                .join(" ")
-        ));
-    }
-    if previous.dismissed_reset_notices != next.dismissed_reset_notices {
-        changes
-            .push(format!("{} restart note(s) acknowledged", next.dismissed_reset_notices.len()));
-    }
-    if previous.device_name != next.device_name {
-        changes.push("this machine's name".to_string());
-    }
-    if previous.shared_usage_folder != next.shared_usage_folder {
-        changes.push(format!(
-            "shared usage folder {}",
-            if next.shared_usage_folder.is_some() { "set" } else { "cleared" }
-        ));
-    }
-    changes
-}
-
-fn on_off(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
-}
-
-/// Records a change the settings dialog made. The status-line bridge reads the same file
-/// on its next run, so a preference takes effect without the application telling it.
-#[tauri::command]
-async fn set_app_settings(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<AppState>>,
-    settings: AppSettings,
-) -> Result<AppSettings, String> {
-    let previous = state.settings();
-    let quota_changed = previous.quota_disabled_providers != settings.quota_disabled_providers;
-    let taskbar_changed = previous.taskbar_widget_enabled != settings.taskbar_widget_enabled;
-    let display_changed = previous.taskbar_widget_display != settings.taskbar_widget_display;
-    let theme_changed = previous.theme != settings.theme;
-    let name_changed = previous.device_name != settings.device_name;
-    let changes = settings_changes(&previous, &settings);
-    let updated = state.update_settings(|current| *current = settings)?;
-    // What changed rather than the record itself: the record carries this machine's
-    // identity and its shared folder, and neither belongs in a file kept for diagnosis.
-    log::write(if changes.is_empty() {
-        "settings saved with no change".to_string()
-    } else {
-        format!("settings changed: {}", changes.join(", "))
-    });
-    if name_changed {
-        let name = updated.device_name.clone().unwrap_or_else(settings::default_device_name);
-        state.storage.record_local_device(&name).await.map_err(|error| {
-            sanitize::sanitize_error(&error.to_string(), "This machine could not be renamed")
-        })?;
-    }
-    if theme_changed {
-        apply_theme(&app, updated.theme);
-    }
-    if quota_changed {
-        // Switching quota off has to clear it from the surfaces now rather than at the next
-        // scheduled read, and switching it back on has nothing in memory to draw until
-        // something reads it, so the snapshot is republished here and the read that fills a
-        // returning provider runs behind it. Both are spawned: the publish lock can be held
-        // by a scheduled history refresh for as long as the shared folder takes, and waiting
-        // for it here would leave every settings card disabled until that finished.
-        let publish_app = app.clone();
-        let publish_state = state.inner().clone();
-        tauri::async_runtime::spawn(async move {
-            refresh::republish(&publish_app, &publish_state).await;
-        });
-        let returning = ProviderKind::ALL.into_iter().filter(|provider| {
-            !AppState::quota_tracked(&previous, *provider)
-                && AppState::quota_tracked(&updated, *provider)
-        });
-        for provider in returning.collect::<Vec<_>>() {
-            let app_handle = app.clone();
-            let refresh_state = state.inner().clone();
-            tauri::async_runtime::spawn(async move {
-                refresh::refresh_live_for_provider(&app_handle, &refresh_state, provider).await;
-            });
-        }
-    }
-    if taskbar_changed {
-        set_taskbar_widget_visible(&app, updated.taskbar_widget_enabled);
-    } else if display_changed && updated.taskbar_widget_enabled {
-        // The placement loop would move it within two seconds; doing it here makes the
-        // choice answer immediately, which is what a person changing it is watching for.
-        schedule_taskbar_widget_placement(&app);
-    }
-    Ok(updated)
-}
-
-/// Whether the activity log can be revealed without exposing its path to the renderer.
+/// The one two-second tick the application runs on.
 ///
-/// A built executable has no console: neither the application nor the status-line bridge
-/// can report what it did anywhere a person could see, so both write to this file and the
-/// diagnostics panel points at it.
-#[tauri::command]
-fn get_log_available() -> bool {
-    log::log_path().is_some()
-}
-
-#[tauri::command]
-fn reveal_log_file() -> Result<(), String> {
-    log::write("activity log revealed in Explorer");
-    let path = log::log_path().ok_or_else(|| "No application data directory.".to_string())?;
-    // Selecting the file rather than opening it: the log is read with whatever the user
-    // prefers, and a missing file still lands them in the right folder.
-    select_in_explorer(&path).map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-/// Opens QuotaStation's data directory without returning its machine-specific path to the
-/// renderer. The directory already exists by the time Settings can be opened.
-#[tauri::command]
-fn open_data_folder(app: tauri::AppHandle) -> Result<(), String> {
-    log::write("data folder opened in Explorer");
-    let path = app.path().app_data_dir().map_err(|error| error.to_string())?;
-    open_in_explorer(&path).map_err(|error| error.to_string())
-}
-
-/// Opens the public release page in the default browser. The URL is fixed in the core so
-/// the renderer cannot turn this narrow action into an arbitrary shell launch.
-#[tauri::command]
-fn open_latest_release() -> Result<(), String> {
-    log::write("release page opened in the browser");
-    open_with_explorer("https://github.com/SteveWang92/QuotaStation/releases/latest")
-        .map_err(|error| error.to_string())
-}
-
-/// Shows a file selected in Explorer.
+/// Three things have to be noticed at about this rate, and none of them costs anything next
+/// to the wake-up itself: a finished Claude Code turn the hook left behind, a Windows theme
+/// change, and a taskbar that moved out from under the docked status. One ticker keeps them
+/// on the same schedule instead of waking the process three times over.
 ///
-/// Explorer parses its own raw command line and ignores a `/select,` token that starts
-/// with a quote. Rust quotes a whole argument that contains a space, which a user profile
-/// name or a typed filename easily does, so the path is quoted inside the argument here
-/// instead.
-fn select_in_explorer(path: &Path) -> std::io::Result<()> {
-    let mut command = std::process::Command::new("explorer.exe");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.raw_arg(format!("/select,\"{}\"", path.display()));
-    }
-    #[cfg(not(windows))]
-    command.arg(format!("/select,{}", path.display()));
-    command.spawn()?;
-    Ok(())
-}
-
-fn open_in_explorer(path: &Path) -> std::io::Result<()> {
-    open_with_explorer(path.as_os_str())
-}
-
-fn open_with_explorer(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
-    std::process::Command::new("explorer.exe").arg(target).spawn()?;
-    Ok(())
-}
-
-/// Whether Claude Code hands its quota to QuotaStation, for the card that offers to set
-/// that up. Reading it touches only Claude Code's settings file, so it needs no refresh.
-#[tauri::command]
-fn get_claude_status_line() -> statusline::BridgeStatus {
-    statusline::bridge_status()
-}
-
-/// Registers or removes QuotaStation as Claude Code's status-line command. Claude Code
-/// hands the two quota windows to that command and to nothing else, so this is what turns
-/// the seven-day window and both percentages on, without a credential or a network call.
-#[tauri::command]
-async fn set_claude_status_line(
-    app: tauri::AppHandle,
-    installed: bool,
-    state: State<'_, Arc<AppState>>,
-) -> Result<statusline::BridgeStatus, String> {
-    let result = if installed { statusline::install() } else { statusline::remove() };
-    log::write(match &result {
-        Ok(()) if installed => "status line installed into Claude Code's settings".to_string(),
-        Ok(()) => "status line removed from Claude Code's settings".to_string(),
-        Err(error) => format!("status line update failed: {error:#}"),
+/// `finished_turns` is off for a demo start, which has no hook and no session to report.
+fn watch_the_desktop(app: tauri::AppHandle, finished_turns: bool) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticks = tokio::time::interval(Duration::from_secs(2));
+        let mut last_theme = theme::snapshot(current_preference(&app));
+        loop {
+            ticks.tick().await;
+            if finished_turns {
+                raise_finished_turns(&app);
+            }
+            last_theme = follow_system_theme(&app, last_theme);
+            if app.state::<Arc<AppState>>().settings().taskbar_widget_enabled {
+                schedule_taskbar_widget_placement(&app);
+            }
+        }
     });
-    result.map_err(|error| {
-        sanitize::sanitize_error(&error.to_string(), "Status line update failed")
-    })?;
-    // Claude Code writes the first reading on its next turn, so this refresh only picks up
-    // one that is already there; the session watcher and the poll carry the rest.
-    refresh::refresh_live_for_provider(&app, state.inner(), ProviderKind::Claude).await;
-    Ok(statusline::bridge_status())
-}
-
-/// Whether Claude Code tells QuotaStation that a turn has finished.
-#[tauri::command]
-fn get_claude_notifications() -> bool {
-    notifications::installed()
-}
-
-/// Registers or removes QuotaStation as Claude Code's Stop hook, which is the only way to
-/// learn that a turn finished: Claude Code's own notification channel reaches a handful of
-/// terminals, and none of them are the ones this runs beside.
-#[tauri::command]
-fn set_claude_notifications(installed: bool) -> Result<bool, String> {
-    let result = if installed { notifications::install() } else { notifications::remove() };
-    log::write(match &result {
-        Ok(()) if installed => "finished-turn hook installed into Claude Code".to_string(),
-        Ok(()) => "finished-turn hook removed from Claude Code".to_string(),
-        Err(error) => format!("finished-turn hook update failed: {error:#}"),
-    });
-    result.map_err(|error| {
-        sanitize::sanitize_error(&error.to_string(), "Notification hook update failed")
-    })?;
-    Ok(notifications::installed())
 }
 
 /// Raises the desktop notification a finished Claude Code turn left behind.
@@ -876,44 +416,30 @@ fn set_claude_notifications(installed: bool) -> Result<bool, String> {
 /// milliseconds to live — so it writes an event and this picks it up. Polling one path is
 /// what that costs; the alternative is a filesystem watcher for a file written a handful of
 /// times an hour.
-fn watch_for_finished_turns(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let mut ticks = tokio::time::interval(Duration::from_secs(2));
-        loop {
-            ticks.tick().await;
-            // The title says which event this is, the same way the quota notifications do.
-            // Windows already prints the application's name above it, so spending the title
-            // on "QuotaStation" left every notification looking alike in the action centre.
-            for event in notifications::take_pending(jiff::Timestamp::now().as_second()) {
-                let body = finished_body(&event);
-                match event.terminal {
-                    // Clicking goes back to the terminal the turn ran in. The tab inside it
-                    // is the user's to pick: nothing outside Windows Terminal can choose one.
-                    Some(target) => {
-                        alerts::raise_with_action(
-                            &app,
-                            "Claude Code finished responding",
-                            &body,
-                            move || {
-                                if !terminal::focus(target) {
-                                    log::write(
-                                        "the terminal a finished turn ran in could not be raised",
-                                    );
-                                }
-                            },
-                        );
-                    }
-                    None => alerts::raise(&app, "Claude Code finished responding", &body),
-                }
+fn raise_finished_turns(app: &tauri::AppHandle) {
+    // The title says which event this is, the same way the quota notifications do. Windows
+    // already prints the application's name above it, so spending the title on
+    // "QuotaStation" left every notification looking alike in the action centre.
+    for event in notifications::take_pending(jiff::Timestamp::now().as_second()) {
+        let body = finished_body(&event);
+        match event.terminal {
+            // Clicking goes back to the terminal the turn ran in. The tab inside it is the
+            // user's to pick: nothing outside Windows Terminal can choose one.
+            Some(target) => {
+                alerts::raise_with_action(
+                    app,
+                    "Claude Code finished responding",
+                    &body,
+                    move || {
+                        if !terminal::focus(target) {
+                            log::write("the terminal a finished turn ran in could not be raised");
+                        }
+                    },
+                );
             }
+            None => alerts::raise(app, "Claude Code finished responding", &body),
         }
-    });
-}
-
-/// The palettes every window should be drawing in right now.
-#[tauri::command]
-fn get_theme(state: State<'_, Arc<AppState>>) -> theme::ThemeSnapshot {
-    theme::snapshot(state.settings().theme)
+    }
 }
 
 /// Puts the resolved theme where the two things that need it can see it: the native window
@@ -937,27 +463,21 @@ fn apply_theme(app: &tauri::AppHandle, preference: theme::ThemePreference) -> th
     snapshot
 }
 
-/// Notices a Windows theme change while QuotaStation is running.
+/// Notices a Windows theme change while QuotaStation is running, and answers with the
+/// palettes now in force.
 ///
 /// Windows announces this to windows that have not been told what theme to be, and every
 /// window here has been, so the announcement never arrives. Reading two registry values is
-/// cheap enough to do on the same tick everything else in this application already runs on,
-/// and only a change is published.
-fn watch_for_system_theme_changes(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let mut ticks = tokio::time::interval(Duration::from_secs(2));
-        let mut last = theme::snapshot(current_preference(&app));
-        loop {
-            ticks.tick().await;
-            let preference = current_preference(&app);
-            let snapshot = theme::snapshot(preference);
-            if snapshot == last {
-                continue;
-            }
-            last = snapshot;
-            apply_theme(&app, preference);
-        }
-    });
+/// cheap enough to do on the tick everything else in this application already runs on, and
+/// only a change is published.
+fn follow_system_theme(app: &tauri::AppHandle, last: theme::ThemeSnapshot) -> theme::ThemeSnapshot {
+    let preference = current_preference(app);
+    let snapshot = theme::snapshot(preference);
+    if snapshot == last {
+        return last;
+    }
+    apply_theme(app, preference);
+    snapshot
 }
 
 fn current_preference(app: &tauri::AppHandle) -> theme::ThemePreference {
@@ -993,92 +513,6 @@ fn build_kind() -> String {
     if installed { "release, installed".to_string() } else { "release, portable".to_string() }
 }
 
-#[tauri::command]
-async fn get_diagnostics(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<AppState>>,
-) -> Result<DiagnosticsSnapshot, String> {
-    collect_diagnostics(&app, state.inner()).await
-}
-
-async fn collect_diagnostics(
-    app: &tauri::AppHandle,
-    state: &AppState,
-) -> Result<DiagnosticsSnapshot, String> {
-    let mut acquisitions = Vec::new();
-    let settings = state.settings();
-    for provider in AppState::local_providers() {
-        let rows = state.storage.load_acquisition_diagnostics(provider).await.map_err(|error| {
-            sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
-        })?;
-        // A path nothing uses any more has no status worth reporting: leaving the last
-        // failed quota read here would keep the panel asking to be looked at for a source
-        // the user switched off.
-        let tracked = AppState::quota_tracked(&settings, provider);
-        let live_path = provider.live_path();
-        acquisitions
-            .extend(rows.into_iter().filter(|row| tracked || row.acquisition_path != live_path));
-    }
-    let retention =
-        state.storage.load_retention_diagnostics().await.map_err(|error| {
-            sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable")
-        })?;
-    let devices = state
-        .storage
-        .load_devices()
-        .await
-        .map_err(|error| sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable"))?
-        .into_iter()
-        .map(|device| DeviceDiagnostics {
-            local: device.id == storage::LOCAL_DEVICE,
-            id: device.id,
-            display_name: device.display_name,
-            last_import_at: device.last_import_at,
-        })
-        .collect();
-    Ok(DiagnosticsSnapshot {
-        watcher: state.watcher_diagnostics.read().await.clone(),
-        acquisitions,
-        retention,
-        shared_folder: state.shared_folder_diagnostics.read().await.clone(),
-        devices,
-        parser_revision: domain::CCUSAGE_REVISION.to_string(),
-        pricing_catalog_revision: domain::PRICING_CATALOG_REVISION.to_string(),
-        app_version: app.package_info().version.to_string(),
-        build_commit: env!("QUOTASTATION_BUILD_COMMIT").to_string(),
-        build_kind: build_kind(),
-    })
-}
-
-/// Writes only the whitelisted diagnostic snapshot the user explicitly chose to export.
-#[tauri::command]
-async fn export_diagnostics(
-    app: tauri::AppHandle,
-    path: String,
-    state: State<'_, Arc<AppState>>,
-) -> Result<String, String> {
-    let path = PathBuf::from(path);
-    if path.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("json")) {
-        return Err("Save the diagnostic export as a JSON file.".to_string());
-    }
-    log::write("diagnostics export requested");
-    let diagnostics = collect_diagnostics(&app, state.inner()).await?;
-    let mut providers = Vec::new();
-    for provider in state.enabled_providers() {
-        providers.push(state.read_snapshot(provider, Clone::clone).await);
-    }
-    diagnostic_export::DiagnosticExport::new(diagnostics, providers).write_to(&path)?;
-    Ok(path.to_string_lossy().into_owned())
-}
-
-/// Reveals the export the user just created without opening its contents.
-#[tauri::command]
-fn reveal_export_file(path: String) -> Result<(), String> {
-    select_in_explorer(Path::new(&path))
-        .map_err(|_| "The exported file could not be shown in Explorer.".to_string())?;
-    Ok(())
-}
-
 /// Codex logs the server's rate-limit answer alongside its own token counts, which
 /// reaches back further than this database and covers every stretch when QuotaStation was
 /// closed. Replaying it on startup is what makes the restart history complete rather than
@@ -1093,517 +527,6 @@ async fn backfill_resets(state: &Arc<AppState>) -> anyhow::Result<()> {
         let scanned_at = jiff::Timestamp::now().to_string();
         state.storage.backfill_resets(provider, &observations, &scanned_at).await?;
     }
-    Ok(())
-}
-
-/// Windows refuses a raise request from a process that does not own the foreground, which
-/// a tray menu click does not, so a window that is merely behind another one stays there
-/// after `set_focus`. Briefly claiming always-on-top is what actually brings it forward.
-fn show_main(app: &tauri::AppHandle) {
-    log::write("dashboard window shown");
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_always_on_top(true);
-        let _ = window.set_focus();
-        let _ = window.set_always_on_top(false);
-    }
-}
-
-/// The panel shows one column per provider, so its width follows how many are enabled.
-/// Sizing it as it opens keeps the edge anchoring below working from the real size.
-///
-/// This is the width the columns are laid out at, so a scaled display is given the scaled
-/// window: 390 device pixels left a 125% display 312 layout pixels to draw a 390-pixel
-/// column in, and the reflow made the panel taller than the height the renderer had
-/// already measured at the width the window opened with.
-const QUICK_PANEL_COLUMN_WIDTH: f64 = 390.0;
-/// Only what the window opens at before the renderer has measured anything. Every height
-/// after the first render comes from [`set_quick_panel_height`].
-const QUICK_PANEL_HEIGHT: u32 = 730;
-/// The gap the panel keeps from every edge of the work area, shared by the placement and
-/// the growth below so a panel that grows stops exactly where one that opens would.
-const QUICK_PANEL_MARGIN: f64 = 12.0;
-
-/// What the window rect holds that the page is not drawn in.
-///
-/// An undecorated window with a shadow keeps an invisible resize frame, so its window rect
-/// is larger than its content area — 18 x 10 physical pixels at 125% here. `outer_size`,
-/// `outer_position` and the work area are all in window-rect coordinates while `set_size`
-/// takes a content size, so every placement below stays in window-rect units and converts
-/// exactly once, in [`resize_quick_panel`]. Reading one and writing the other grew the
-/// window by this frame on every open, and the content, which had not changed, kept the
-/// height it was measured at — leaving a band of bare background around the card that read
-/// as a second panel behind it.
-fn quick_panel_frame(panel: &tauri::WebviewWindow) -> tauri::PhysicalSize<u32> {
-    let Ok(outer) = panel.outer_size() else { return tauri::PhysicalSize::new(0, 0) };
-    let inner = panel.inner_size().unwrap_or(outer);
-    tauri::PhysicalSize::new(
-        outer.width.saturating_sub(inner.width),
-        outer.height.saturating_sub(inner.height),
-    )
-}
-
-fn resize_quick_panel(
-    panel: &tauri::WebviewWindow,
-    frame: tauri::PhysicalSize<u32>,
-    outer: tauri::PhysicalSize<u32>,
-) {
-    let _ = panel.set_size(tauri::PhysicalSize::new(
-        outer.width.saturating_sub(frame.width).max(1),
-        outer.height.saturating_sub(frame.height).max(1),
-    ));
-}
-
-/// The window rect the panel needs for `providers` columns, given the height it already holds.
-fn quick_panel_size(
-    providers: usize,
-    height: u32,
-    scale_factor: f64,
-    frame: tauri::PhysicalSize<u32>,
-) -> tauri::PhysicalSize<u32> {
-    let columns = QUICK_PANEL_COLUMN_WIDTH * providers.clamp(1, 2) as f64 * scale_factor.max(1.0);
-    tauri::PhysicalSize::new((columns.round() as u32).saturating_add(frame.width), height)
-}
-
-/// Where the panel sits once the renderer reports a different content height.
-///
-/// The bottom edge is the fixed one: the placement anchored it beside the tray, so the
-/// panel grows away from that edge rather than sliding out from under the pointer. Content
-/// taller than the work area is clamped to it, and the panel scrolls its own contents from
-/// there — there is nowhere left to grow.
-fn quick_panel_growth(
-    work_area: tauri::PhysicalRect<i32, u32>,
-    position: PhysicalPosition<i32>,
-    size: tauri::PhysicalSize<u32>,
-    requested_height: u32,
-) -> (PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
-    let margin = QUICK_PANEL_MARGIN as i32;
-    let available = (work_area.size.height as f64 - QUICK_PANEL_MARGIN * 2.0).max(1.0) as u32;
-    let height = requested_height.clamp(1, available);
-    let top_limit = work_area.position.y + margin;
-    let bottom_limit = work_area.position.y + work_area.size.height as i32 - margin;
-    let bottom = (position.y + size.height as i32).min(bottom_limit);
-    let y = (bottom - height as i32).max(top_limit);
-    (PhysicalPosition::new(position.x, y), tauri::PhysicalSize::new(size.width, height))
-}
-
-/// The height the renderer measured, in CSS pixels, for a window that has no frame to
-/// trim it to its contents.
-#[tauri::command]
-fn set_quick_panel_height(app: tauri::AppHandle, height: f64) -> Result<(), String> {
-    let Some(panel) = app.get_webview_window("quick-panel") else { return Ok(()) };
-    if !height.is_finite() || height <= 0.0 {
-        return Ok(());
-    }
-    let scale_factor = panel.scale_factor().map_err(|error| error.to_string())?;
-    let frame = quick_panel_frame(&panel);
-    let size = panel.outer_size().map_err(|error| error.to_string())?;
-    let position = panel.outer_position().map_err(|error| error.to_string())?;
-    let requested = ((height * scale_factor).round().clamp(1.0, u32::MAX as f64) as u32)
-        .saturating_add(frame.height);
-    let work_area = panel.current_monitor().ok().flatten().map(|monitor| *monitor.work_area());
-    let (next_position, next_size) = match work_area {
-        Some(work_area) => quick_panel_growth(work_area, position, size, requested),
-        // Without a monitor there is nothing to clamp against, so the request stands and
-        // the bottom edge still holds.
-        None => (
-            PhysicalPosition::new(position.x, position.y + size.height as i32 - requested as i32),
-            tauri::PhysicalSize::new(size.width, requested),
-        ),
-    };
-    if next_size == size && next_position == position {
-        return Ok(());
-    }
-    resize_quick_panel(&panel, frame, next_size);
-    panel.set_position(next_position).map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn quick_panel_placement(
-    work_area: tauri::PhysicalRect<i32, u32>,
-    tray_position: PhysicalPosition<f64>,
-    tray_size: tauri::PhysicalSize<f64>,
-    requested_size: tauri::PhysicalSize<u32>,
-) -> (PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
-    let margin = QUICK_PANEL_MARGIN;
-    let left = work_area.position.x as f64;
-    let top = work_area.position.y as f64;
-    let right = left + work_area.size.width as f64;
-    let bottom = top + work_area.size.height as f64;
-    let available_width = (work_area.size.width as f64 - margin * 2.0).max(1.0);
-    let available_height = (work_area.size.height as f64 - margin * 2.0).max(1.0);
-    let panel_width = (requested_size.width as f64).min(available_width);
-    let panel_height = (requested_size.height as f64).min(available_height);
-    let panel_size =
-        tauri::PhysicalSize::new(panel_width.round() as u32, panel_height.round() as u32);
-    let anchor = PhysicalPosition::new(
-        tray_position.x + tray_size.width / 2.0,
-        tray_position.y + tray_size.height / 2.0,
-    );
-    let nearest = [
-        (anchor.x - left, "left"),
-        (right - anchor.x, "right"),
-        (anchor.y - top, "top"),
-        (bottom - anchor.y, "bottom"),
-    ]
-    .into_iter()
-    .min_by(|a, b| a.0.total_cmp(&b.0))
-    .map(|(_, edge)| edge)
-    .unwrap_or("bottom");
-    let max_x = (right - panel_width - margin).max(left + margin);
-    let max_y = (bottom - panel_height - margin).max(top + margin);
-    let clamp_x = |value: f64| value.clamp(left + margin, max_x);
-    let clamp_y = |value: f64| value.clamp(top + margin, max_y);
-    let (x, y) = match nearest {
-        "top" => (
-            clamp_x(tray_position.x + tray_size.width - panel_width),
-            clamp_y(tray_position.y + tray_size.height + margin),
-        ),
-        "left" => (
-            clamp_x(tray_position.x + tray_size.width + margin),
-            clamp_y(tray_position.y + tray_size.height - panel_height),
-        ),
-        "right" => (
-            clamp_x(tray_position.x - panel_width - margin),
-            clamp_y(tray_position.y + tray_size.height - panel_height),
-        ),
-        _ => (
-            clamp_x(tray_position.x + tray_size.width - panel_width),
-            clamp_y(tray_position.y - panel_height - margin),
-        ),
-    };
-    (PhysicalPosition::new(x.round() as i32, y.round() as i32), panel_size)
-}
-
-/// Shows or hides the panel beside `anchor`, given in physical screen coordinates: the tray
-/// icon for a click on the tray, the docked widget for a click on the taskbar status. Both
-/// open the one panel — a second panel for the second surface would be the same readings
-/// drawn twice.
-///
-/// Reports whether the panel is now open.
-fn toggle_quick_panel_beside(
-    app: &tauri::AppHandle,
-    anchor_position: PhysicalPosition<f64>,
-    anchor_size: tauri::PhysicalSize<f64>,
-) -> bool {
-    let Some(panel) = app.get_webview_window("quick-panel") else { return false };
-    let state = app.state::<Arc<AppState>>();
-    // One click opens the panel once. The tray icon and the taskbar status sit in the same
-    // corner and there is one panel between them, so a second request arriving on the heels
-    // of the first is the same click reaching a second path — obeying it moved the panel to
-    // the other anchor, which read as a second window replacing the first.
-    if let Ok(mut toggled_at) = state.quick_panel_toggled_at.lock() {
-        if toggled_at.is_some_and(|at| at.elapsed() < Duration::from_millis(300)) {
-            return panel.is_visible().unwrap_or(false);
-        }
-        *toggled_at = Some(Instant::now());
-    }
-    // The renderer has already sized the window to its contents, so the panel opens at the
-    // height it currently holds rather than at the height it was configured with.
-    let frame = quick_panel_frame(&panel);
-    let current_height = panel.outer_size().map(|size| size.height).unwrap_or(QUICK_PANEL_HEIGHT);
-    let requested_size = quick_panel_size(
-        state.quota_column_count(),
-        current_height,
-        panel.scale_factor().unwrap_or(1.0),
-        frame,
-    );
-    if let Ok(mut focus_lost_at) = state.quick_panel_focus_lost_at.lock()
-        && focus_lost_at.is_some_and(|lost_at| lost_at.elapsed() < Duration::from_millis(500))
-    {
-        *focus_lost_at = None;
-        return false;
-    }
-    if panel.is_visible().unwrap_or(false) {
-        log::write("quick panel closed from the tray");
-        let _ = panel.hide();
-        return false;
-    }
-    log::write(format!(
-        "quick panel opened beside the tray, {} column(s)",
-        state.quota_column_count()
-    ));
-
-    let centre =
-        (anchor_position.x + anchor_size.width / 2.0, anchor_position.y + anchor_size.height / 2.0);
-    let monitor = app.monitor_from_point(centre.0, centre.1).ok().flatten();
-    let (x, y) = if let Some(monitor) = monitor {
-        let (position, fitted_size) = quick_panel_placement(
-            *monitor.work_area(),
-            anchor_position,
-            anchor_size,
-            requested_size,
-        );
-        resize_quick_panel(&panel, frame, fitted_size);
-        (position.x as f64, position.y as f64)
-    } else {
-        resize_quick_panel(&panel, frame, requested_size);
-        (
-            anchor_position.x - requested_size.width as f64,
-            anchor_position.y - requested_size.height as f64,
-        )
-    };
-    let _ = panel.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
-    if let Ok(mut shown_at) = state.quick_panel_shown_at.lock() {
-        *shown_at = Some(Instant::now());
-    }
-    let _ = panel.show();
-    let _ = panel.set_focus();
-    true
-}
-
-/// The tray reports its icon in whichever unit the platform uses, so the click position —
-/// which is already physical — is what identifies the monitor whose scale converts it.
-fn toggle_quick_panel(
-    app: &tauri::AppHandle,
-    click: PhysicalPosition<f64>,
-    tray_rect: tauri::Rect,
-) {
-    let scale_factor = app
-        .monitor_from_point(click.x, click.y)
-        .ok()
-        .flatten()
-        .map(|monitor| monitor.scale_factor())
-        .unwrap_or(1.0);
-    toggle_quick_panel_beside(
-        app,
-        tray_rect.position.to_physical(scale_factor),
-        tray_rect.size.to_physical(scale_factor),
-    );
-}
-
-/// Opens the panel above the taskbar status, anchored to the widget rather than to the tray
-/// icon.
-///
-/// Called from the click watch in [`taskbar`], which runs inside a low-level mouse hook, so
-/// the work is queued onto the main thread rather than done there: a hook that takes its
-/// time is a hook the system stops calling.
-pub(crate) fn open_quick_panel_from_taskbar() {
-    let Some(app) = APP.get().cloned() else { return };
-    let handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        let Ok((position, size)) = taskbar::widget_screen_rect(&handle) else { return };
-        if toggle_quick_panel_beside(&handle, position, size) {
-            let _ = taskbar::raise_window(&handle, "quick-panel");
-        }
-    });
-}
-
-#[cfg(test)]
-mod quick_panel_tests {
-    use super::*;
-
-    fn placement(
-        width: u32,
-        height: u32,
-        tray_x: f64,
-        tray_y: f64,
-    ) -> (PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
-        quick_panel_placement(
-            tauri::PhysicalRect {
-                position: PhysicalPosition::new(0, 0),
-                size: tauri::PhysicalSize::new(width, height),
-            },
-            PhysicalPosition::new(tray_x, tray_y),
-            tauri::PhysicalSize::new(40.0, 40.0),
-            tauri::PhysicalSize::new(780, 730),
-        )
-    }
-
-    fn work_area(height: u32) -> tauri::PhysicalRect<i32, u32> {
-        tauri::PhysicalRect {
-            position: PhysicalPosition::new(0, 0),
-            size: tauri::PhysicalSize::new(1280, height),
-        }
-    }
-
-    #[test]
-    fn a_shorter_panel_keeps_its_bottom_edge_and_a_taller_one_grows_upwards() {
-        let position = PhysicalPosition::new(400, 300);
-        let size = tauri::PhysicalSize::new(390, 400);
-        let bottom = position.y + size.height as i32;
-        for requested in [200, 400, 620] {
-            let (next_position, next_size) =
-                quick_panel_growth(work_area(1000), position, size, requested);
-            assert_eq!(next_size.height, requested);
-            assert_eq!(next_size.width, size.width, "only the height follows the contents");
-            assert_eq!(next_position.x, position.x);
-            assert_eq!(next_position.y + next_size.height as i32, bottom);
-        }
-    }
-
-    #[test]
-    fn a_panel_taller_than_the_work_area_is_clamped_inside_it() {
-        let (position, size) = quick_panel_growth(
-            work_area(720),
-            PhysicalPosition::new(400, 300),
-            tauri::PhysicalSize::new(390, 400),
-            2_000,
-        );
-        assert!(position.y >= 12, "the top margin is kept");
-        assert!(position.y + size.height as i32 <= 720 - 12, "so is the bottom one");
-    }
-
-    #[test]
-    fn a_column_is_reserved_in_layout_pixels_whatever_the_display_scales_by() {
-        let frame = tauri::PhysicalSize::new(18, 10);
-        assert_eq!(quick_panel_size(2, 600, 1.0, frame).width, 780 + 18);
-        assert_eq!(quick_panel_size(2, 600, 1.25, frame).width, 975 + 18);
-        assert_eq!(quick_panel_size(1, 600, 1.0, frame).width, 390 + 18);
-        assert_eq!(
-            quick_panel_size(3, 600, 1.0, frame).width,
-            780 + 18,
-            "two columns is the widest the panel goes"
-        );
-        assert_eq!(
-            quick_panel_size(2, 600, 1.0, frame).height,
-            600,
-            "the height is passed through"
-        );
-    }
-
-    #[test]
-    fn quick_panel_fits_small_and_common_displays() {
-        for (width, height) in [(800, 600), (1280, 720), (1366, 768)] {
-            for tray_x in [0.0, width as f64 - 40.0] {
-                let (position, size) = placement(width, height, tray_x, height as f64 - 40.0);
-                assert!(position.x >= 0 && position.y >= 0);
-                assert!(position.x as u32 + size.width <= width);
-                assert!(position.y as u32 + size.height <= height);
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
-fn write_desktop_shortcut(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let shortcut_path =
-        app.path().desktop_dir().map_err(|error| error.to_string())?.join("QuotaStation.lnk");
-    let mut shortcut = mslnk::ShellLink::new(&executable).map_err(|error| error.to_string())?;
-    if let Some(working_directory) = executable.parent() {
-        shortcut.set_working_dir(Some(working_directory.to_string_lossy().into_owned()));
-    }
-    shortcut.set_icon_location(Some(executable.to_string_lossy().into_owned()));
-    shortcut.set_name(Some("QuotaStation".to_string()));
-    shortcut.create_lnk(&shortcut_path).map_err(|error| error.to_string())?;
-    Ok(shortcut_path)
-}
-
-#[cfg(not(windows))]
-fn write_desktop_shortcut(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Err("Desktop shortcuts are currently supported on Windows only.".to_string())
-}
-
-/// Whether Windows starts QuotaStation on sign-in. The plugin owns the registration, so
-/// this reports what it holds rather than a copy kept in the settings file.
-#[tauri::command]
-fn get_autostart(app: tauri::AppHandle) -> bool {
-    app.autolaunch().is_enabled().unwrap_or(false)
-}
-
-#[tauri::command]
-fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
-    let manager = app.autolaunch();
-    let result = if enabled { manager.enable() } else { manager.disable() };
-    log::write(format!(
-        "start with Windows switched {}{}",
-        if enabled { "on" } else { "off" },
-        match &result {
-            Ok(()) => String::new(),
-            Err(error) => format!(", which failed: {error}"),
-        }
-    ));
-    result.map_err(|error| {
-        sanitize::sanitize_error(&error.to_string(), "Start-with-Windows update failed")
-    })?;
-    Ok(manager.is_enabled().unwrap_or(enabled))
-}
-
-/// Whether a typed shared-folder path already names a folder.
-///
-/// The path is hand-entered, so it is a trust boundary: it may name a file, a folder that
-/// does not exist yet, or nothing reachable at all. The settings page asks before it saves
-/// so it can offer to create a missing folder rather than storing a path that will fail
-/// quietly on every export afterwards.
-#[tauri::command]
-fn shared_folder_exists(path: String) -> Result<bool, String> {
-    let path = std::path::Path::new(path.trim());
-    if path.as_os_str().is_empty() {
-        return Err("Enter a folder path.".to_string());
-    }
-    if path.is_file() {
-        return Err("That path is a file, not a folder.".to_string());
-    }
-    Ok(path.is_dir())
-}
-
-/// Creates the folder the user confirmed, parents included.
-#[tauri::command]
-fn create_shared_folder(path: String) -> Result<(), String> {
-    log::write("shared usage folder created");
-    std::fs::create_dir_all(path.trim()).map_err(|error| {
-        sanitize::sanitize_error(&error.to_string(), "The folder could not be created")
-    })
-}
-
-/// Puts a shortcut on the desktop. The location is the user's own desktop, so the path is
-/// neither reported back nor worth reporting.
-#[tauri::command]
-fn create_desktop_shortcut(app: tauri::AppHandle) -> Result<(), String> {
-    log::write("desktop shortcut requested");
-    write_desktop_shortcut(&app)
-        .map(|_| ())
-        .map_err(|error| sanitize::sanitize_error(&error, "Desktop shortcut creation failed"))
-}
-
-/// The tray menu carries what has to work when no window is open: showing the dashboard,
-/// a manual refresh, and quitting. Every preference lives in the settings dialog instead,
-/// so a setting is changed in one place rather than in whichever surface found it first.
-fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Show QuotaStation", true, None::<&str>)?;
-    let refresh = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
-    let separator_before_quit = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &refresh, &separator_before_quit, &quit])?;
-    let icon = app.default_window_icon().cloned().expect("application icon must be configured");
-    TrayIconBuilder::new()
-        .icon(icon)
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(move |app, event| match event.id.as_ref() {
-            "show" => {
-                log::write("tray menu: show the dashboard");
-                show_main(app);
-            }
-            "refresh" => {
-                log::write("tray menu: refresh now");
-                let app = app.clone();
-                let state = app.state::<Arc<AppState>>().inner().clone();
-                tauri::async_runtime::spawn(async move {
-                    refresh::refresh_all(&app, &state).await;
-                });
-            }
-            "quit" => {
-                log::write("tray menu: quit");
-                app.exit(0);
-            }
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                position,
-                rect,
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                toggle_quick_panel(tray.app_handle(), position, rect);
-            }
-        })
-        .build(app)?;
     Ok(())
 }
 
@@ -1675,21 +598,13 @@ pub fn run() {
                     .unwrap_or_else(|_| ProviderSnapshot::new(provider));
                 snapshots.insert(provider, snapshot);
             }
-            let state = Arc::new(AppState {
+            let state = Arc::new(AppState::new(
                 storage,
-                snapshots: RwLock::new(snapshots),
-                refresh_publish_lock: Mutex::new(()),
-                live_refresh_lock: Mutex::new(()),
-                history_refresh_lock: Mutex::new(()),
-                watcher_diagnostics: RwLock::new(WatcherDiagnostics::default()),
-                shared_folder_diagnostics: RwLock::new(SharedFolderDiagnostics::default()),
-                quick_panel_focus_lost_at: StdMutex::new(None),
-                quick_panel_toggled_at: StdMutex::new(None),
-                quick_panel_shown_at: StdMutex::new(None),
-                settings: StdMutex::new(settings),
-                detected_providers: StdMutex::new(local_providers),
+                settings,
                 settings_path,
-            });
+                snapshots,
+                local_providers,
+            ));
             // What the device split calls this machine, so a split reads "Workshop" rather
             // than an identifier — and follows the machine being renamed.
             if let Err(error) =
@@ -1722,10 +637,9 @@ pub fn run() {
             if !demo {
                 reinstall::restore_after_reinstall(app.handle());
                 autostart::refresh_logon_entry(app.handle());
-                watch_for_finished_turns(app.handle().clone());
             }
             apply_theme(app.handle(), state.settings().theme);
-            watch_for_system_theme_changes(app.handle().clone());
+            watch_the_desktop(app.handle().clone(), !demo);
             if state.settings().taskbar_widget_enabled {
                 set_taskbar_widget_visible(app.handle(), true);
             }
@@ -1766,17 +680,6 @@ pub fn run() {
                     }
                 }
             });
-            let app_handle = app.handle().clone();
-            let taskbar_state = app.state::<Arc<AppState>>().inner().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(2));
-                loop {
-                    interval.tick().await;
-                    if taskbar_state.settings().taskbar_widget_enabled {
-                        schedule_taskbar_widget_placement(&app_handle);
-                    }
-                }
-            });
             if !demo {
                 // Each provider polls on its own interval: a local process tolerates a
                 // frequent read, a rate-limited remote endpoint does not.
@@ -1805,39 +708,41 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_snapshot,
-            get_usage_start_date,
-            get_usage_range,
-            get_usage_hours,
-            get_usage_window,
-            get_quota_history,
-            get_reset_history,
-            refresh_now,
-            get_diagnostics,
-            export_diagnostics,
-            reveal_export_file,
-            get_log_available,
-            reveal_log_file,
-            open_data_folder,
-            open_latest_release,
-            get_claude_status_line,
-            set_claude_status_line,
-            get_claude_notifications,
-            set_claude_notifications,
-            open_dashboard,
-            set_taskbar_widget_size,
-            get_taskbar_displays,
-            set_quick_panel_height,
-            get_theme,
-            get_app_settings,
-            set_app_settings,
-            get_provider_choices,
-            log_activity,
-            get_autostart,
-            set_autostart,
-            shared_folder_exists,
-            create_shared_folder,
-            create_desktop_shortcut
+            commands::get_snapshot,
+            commands::get_usage_start_date,
+            commands::get_usage_range,
+            commands::get_usage_hours,
+            commands::get_usage_window,
+            commands::get_quota_history,
+            commands::get_session_costs,
+            commands::get_reset_history,
+            commands::refresh_now,
+            commands::get_diagnostics,
+            commands::export_diagnostics,
+            shell::reveal_export_file,
+            shell::get_log_available,
+            shell::reveal_log_file,
+            shell::open_data_folder,
+            shell::open_latest_release,
+            commands::get_claude_status_line,
+            commands::set_claude_status_line,
+            commands::preview_claude_status_line,
+            commands::get_claude_notifications,
+            commands::set_claude_notifications,
+            tray::open_dashboard,
+            commands::set_taskbar_widget_size,
+            commands::get_taskbar_displays,
+            quick_panel::set_quick_panel_height,
+            commands::get_theme,
+            commands::get_app_settings,
+            commands::set_app_settings,
+            commands::get_provider_choices,
+            commands::log_activity,
+            shell::get_autostart,
+            shell::set_autostart,
+            shell::shared_folder_exists,
+            shell::create_shared_folder,
+            shell::create_desktop_shortcut
         ])
         .on_window_event(|window, event| {
             if window.label() == "quick-panel"
@@ -1848,17 +753,14 @@ pub fn run() {
                 // before it ever had it — the click belongs to that window, and Windows hands
                 // the foreground back. Dismissing on that is dismissing the panel the click
                 // just asked for, which looks like the click doing nothing at all.
-                let just_shown = state
-                    .quick_panel_shown_at
-                    .lock()
-                    .ok()
-                    .and_then(|shown_at| *shown_at)
-                    .is_some_and(|shown_at| shown_at.elapsed() < Duration::from_millis(400));
-                if just_shown {
-                    return;
-                }
-                if let Ok(mut focus_lost_at) = state.quick_panel_focus_lost_at.lock() {
-                    *focus_lost_at = Some(Instant::now());
+                if let Ok(mut timing) = state.quick_panel.lock() {
+                    if timing
+                        .shown_at
+                        .is_some_and(|shown_at| shown_at.elapsed() < Duration::from_millis(400))
+                    {
+                        return;
+                    }
+                    timing.focus_lost_at = Some(Instant::now());
                 }
                 let _ = window.hide();
             }

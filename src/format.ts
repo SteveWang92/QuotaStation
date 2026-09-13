@@ -74,6 +74,22 @@ export function formatResetTimestamp(epochSeconds: number | null): string {
 }
 
 /**
+ * A past moment at panel width: the clock alone for today, the day in front of it before
+ * that. The date is what a weekly window's restart needs and a five-hour one never does.
+ */
+export function formatShortMoment(epochSeconds: number): string {
+  const moment = new Date(epochSeconds * 1_000);
+  const today = moment.toDateString() === new Date().toDateString();
+  return new Intl.DateTimeFormat(LOCALE, {
+    day: today ? undefined : "numeric",
+    month: today ? undefined : "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(moment);
+}
+
+/**
  * How far ahead of its published expiry a window restarted. Whole days carry the point
  * on their own; anything shorter is the polling interval and reads better in hours.
  */
@@ -129,6 +145,29 @@ export function formatDelta(current: number, previous: number): string | null {
   if (Math.abs(change) < 0.05) return "0%";
   const rounded = Math.abs(change) >= 100 ? change.toFixed(0) : change.toFixed(1);
   return `${change > 0 ? "+" : ""}${rounded}%`;
+}
+
+/**
+ * A past moment written out with its day, for example 20 Sep 14:32. Sessions are listed
+ * against each other rather than against now, so the day is always there to read.
+ */
+export function formatDayAndTime(value: string): string {
+  return new Intl.DateTimeFormat(LOCALE, {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
+}
+
+/** How long something ran, at table width: 2h 14m, 48m, or 36s under a minute. */
+export function formatDuration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.round(milliseconds / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 /** A calendar day at chart-axis length, for example 3 Aug. */

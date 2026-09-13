@@ -4,49 +4,20 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowLeft, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { logActivity } from "./activity";
-import { hourlyUsageMatchesRange } from "./charts";
+import { watchAppSettings } from "./appSettings";
 import { ProviderSetup } from "./components/ProviderSetup";
 import { QuickPanel } from "./components/QuickPanel";
 import { QuotaSection, resetNoticeKey } from "./components/QuotaSection";
 import { SettingsPage } from "./components/SettingsPage";
 import { TaskbarWidget } from "./components/TaskbarWidget";
 import { UsageSummary } from "./components/UsageSummary";
-import {
-  createAllRange,
-  createPresetRange,
-  type DateRangeSelection,
-  hasRolledOver,
-  isHourlyRange,
-  previousPeriod,
-  resolveDateRange,
-  todayString,
-} from "./dateRanges";
 import { errorMessage } from "./errors";
 import { statusColor, watchTheme } from "./theme";
-import type {
-  DiagnosticsSnapshot,
-  HistoryProvider,
-  ProviderKey,
-  ProviderSnapshot,
-  QuotaHistorySnapshot,
-  UsageHoursSnapshot,
-  UsageRangeSnapshot,
-  UsageWindowSnapshot,
-  WorkspaceSnapshot,
-} from "./types";
+import type { DiagnosticsSnapshot, ProviderSnapshot, WorkspaceSnapshot } from "./types";
 import { useSnapshot } from "./useSnapshot";
-import { EMPTY_WORKSPACE, resolveProviderKey } from "./workspace";
-
-const INITIAL_RANGE = createPresetRange("today");
-const EMPTY_USAGE_RANGE: UsageRangeSnapshot = {
-  startDate: INITIAL_RANGE.startDate,
-  endDate: INITIAL_RANGE.endDate,
-  usage: { input: 0, cacheRead: 0, output: 0, reasoning: 0, total: 0 },
-  apiEquivalentCostUsd: null,
-  models: [],
-  days: [],
-  devices: [],
-};
+import { useUsageRange } from "./useUsageRange";
+import { onScreen } from "./visible";
+import { EMPTY_WORKSPACE } from "./workspace";
 
 const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
   watcher: { status: "starting", watchedLocationCount: 0, lastEventAt: null, error: null },
@@ -75,6 +46,7 @@ document.documentElement.classList.toggle(
   CURRENT_WINDOW_LABEL === "quick-panel",
 );
 watchTheme(IS_TASKBAR_WIDGET);
+watchAppSettings();
 
 /**
  * The two reads behind a provider fail independently — the quota windows can be current
@@ -88,185 +60,18 @@ function readErrors(provider: ProviderSnapshot): string[] {
   ].filter((message): message is string => message !== null);
 }
 
-/**
- * One answer for the history section, however the range was expressed: the totals, the
- * period before them, and the hourly detail where there is any.
- */
-interface RangeRead {
-  range: UsageRangeSnapshot;
-  previous: UsageRangeSnapshot | null;
-  hours: UsageHoursSnapshot | null;
-}
-
-/** The hour bounds of a rolling window, or `null` for a range expressed in whole days. */
-function hourBounds(period: {
-  startHour?: string;
-  endHour?: string;
-}): { startHour: string; endHour: string } | null {
-  return period.startHour === undefined || period.endHour === undefined
-    ? null
-    : { startHour: period.startHour, endHour: period.endHour };
-}
-
-async function readCalendarRange(
-  provider: ProviderKey | null,
-  device: string | null,
-  range: DateRangeSelection,
-  earlier: { startDate: string; endDate: string } | null,
-): Promise<RangeRead> {
-  const [next, previous, hourly] = await Promise.all([
-    invoke<UsageRangeSnapshot>("get_usage_range", {
-      provider,
-      device,
-      startDate: range.startDate,
-      endDate: range.endDate,
-    }),
-    earlier === null
-      ? Promise.resolve(null)
-      : invoke<UsageRangeSnapshot>("get_usage_range", {
-          provider,
-          device,
-          startDate: earlier.startDate,
-          endDate: earlier.endDate,
-        }),
-    // A longer range has more hours than the chart has pixels, and the core keeps
-    // hourly rows only for the recent window anyway.
-    isHourlyRange(range.startDate, range.endDate)
-      ? invoke<UsageHoursSnapshot>("get_usage_hours", {
-          provider,
-          device,
-          startDate: range.startDate,
-          endDate: range.endDate,
-        })
-      : Promise.resolve(null),
-  ]);
-  // Hourly rows only start existing after each provider's first refresh on this build.
-  // Until every provider covers the whole range, keep the complete daily shape instead of
-  // drawing a plausible but partial hourly chart.
-  const hours = hourly !== null && hourlyUsageMatchesRange(hourly, next) ? hourly : null;
-  return { range: next, previous, hours };
-}
-
-/**
- * The rolling window is one read rather than three: its totals are summed from the same
- * hourly rows the chart draws, because the two calendar days it touches are both partial
- * and neither the day rows nor the device split could be taken from them.
- */
-async function readRollingWindow(
-  provider: ProviderKey | null,
-  device: string | null,
-  window: { startHour: string; endHour: string },
-  earlier: { startHour: string; endHour: string },
-): Promise<RangeRead> {
-  const [next, previous] = await Promise.all([
-    invoke<UsageWindowSnapshot>("get_usage_window", { provider, device, ...window }),
-    invoke<UsageWindowSnapshot>("get_usage_window", { provider, device, ...earlier }),
-  ]);
-  return { range: next.range, previous: previous.range, hours: next.hours };
-}
-
 function Dashboard() {
-  const [usageRange, setUsageRange] = useState<UsageRangeSnapshot>(EMPTY_USAGE_RANGE);
-  // The comparison and the quota history are read for the same slice as the totals, so a
-  // figure and the change beside it always describe the same two periods.
-  const [previousRange, setPreviousRange] = useState<UsageRangeSnapshot | null>(null);
-  // Hourly detail is read only for the ranges short enough to be drawn that way; `null`
-  // is what puts the charts back on the daily axis.
-  const [usageHours, setUsageHours] = useState<UsageHoursSnapshot | null>(null);
-  const [quotaHistory, setQuotaHistory] = useState<QuotaHistorySnapshot | null>(null);
-  const [activeRange, setActiveRange] = useState<DateRangeSelection>(INITIAL_RANGE);
-  const [rangeLoading, setRangeLoading] = useState(false);
-  const [rangeError, setRangeError] = useState<string | null>(null);
+  const { usage, selectProvider, selectDevice, selectRange, reload, followWorkspace } =
+    useUsageRange();
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
-  const [historyEventError, setHistoryEventError] = useState<string | null>(null);
+  const [eventError, setEventError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot>(EMPTY_DIAGNOSTICS);
   // Settings is a page rather than an overlay: it is read and worked through — a source
   // set up, then checked, then the restart history read — and a dialog over the dashboard
   // both hides what it is being compared against and has nowhere to put a long list.
   const [showSettings, setShowSettings] = useState(false);
-  const activeRangeRef = useRef(INITIAL_RANGE);
-  // The usage history shows one provider at a time, or all of them counted together,
-  // while the quota sections above always show each provider on its own. It opens on the
-  // combined view: the window is read first for how much has been spent today, and naming
-  // one provider there answers a narrower question than the one being asked. A workspace
-  // with a single provider falls back to it, because "all" of one is that one.
-  const [selectedProvider, setSelectedProvider] = useState<HistoryProvider>("all");
-  const providerRef = useRef<HistoryProvider>("all");
-  const rangeRequestId = useRef(0);
-  const [selectedDevice, setSelectedDevice] = useState<string | null>(null);
-  const deviceRef = useRef<string | null>(null);
-  const rangeRequested = useRef(false);
-
-  /**
-   * Reads one range. A read the reader asked for holds the charts at reduced opacity while
-   * it runs, because they asked for something else and nothing else would say so. A
-   * background read — the reconciliation poll, a session file that just changed — is
-   * invisible until its data replaces what is on screen: Codex writes its logs while it
-   * works, and dimming the dashboard every couple of seconds for a reload nobody asked for
-   * is the flicker.
-   */
-  const loadUsageRange = useCallback(
-    async (
-      range: DateRangeSelection,
-      rangeProvider: HistoryProvider,
-      device: string | null,
-      options?: { background?: boolean },
-    ) => {
-      let resolvedRange = resolveDateRange(range);
-      activeRangeRef.current = resolvedRange;
-      const requestId = ++rangeRequestId.current;
-      if (options?.background !== true) setRangeLoading(true);
-      // The combined view names no provider, which the core reads as every provider at once.
-      const provider = rangeProvider === "all" ? null : rangeProvider;
-      try {
-        if (range.preset === "all") {
-          const firstUsageDate = await invoke<string | null>("get_usage_start_date", {
-            provider,
-            device,
-          });
-          if (requestId !== rangeRequestId.current) return;
-          resolvedRange = createAllRange(firstUsageDate ?? todayString());
-          activeRangeRef.current = resolvedRange;
-        }
-        const earlier = resolvedRange.preset === "all" ? null : previousPeriod(resolvedRange);
-        const window = hourBounds(resolvedRange);
-        const earlierWindow = earlier === null ? null : hourBounds(earlier);
-        const [usage, quota] = await Promise.all([
-          window !== null && earlierWindow !== null
-            ? readRollingWindow(provider, device, window, earlierWindow)
-            : readCalendarRange(provider, device, resolvedRange, earlier),
-          // Quota is not summable: one provider's weekly window says nothing about
-          // another's, so the combined view leaves that chart out rather than adding up
-          // percentages of different allowances. It is measured once a poll and summarised
-          // by the day, so a rolling window reads the days it touches like any other range.
-          provider === null
-            ? Promise.resolve(null)
-            : invoke<QuotaHistorySnapshot>("get_quota_history", {
-                provider,
-                startDate: resolvedRange.startDate,
-                endDate: resolvedRange.endDate,
-              }),
-        ]);
-        if (requestId === rangeRequestId.current) {
-          setUsageRange(usage.range);
-          setPreviousRange(usage.previous);
-          setUsageHours(usage.hours);
-          setQuotaHistory(quota);
-          setActiveRange(resolvedRange);
-          setRangeError(null);
-        }
-      } catch (error) {
-        if (requestId === rangeRequestId.current) setRangeError(errorMessage(error));
-      } finally {
-        // Whichever read arrives last owns the display, so it is also the one that releases
-        // the hold — a foreground read superseded by a background one never would.
-        if (requestId === rangeRequestId.current) setRangeLoading(false);
-      }
-    },
-    [],
-  );
 
   const loadDiagnostics = useCallback(async () => {
     try {
@@ -279,69 +84,40 @@ function Dashboard() {
 
   // The shared subscription retries until the core is ready, so the first usage
   // range read waits for it instead of failing against an unmanaged state.
-  const onSnapshot = useCallback(
+  const readForSnapshot = useCallback(
     (nextWorkspace: WorkspaceSnapshot) => {
       void loadDiagnostics();
-      const rangeProvider = resolveProviderKey(nextWorkspace.providers, providerRef.current);
-      if (!rangeProvider) return;
-      const providerChanged = rangeProvider !== providerRef.current;
-      if (providerChanged) {
-        providerRef.current = rangeProvider;
-        setSelectedProvider(rangeProvider);
-      }
-      // Each snapshot is also the only regular tick this window receives, so it is where a
-      // calendar preset notices that midnight has passed. Without it an idle machine keeps
-      // yesterday's totals under a heading that reads "Today" until something else asks for
-      // a range.
-      const firstRead = !rangeRequested.current;
-      if (firstRead || providerChanged || hasRolledOver(activeRangeRef.current)) {
-        rangeRequested.current = true;
-        // Only a repeat read is silent. The first one has nothing on screen to keep still,
-        // and hiding it would show an empty range until it arrived.
-        void loadUsageRange(activeRangeRef.current, rangeProvider, deviceRef.current, {
-          background: !firstRead,
-        });
-      }
+      followWorkspace(nextWorkspace.providers);
     },
-    [loadDiagnostics, loadUsageRange],
+    [loadDiagnostics, followWorkspace],
+  );
+
+  // A dismissed dashboard is hidden rather than closed, and the core goes on sending it every
+  // snapshot. Answering one costs a diagnostics read and a whole range read — several
+  // database queries — for a window nobody is looking at, so the reads wait until it is back
+  // on screen and are then made against the newest snapshot rather than the one that was
+  // skipped.
+  // The core's history event is answered the same way: the range read it asks for waits for
+  // the window to be shown again.
+  const latestWorkspace = useRef(EMPTY_WORKSPACE);
+  const readsDeferred = useRef(false);
+  const historyDeferred = useRef(false);
+
+  const onSnapshot = useCallback(
+    (nextWorkspace: WorkspaceSnapshot) => {
+      latestWorkspace.current = nextWorkspace;
+      void onScreen().then((visible) => {
+        if (visible) readForSnapshot(nextWorkspace);
+        else readsDeferred.current = true;
+      });
+    },
+    [readForSnapshot],
   );
 
   const { workspace, error: snapshotError, loaded } = useSnapshot(EMPTY_WORKSPACE, onSnapshot);
   const historyProvider =
-    workspace.providers.find((provider) => provider.provider === selectedProvider) ??
+    workspace.providers.find((provider) => provider.provider === usage.provider) ??
     workspace.providers[0];
-
-  const selectProvider = useCallback(
-    (provider: HistoryProvider) => {
-      logActivity(`history provider set to ${provider}`);
-      providerRef.current = provider;
-      deviceRef.current = null;
-      setSelectedProvider(provider);
-      setSelectedDevice(null);
-      void loadUsageRange(activeRangeRef.current, provider, null);
-    },
-    [loadUsageRange],
-  );
-
-  const selectDevice = useCallback(
-    (device: string | null) => {
-      logActivity(`history device set to ${device === null ? "every device" : "one device"}`);
-      deviceRef.current = device;
-      setSelectedDevice(device);
-      void loadUsageRange(activeRangeRef.current, providerRef.current, device);
-    },
-    [loadUsageRange],
-  );
-
-  const selectRange = useCallback(
-    (range: DateRangeSelection) => {
-      logActivity(`history range set to ${range.preset}`);
-      activeRangeRef.current = range;
-      setActiveRange(range);
-      void loadUsageRange(range, providerRef.current, deviceRef.current);
-    },
-    [loadUsageRange],
-  );
 
   const refresh = useCallback(async () => {
     logActivity("refresh pressed on the dashboard");
@@ -350,43 +126,58 @@ function Dashboard() {
       // refresh_now publishes the new snapshot through the shared subscription.
       await invoke("refresh_now");
       setRefreshError(null);
-      await Promise.all([
-        loadUsageRange(activeRangeRef.current, providerRef.current, deviceRef.current),
-        loadDiagnostics(),
-      ]);
+      await Promise.all([reload(), loadDiagnostics()]);
     } catch (error) {
       setRefreshError(errorMessage(error));
     } finally {
       setRefreshing(false);
     }
-  }, [loadDiagnostics, loadUsageRange]);
+  }, [loadDiagnostics, reload]);
 
   useEffect(() => {
     let disposed = false;
-    let stopListening = () => {};
+    const stops: Array<() => void> = [];
+    const keep = (unlisten: () => void) => {
+      if (disposed) unlisten();
+      else stops.push(unlisten);
+    };
+    const failed = (error: unknown) => {
+      if (!disposed) setEventError(errorMessage(error));
+    };
     void listen("history-updated", () => {
-      rangeRequested.current = true;
-      void loadUsageRange(activeRangeRef.current, providerRef.current, deviceRef.current, {
-        background: true,
+      void onScreen().then((visible) => {
+        if (visible) void reload({ background: true });
+        else historyDeferred.current = true;
       });
     })
-      .then((unlisten) => {
-        if (disposed) unlisten();
-        else stopListening = unlisten;
+      .then(keep)
+      .catch(failed);
+    // Showing the dashboard focuses it, so this is where a window that was hidden catches up
+    // on the snapshots and history updates it let pass.
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (!focused) return;
+        if (readsDeferred.current) {
+          readsDeferred.current = false;
+          readForSnapshot(latestWorkspace.current);
+        }
+        if (historyDeferred.current) {
+          historyDeferred.current = false;
+          void reload({ background: true });
+        }
       })
-      .catch((error) => {
-        if (!disposed) setHistoryEventError(errorMessage(error));
-      });
+      .then(keep)
+      .catch(failed);
     return () => {
       disposed = true;
-      stopListening();
+      for (const stop of stops) stop();
     };
-  }, [loadUsageRange]);
+  }, [reload, readForSnapshot]);
 
   const showClaudeSettings = workspace.providers.some(
     (provider) => provider.provider === "claude" && !provider.remoteUsageOnly,
   );
-  const interfaceError = snapshotError ?? refreshError ?? historyEventError ?? diagnosticsError;
+  const interfaceError = snapshotError ?? refreshError ?? eventError ?? diagnosticsError;
   // The panel is behind a control now, so anything wrong inside it has to be visible from
   // outside it; otherwise a failed acquisition path is only found by looking for it.
   // Every quota window on display right now, in the vocabulary the dismissed early-restart
@@ -504,18 +295,19 @@ function Dashboard() {
             <UsageSummary
               snapshot={historyProvider}
               providers={workspace.providers}
-              activeProvider={selectedProvider}
+              activeProvider={usage.provider}
               onSelectProvider={selectProvider}
-              activeDevice={selectedDevice}
+              activeDevice={usage.device}
               onSelectDevice={selectDevice}
               knownDevices={diagnostics.devices}
-              range={usageRange}
-              hours={usageHours}
-              previousRange={previousRange}
-              quotaHistory={quotaHistory}
-              selection={activeRange}
-              loading={rangeLoading}
-              error={rangeError}
+              range={usage.range}
+              hours={usage.hours}
+              previousRange={usage.previous}
+              quotaHistory={usage.quotaHistory}
+              sessionCosts={usage.sessionCosts}
+              selection={usage.selection}
+              loading={usage.loading}
+              error={usage.error}
               onSelectRange={selectRange}
             />
           ) : null}

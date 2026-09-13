@@ -1,6 +1,6 @@
 [package]
 name = "quotastation"
-version = "1.1.0"
+version = "1.2.0"
 description = "Windows app for tracking AI coding quotas, usage, reset times, and estimated API costs"
 authors = ["Steve Wang <contact@stevewang.me>"]
 edition = "2024"
@@ -9,6 +9,12 @@ license = "AGPL-3.0-only"
 [lib]
 name = "quotastation_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# Every `unsafe` block here calls into Win32, where the invariants are the API's own and
+# live nowhere in the type system. Denying the lint is what keeps the note beside the call
+# rather than in somebody's memory.
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
 
 [build-dependencies]
 serde_json = "1"

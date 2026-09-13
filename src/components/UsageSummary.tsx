@@ -29,10 +29,12 @@ import type {
   ModelUsage,
   ProviderSnapshot,
   QuotaHistorySnapshot,
+  SessionCostSnapshot,
   TokenUsage,
   UsageHoursSnapshot,
   UsageRangeSnapshot,
 } from "../types";
+import { SessionTable } from "./SessionTable";
 import { type ChartMarker, type ChartSeries, TrendChart } from "./TrendChart";
 
 /**
@@ -85,6 +87,8 @@ interface UsageSummaryProps {
   /** The period immediately before this one, or none when every recorded day is selected. */
   previousRange: UsageRangeSnapshot | null;
   quotaHistory: QuotaHistorySnapshot | null;
+  /** Every session in the range priced twice, or `null` before the first read lands. */
+  sessionCosts: SessionCostSnapshot | null;
   selection: DateRangeSelection;
   loading: boolean;
   error: string | null;
@@ -112,12 +116,17 @@ export function UsageSummary({
   hours,
   previousRange,
   quotaHistory,
+  sessionCosts,
   selection,
   loading,
   error,
   onSelectRange,
 }: UsageSummaryProps) {
   const [showCustom, setShowCustom] = useState(false);
+  // The two views answer different questions about one range, and the sessions table is
+  // as wide as the page, so they take turns rather than stacking. The range, the provider
+  // and the device stay where they are: switching view is not a new question.
+  const [view, setView] = useState<"days" | "sessions">("days");
   const [customStart, setCustomStart] = useState(selection.startDate);
   const [customEnd, setCustomEnd] = useState(selection.endDate);
   // Opening a day narrows the breakdown cards to it; the charts and the totals above stay
@@ -245,6 +254,25 @@ export function UsageSummary({
     tone: reset.classification === "unplanned" ? "warning" : "muted",
   }));
 
+  // A session is placed by the moment it started, so the sessions view answers for whole
+  // local days rather than for the hours a rolling range covers. Saying which days those
+  // are is what keeps "24h" from looking like it lost or gained a session.
+  const daySpan =
+    range.startDate === range.endDate
+      ? formatRangeDate(range.startDate)
+      : `${formatRangeDate(range.startDate)} – ${formatRangeDate(range.endDate)}`;
+  const sessionNotes = [
+    activeProvider === "codex"
+      ? "Codex records no cost of its own, so its sessions carry the catalog's estimate alone."
+      : null,
+    selection.startHour === undefined
+      ? null
+      : "A rolling range is read here by the whole days it touches, because a session is placed by when it started.",
+    activeDevice === null
+      ? null
+      : "Comparisons are recorded on the machine that ran the session, so the device filter does not narrow them.",
+  ].filter((note): note is string => note !== null);
+
   function applyPreset(preset: Exclude<RangePreset, "custom">) {
     setShowCustom(false);
     setOpenDay(null);
@@ -275,6 +303,29 @@ export function UsageSummary({
         <div>
           <span className="section-kicker">Usage history</span>
           <h2>{selection.label}</h2>
+        </div>
+        <div className="view-tabs" role="tablist" aria-label="Usage history view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "days"}
+            className={view === "days" ? "active" : ""}
+            onClick={() => setView("days")}
+          >
+            Days
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "sessions"}
+            className={view === "sessions" ? "active" : ""}
+            onClick={() => {
+              setOpenDay(null);
+              setView("sessions");
+            }}
+          >
+            Sessions
+          </button>
         </div>
         {providers.length > 1 || range.devices.length > 1 ? (
           <div className="history-filters">
@@ -393,245 +444,264 @@ export function UsageSummary({
       {error ? <p className="range-error">Unable to load this range: {error}</p> : null}
 
       <div className="history-content">
-        {/* The model count is not a fourth headline figure: the model mix card below both
+        {view === "sessions" ? (
+          <SessionTable
+            snapshot={sessionCosts}
+            rangeLabel={daySpan}
+            notes={sessionNotes}
+            loading={loading}
+          />
+        ) : (
+          <>
+            {/* The model count is not a fourth headline figure: the model mix card below both
             counts them and says what they were. Bounded ranges compare each figure with
             the period before them; All has no history before its first recorded day. */}
-        <div className="summary-strip">
-          <StatTile
-            label="Total tokens"
-            value={formatNumber(range.usage.total)}
-            delta={previousRange && formatDelta(range.usage.total, previousRange.usage.total)}
-          />
-          <StatTile
-            label="API-equivalent cost"
-            value={formatCurrency(range.apiEquivalentCostUsd)}
-            delta={
-              previousRange &&
-              formatDelta(range.apiEquivalentCostUsd ?? 0, previousRange.apiEquivalentCostUsd ?? 0)
-            }
-          />
-          <StatTile
-            label="Active-day average"
-            value={formatNumber(activeDayAverage)}
-            delta={previousRange && formatDelta(activeDayAverage, previousActiveAverage)}
-          />
-        </div>
+            <div className="summary-strip">
+              <StatTile
+                label="Total tokens"
+                value={formatNumber(range.usage.total)}
+                delta={previousRange && formatDelta(range.usage.total, previousRange.usage.total)}
+              />
+              <StatTile
+                label="API-equivalent cost"
+                value={formatCurrency(range.apiEquivalentCostUsd)}
+                delta={
+                  previousRange &&
+                  formatDelta(
+                    range.apiEquivalentCostUsd ?? 0,
+                    previousRange.apiEquivalentCostUsd ?? 0,
+                  )
+                }
+              />
+              <StatTile
+                label="Active-day average"
+                value={formatNumber(activeDayAverage)}
+                delta={previousRange && formatDelta(activeDayAverage, previousActiveAverage)}
+              />
+            </div>
 
-        {/* One day is not a trend: a single column would be a bar chart of one, and the
+            {/* One day is not a trend: a single column would be a bar chart of one, and the
             figures above and the breakdown below already say everything it could. An
             hourly range is never in that position — a day is twenty-four buckets. */}
-        {buckets.length < 2 ? (
-          <p className="chart-hint">
-            Charts compare one period against another. Choose a longer range to see them.
-          </p>
-        ) : null}
-        <div className="chart-grid" hidden={buckets.length < 2}>
-          <TrendChart
-            title={hourly ? "Hourly tokens" : "Daily tokens"}
-            subtitle={
-              hourly
-                ? "Stacked by category · one column per hour"
-                : "Stacked by category · select a day to open it below"
-            }
-            buckets={buckets}
-            resolution={resolution}
-            series={tokenSeries}
-            mode="stacked"
-            formatValue={formatNumber}
-            formatTick={formatCompactNumber}
-            {...daySelection}
-            emptyCopy="No usage recorded in this date range."
-            loading={loading}
-          />
-          <TrendChart
-            title="Cost trend"
-            subtitle={`Estimated API-equivalent cost per ${resolution}`}
-            buckets={buckets}
-            resolution={resolution}
-            series={costSeries}
-            mode="line"
-            formatValue={(value) => formatCurrency(value)}
-            formatTick={formatCompactCurrency}
-            emptyCopy="No cost recorded in this date range."
-            loading={loading}
-          />
-          <TrendChart
-            title="Model trend"
-            subtitle={`${range.models.length} models · by tokens per ${resolution}`}
-            buckets={buckets}
-            resolution={resolution}
-            series={modelSeries}
-            mode="stacked"
-            formatValue={formatNumber}
-            formatTick={formatCompactNumber}
-            {...daySelection}
-            emptyCopy="No model usage recorded in this date range."
-            loading={loading}
-          />
-          {/* Quota is measured once a poll rather than once a request, and a day is
+            {buckets.length < 2 ? (
+              <p className="chart-hint">
+                Charts compare one period against another. Choose a longer range to see them.
+              </p>
+            ) : null}
+            <div className="chart-grid" hidden={buckets.length < 2}>
+              <TrendChart
+                title={hourly ? "Hourly tokens" : "Daily tokens"}
+                subtitle={
+                  hourly
+                    ? "Stacked by category · one column per hour"
+                    : "Stacked by category · select a day to open it below"
+                }
+                buckets={buckets}
+                resolution={resolution}
+                series={tokenSeries}
+                mode="stacked"
+                formatValue={formatNumber}
+                formatTick={formatCompactNumber}
+                {...daySelection}
+                emptyCopy="No usage recorded in this date range."
+                loading={loading}
+              />
+              <TrendChart
+                title="Cost trend"
+                subtitle={`Estimated API-equivalent cost per ${resolution}`}
+                buckets={buckets}
+                resolution={resolution}
+                series={costSeries}
+                mode="line"
+                formatValue={(value) => formatCurrency(value)}
+                formatTick={formatCompactCurrency}
+                emptyCopy="No cost recorded in this date range."
+                loading={loading}
+              />
+              <TrendChart
+                title="Model trend"
+                subtitle={`${range.models.length} models · by tokens per ${resolution}`}
+                buckets={buckets}
+                resolution={resolution}
+                series={modelSeries}
+                mode="stacked"
+                formatValue={formatNumber}
+                formatTick={formatCompactNumber}
+                {...daySelection}
+                emptyCopy="No model usage recorded in this date range."
+                loading={loading}
+              />
+              {/* Quota is measured once a poll rather than once a request, and a day is
               summarised by its peak, so this chart stays on the daily axis whatever
               resolution the usage beside it is read at. */}
-          {quotaSeries.length > 0 ? (
-            <TrendChart
-              title="Quota history"
-              subtitle="Highest share of each window used that day"
-              buckets={days}
-              resolution="day"
-              series={quotaSeries}
-              mode="line"
-              maxValue={100}
-              formatValue={(value) => `${value.toFixed(1)}%`}
-              formatTick={(value) => `${value}%`}
-              markers={quotaMarkers}
-              emptyCopy="No quota readings were recorded in this date range."
-              loading={loading}
-            />
-          ) : null}
-        </div>
-
-        {openPoint ? (
-          <div className="day-drilldown">
-            <span>
-              Showing <strong>{formatRangeDate(openPoint.date)}</strong> —{" "}
-              {formatNumber(openPoint.usage.total)} tokens across {openPoint.models.length} model
-              {openPoint.models.length === 1 ? "" : "s"}
-            </span>
-            <button type="button" onClick={() => setOpenDay(null)}>
-              <X aria-hidden="true" /> Back to the range
-            </button>
-          </div>
-        ) : null}
-
-        <div className={`history-grid${range.devices.length > 1 ? " multi-device" : ""}`}>
-          <article className="history-card breakdown-card">
-            <div className="card-heading">
-              <div>
-                <h3>Daily breakdown</h3>
-                <span>Newest first · {range.days.length} active days</span>
-              </div>
-              <span>Tokens and estimated API cost</span>
+              {quotaSeries.length > 0 ? (
+                <TrendChart
+                  title="Quota history"
+                  subtitle="Highest share of each window used that day"
+                  buckets={days}
+                  resolution="day"
+                  series={quotaSeries}
+                  mode="line"
+                  maxValue={100}
+                  formatValue={(value) => `${value.toFixed(1)}%`}
+                  formatTick={(value) => `${value}%`}
+                  markers={quotaMarkers}
+                  emptyCopy="No quota readings were recorded in this date range."
+                  loading={loading}
+                />
+              ) : null}
             </div>
-            {range.days.length === 0 ? (
-              <p className="empty-copy">No usage recorded in this date range.</p>
-            ) : (
-              <div className="daily-table" role="table" aria-label="Daily token and cost breakdown">
-                <div className="daily-table-row daily-table-header" role="row">
-                  <span role="columnheader">Date</span>
-                  <span role="columnheader">Total tokens</span>
-                  <span role="columnheader">Cached input</span>
-                  <span role="columnheader">Output</span>
-                  <span role="columnheader">API cost</span>
-                </div>
-                {displayDays.map((day) => (
-                  <div
-                    className={`daily-table-row${day.date === openDay ? " open" : ""}`}
-                    role="row"
-                    key={day.date}
-                    tabIndex={0}
-                    onClick={() => setOpenDay(day.date === openDay ? null : day.date)}
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter" && event.key !== " ") return;
-                      event.preventDefault();
-                      setOpenDay(day.date === openDay ? null : day.date);
-                    }}
-                  >
-                    <strong role="cell">{formatRangeDate(day.date)}</strong>
-                    <span role="cell">{formatNumber(day.usage.total)}</span>
-                    <span role="cell">{formatNumber(day.usage.cacheRead)}</span>
-                    <span role="cell">{formatNumber(day.usage.output)}</span>
-                    <span role="cell">{formatCurrency(day.apiEquivalentCostUsd)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </article>
 
-          <article className="history-card model-card">
-            <div className="card-heading">
-              <div>
-                <h3>Model mix</h3>
-                <span>{models.length} models · by total tokens</span>
-              </div>
-              {openPoint ? <span>{formatRangeDate(openPoint.date)}</span> : null}
-            </div>
-            <div className="model-list">
-              {models.length === 0 ? (
-                <p className="empty-copy">No model usage recorded.</p>
-              ) : (
-                models.slice(0, 6).map((model) => (
-                  <div className="model-row" key={model.model}>
-                    <span title={model.model}>{model.model}</span>
-                    <span>{model.percent.toFixed(1)}%</span>
-                    <div className="mini-track">
-                      <i style={{ width: `${model.percent}%` }} />
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </article>
-
-          {range.devices.length > 1 ? (
-            <article className="history-card device-card">
-              <div className="card-heading">
-                <div>
-                  <h3>Devices</h3>
-                  <span>{range.devices.length} devices · by total tokens</span>
-                </div>
-              </div>
-              <div className="device-list">
-                {range.devices.map((device) => (
-                  <div className="device-row" key={device.deviceId}>
-                    <span title={device.displayName}>
-                      {device.displayName}
-                      {device.local ? <small>This machine</small> : null}
-                    </span>
-                    <strong>{formatNumber(device.tokens)}</strong>
-                    <span>{device.percent.toFixed(1)}%</span>
-                    <div className="device-track">
-                      <i style={{ width: `${device.percent}%` }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </article>
-          ) : null}
-
-          <article className="history-card token-card">
-            <div className="card-heading">
-              <div>
-                <h3>Token breakdown</h3>
+            {openPoint ? (
+              <div className="day-drilldown">
                 <span>
-                  {combined
-                    ? `${providers.length} providers combined`
-                    : `Catalog ${formatRevision(snapshot.pricingCatalogRevision)}`}
+                  Showing <strong>{formatRangeDate(openPoint.date)}</strong> —{" "}
+                  {formatNumber(openPoint.usage.total)} tokens across {openPoint.models.length}{" "}
+                  model
+                  {openPoint.models.length === 1 ? "" : "s"}
                 </span>
+                <button type="button" onClick={() => setOpenDay(null)}>
+                  <X aria-hidden="true" /> Back to the range
+                </button>
               </div>
-              <span>
-                {openPoint
-                  ? formatCompactCurrency(cost ?? 0)
-                  : combined
-                    ? null
-                    : (snapshot.planType ?? "Unknown plan")}
-              </span>
-            </div>
-            <div className="token-list">
-              {CATEGORIES.map((category) => (
-                <div className="token-row" key={category.key}>
-                  <i className="token-dot" style={{ background: category.color }} />
-                  <span>{category.label}</span>
-                  <strong>{formatNumber(usage[category.key])}</strong>
+            ) : null}
+
+            <div className={`history-grid${range.devices.length > 1 ? " multi-device" : ""}`}>
+              <article className="history-card breakdown-card">
+                <div className="card-heading">
+                  <div>
+                    <h3>Daily breakdown</h3>
+                    <span>Newest first · {range.days.length} active days</span>
+                  </div>
+                  <span>Tokens and estimated API cost</span>
+                </div>
+                {range.days.length === 0 ? (
+                  <p className="empty-copy">No usage recorded in this date range.</p>
+                ) : (
+                  <div
+                    className="daily-table"
+                    role="table"
+                    aria-label="Daily token and cost breakdown"
+                  >
+                    <div className="daily-table-row daily-table-header" role="row">
+                      <span role="columnheader">Date</span>
+                      <span role="columnheader">Total tokens</span>
+                      <span role="columnheader">Cached input</span>
+                      <span role="columnheader">Output</span>
+                      <span role="columnheader">API cost</span>
+                    </div>
+                    {displayDays.map((day) => (
+                      <div
+                        className={`daily-table-row${day.date === openDay ? " open" : ""}`}
+                        role="row"
+                        key={day.date}
+                        tabIndex={0}
+                        onClick={() => setOpenDay(day.date === openDay ? null : day.date)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter" && event.key !== " ") return;
+                          event.preventDefault();
+                          setOpenDay(day.date === openDay ? null : day.date);
+                        }}
+                      >
+                        <strong role="cell">{formatRangeDate(day.date)}</strong>
+                        <span role="cell">{formatNumber(day.usage.total)}</span>
+                        <span role="cell">{formatNumber(day.usage.cacheRead)}</span>
+                        <span role="cell">{formatNumber(day.usage.output)}</span>
+                        <span role="cell">{formatCurrency(day.apiEquivalentCostUsd)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </article>
+
+              <article className="history-card model-card">
+                <div className="card-heading">
+                  <div>
+                    <h3>Model mix</h3>
+                    <span>{models.length} models · by total tokens</span>
+                  </div>
+                  {openPoint ? <span>{formatRangeDate(openPoint.date)}</span> : null}
+                </div>
+                <div className="model-list">
+                  {models.length === 0 ? (
+                    <p className="empty-copy">No model usage recorded.</p>
+                  ) : (
+                    models.slice(0, 6).map((model) => (
+                      <div className="model-row" key={model.model}>
+                        <span title={model.model}>{model.model}</span>
+                        <span>{model.percent.toFixed(1)}%</span>
+                        <div className="mini-track">
+                          <i style={{ width: `${model.percent}%` }} />
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </article>
+
+              {range.devices.length > 1 ? (
+                <article className="history-card device-card">
+                  <div className="card-heading">
+                    <div>
+                      <h3>Devices</h3>
+                      <span>{range.devices.length} devices · by total tokens</span>
+                    </div>
+                  </div>
+                  <div className="device-list">
+                    {range.devices.map((device) => (
+                      <div className="device-row" key={device.deviceId}>
+                        <span title={device.displayName}>
+                          {device.displayName}
+                          {device.local ? <small>This machine</small> : null}
+                        </span>
+                        <strong>{formatNumber(device.tokens)}</strong>
+                        <span>{device.percent.toFixed(1)}%</span>
+                        <div className="device-track">
+                          <i style={{ width: `${device.percent}%` }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ) : null}
+
+              <article className="history-card token-card">
+                <div className="card-heading">
+                  <div>
+                    <h3>Token breakdown</h3>
+                    <span>
+                      {combined
+                        ? `${providers.length} providers combined`
+                        : `Catalog ${formatRevision(snapshot.pricingCatalogRevision)}`}
+                    </span>
+                  </div>
                   <span>
-                    {usage.total === 0
-                      ? "0.0"
-                      : ((usage[category.key] / usage.total) * 100).toFixed(1)}
-                    %
+                    {openPoint
+                      ? formatCompactCurrency(cost ?? 0)
+                      : combined
+                        ? null
+                        : (snapshot.planType ?? "Unknown plan")}
                   </span>
                 </div>
-              ))}
+                <div className="token-list">
+                  {CATEGORIES.map((category) => (
+                    <div className="token-row" key={category.key}>
+                      <i className="token-dot" style={{ background: category.color }} />
+                      <span>{category.label}</span>
+                      <strong>{formatNumber(usage[category.key])}</strong>
+                      <span>
+                        {usage.total === 0
+                          ? "0.0"
+                          : ((usage[category.key] / usage.total) * 100).toFixed(1)}
+                        %
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </article>
             </div>
-          </article>
-        </div>
+          </>
+        )}
       </div>
     </section>
   );

@@ -53,6 +53,49 @@ pub fn quota_level(used_percent: Option<f64>) -> QuotaLevel {
     }
 }
 
+/// How wide a lead or a lag has to be before the pace is worth marking. A burst of work
+/// early in a window is ordinary, and a marker that appears constantly says nothing.
+const PACE_BAND: f64 = 10.0;
+
+/// Whether a window is being spent faster or slower than it is elapsing.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PaceLevel {
+    /// Inside the band, and also where a window is missing the percentage, the restart
+    /// time or the duration the comparison needs: nothing to say rather than on the line.
+    #[default]
+    OnTrack,
+    Ahead,
+    Behind,
+}
+
+/// The share consumed against the share of the window that has passed.
+///
+/// This is deliberately the cheap comparison: it needs no history and no rate estimate, and
+/// it answers the one question a bar and a countdown together still cannot — at this pace,
+/// does the allowance outlast the window? Every surface reads the answer from here, so the
+/// status line and the panel never mark the same window differently.
+pub fn pace_level(
+    used_percent: Option<f64>,
+    resets_at: Option<i64>,
+    window_duration_mins: Option<i64>,
+    now: i64,
+) -> PaceLevel {
+    let Some(used) = used_percent else { return PaceLevel::OnTrack };
+    let Some(minutes) = window_duration_mins.filter(|minutes| *minutes > 0) else {
+        return PaceLevel::OnTrack;
+    };
+    let Some(resets_at) = resets_at else { return PaceLevel::OnTrack };
+    let minutes = minutes as f64;
+    let remaining = (resets_at - now) as f64 / 60.0;
+    let elapsed = (minutes - remaining).clamp(0.0, minutes);
+    match used.clamp(0.0, 100.0) - elapsed / minutes * 100.0 {
+        difference if difference > PACE_BAND => PaceLevel::Ahead,
+        difference if difference < -PACE_BAND => PaceLevel::Behind,
+        _ => PaceLevel::OnTrack,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactStatus {
@@ -177,6 +220,11 @@ pub struct LimitWindow {
     /// decide how loud the reading is.
     #[serde(default)]
     pub status_level: QuotaLevel,
+    /// Whether this window is being spent ahead of or behind the clock. Filled beside
+    /// `status_level`, for the same reason: how a reading compares with its own window is
+    /// one rule, and a surface that decided it for itself would be a second copy of it.
+    #[serde(default)]
+    pub pace: PaceLevel,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -236,7 +284,7 @@ pub struct SharedResetEvent {
     pub detected_at: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
     pub input: u64,
@@ -277,6 +325,10 @@ pub struct ProviderSnapshot {
     pub today: TokenUsage,
     pub api_equivalent_cost_usd: Option<f64>,
     pub models: Vec<ModelUsage>,
+    /// The last seven local days of tokens, oldest first and today last, with the days
+    /// nothing was recorded on carried as zeroes. One series answers both the trend and
+    /// the comparison with yesterday, which is its last pair.
+    pub daily_totals: Vec<u64>,
     pub freshness: Freshness,
     pub stale_age_seconds: Option<u64>,
     pub compact_status: CompactStatus,
@@ -311,6 +363,7 @@ impl ProviderSnapshot {
             today: TokenUsage::default(),
             api_equivalent_cost_usd: None,
             models: Vec::new(),
+            daily_totals: Vec::new(),
             freshness: Freshness::Unavailable,
             stale_age_seconds: None,
             compact_status: CompactStatus::unavailable(),
@@ -324,6 +377,17 @@ impl ProviderSnapshot {
             parser_revision: CCUSAGE_REVISION.to_string(),
             pricing_catalog_revision: PRICING_CATALOG_REVISION.to_string(),
         }
+    }
+
+    /// Drops everything this snapshot says about quota, for a provider whose quota this
+    /// machine does not show: switched off, or known only through another device's usage.
+    pub fn clear_quota(&mut self) {
+        self.limits.clear();
+        self.earned_reset_count = None;
+        self.earned_reset_expires_at = None;
+        self.recent_resets.clear();
+        self.live_error = None;
+        self.sign_in_required = false;
     }
 
     /// Quota freshness follows only from live acquisition and each window's own source
@@ -361,6 +425,8 @@ impl ProviderSnapshot {
             };
             limit.freshness = if age <= max_age { Freshness::Fresh } else { Freshness::Stale };
             limit.status_level = quota_level(limit.used_percent);
+            limit.pace =
+                pace_level(limit.used_percent, limit.resets_at, limit.window_duration_mins, now);
         }
         self.freshness = if self.last_live_success_at.is_none() || self.limits.is_empty() {
             Freshness::Unavailable
@@ -468,11 +534,37 @@ mod tests {
                 observed_at: jiff::Timestamp::now().as_second(),
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             }],
             ..ProviderSnapshot::new(provider)
         };
         snapshot.update_compact_status();
         snapshot
+    }
+
+    #[test]
+    fn pace_compares_the_share_used_against_the_share_of_the_window_elapsed() {
+        // Half of a five-hour window has passed.
+        const NOW: i64 = 1_800_000_000;
+        let halfway = Some(NOW + 150 * 60);
+        assert_eq!(pace_level(Some(80.0), halfway, Some(300), NOW), PaceLevel::Ahead);
+        assert_eq!(pace_level(Some(20.0), halfway, Some(300), NOW), PaceLevel::Behind);
+        assert_eq!(pace_level(Some(55.0), halfway, Some(300), NOW), PaceLevel::OnTrack);
+        assert_eq!(
+            pace_level(None, halfway, Some(300), NOW),
+            PaceLevel::OnTrack,
+            "no percentage, nothing to compare"
+        );
+        assert_eq!(
+            pace_level(Some(80.0), None, Some(300), NOW),
+            PaceLevel::OnTrack,
+            "no restart time, no elapsed share"
+        );
+        assert_eq!(
+            pace_level(Some(80.0), halfway, None, NOW),
+            PaceLevel::OnTrack,
+            "no duration, no elapsed share"
+        );
     }
 
     #[test]
@@ -504,6 +596,7 @@ mod tests {
                 observed_at: now.as_second() - 901,
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             }],
             last_live_success_at: Some(now.to_string()),
             last_history_success_at: Some(now.to_string()),
@@ -528,6 +621,7 @@ mod tests {
                 observed_at: now.as_second() - 3_601,
                 freshness: Freshness::Fresh,
                 status_level: QuotaLevel::Healthy,
+                pace: PaceLevel::OnTrack,
             }],
             last_live_success_at: Some(now.to_string()),
             ..ProviderSnapshot::new(ProviderKind::Claude)
@@ -550,6 +644,7 @@ mod tests {
             observed_at: jiff::Timestamp::now().as_second(),
             freshness: Freshness::Fresh,
             status_level: QuotaLevel::Healthy,
+            pace: PaceLevel::OnTrack,
         });
         snapshot.last_live_success_at = Some(jiff::Timestamp::now().to_string());
         snapshot.resolve_derived_state();
@@ -627,6 +722,74 @@ pub struct HistoryDay {
     pub models: Vec<ModelUsage>,
     pub cost_usd: f64,
     pub model_rows: Vec<ModelUsageRow>,
+}
+
+/// One session as the parser read it, with what the provider's own client said it cost
+/// where the client said anything at all.
+///
+/// Every session the parser has entries for is here. Claude Code records a cost of its own
+/// only in recent sessions and Codex records none, so the client's side is optional and
+/// the parser's side is what every row carries.
+///
+/// Neither cost is a bill. Nothing is charged per token on a subscription, so both figures
+/// are API-equivalent estimates, and the pair — where there is a pair — says whether the
+/// local catalog still agrees with the vendor's accounting.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCost {
+    /// The client's own identifier for the session. It stays on this machine: the shared
+    /// folder export carries aggregates, and nothing that names a session goes into it.
+    pub session_id: String,
+    /// The first entry the parser read for this session, and the span to its last. Both
+    /// are measured the same way for every session, whatever its client recorded.
+    pub session_started_at: String,
+    pub duration_ms: i64,
+    /// What the pricing catalog makes of the session's tokens.
+    pub computed_cost_usd: f64,
+    /// Whether that figure was reached without the client's own numbers. The parser prices
+    /// an entry from the catalog only while the entry carries no cost of its own; once one
+    /// does, both sides are the same number and their agreement means nothing.
+    pub independent: bool,
+    /// What the client accounted the session to, and the rest of what only it can say.
+    /// `None` throughout for a session whose client recorded nothing.
+    pub reported_cost_usd: Option<f64>,
+    /// Whether the client could price every model the session used. A client that met a
+    /// model it has no price for reports a total that is short of the session.
+    pub reported_complete: Option<bool>,
+    /// How much of the session was spent waiting on the provider.
+    pub api_duration_ms: Option<i64>,
+    pub lines_added: Option<i64>,
+    pub lines_removed: Option<i64>,
+    /// The session's tokens as the parser deduplicated them, so a session agrees with the
+    /// day it belongs to rather than with the client's own second count of the same work.
+    pub usage: TokenUsage,
+    /// The models the session used, most expensive first.
+    pub models: Vec<String>,
+}
+
+/// Every session in a range, with the costs summed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCostSnapshot {
+    pub sessions: Vec<SessionCost>,
+    /// Both sums cover only the sessions whose client reported a cost, because a total
+    /// that compared all of one side against some of the other would be a wrong number
+    /// rather than a partial one.
+    pub reported_cost_usd: f64,
+    pub computed_cost_usd: f64,
+    /// How far back sessions are kept, so a range reaching past that says why it is empty
+    /// rather than implying no work was done then.
+    pub retention_days: i64,
+}
+
+/// How far the catalog's pricing is from the client's own, over the sessions that carry
+/// both. `None` when a set holds nothing comparable, which is every Codex session and any
+/// Claude Code session older than the record.
+pub fn session_gap_percent(sessions: &[SessionCost]) -> Option<f64> {
+    let compared = sessions.iter().filter(|session| session.reported_cost_usd.is_some());
+    let reported: f64 = compared.clone().filter_map(|session| session.reported_cost_usd).sum();
+    let computed: f64 = compared.map(|session| session.computed_cost_usd).sum();
+    (reported > 0.0).then(|| (computed - reported) / reported * 100.0)
 }
 
 #[derive(Debug, Clone)]

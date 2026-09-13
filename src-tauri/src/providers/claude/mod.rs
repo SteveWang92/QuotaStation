@@ -1,3 +1,4 @@
+mod cost;
 mod history;
 pub mod notifications;
 mod plan;
@@ -12,8 +13,9 @@ use anyhow::Result;
 use crate::domain::{LimitKind, LimitWindow, LiveSnapshot};
 
 #[cfg(test)]
-use crate::domain::{Freshness, QuotaLevel, WindowSource};
+use crate::domain::{Freshness, PaceLevel, QuotaLevel, WindowSource};
 
+pub use cost::read_session_costs;
 pub use history::read_history;
 
 /// Claude's rolling session window, in minutes.
@@ -47,11 +49,6 @@ pub fn claude_home() -> Option<PathBuf> {
 pub async fn read_live() -> Result<LiveSnapshot> {
     let plan_type = plan::plan_type();
     let reported = statusline::read_windows()?;
-    crate::log::write(format!(
-        "claude live read: status line reported {} window(s), plan {:?}",
-        reported.len(),
-        plan_type
-    ));
     let mut snapshot = match session::read_live(plan_type.clone()).await {
         Ok(snapshot) => snapshot,
         // The session logs are the fallback, so their absence only ends the read when
@@ -111,6 +108,7 @@ mod tests {
             observed_at: 100,
             freshness: Freshness::Fresh,
             status_level: QuotaLevel::Healthy,
+            pace: PaceLevel::OnTrack,
         }
     }
 

@@ -67,13 +67,20 @@ impl SessionRegisterLock {
             core::w,
         };
 
+        // SAFETY: the name is a static wide literal and `None` asks for the default security
+        // attributes, so the call borrows nothing of ours. It returns either a handle this
+        // scope becomes responsible for or an error.
         let handle =
             unsafe { CreateMutexW(None, false, w!("Local\\QuotaStationClaudeSessionRegister")) }
                 .ok()?;
+        // SAFETY: `handle` is the mutex just created, and nothing closes it until this wait
+        // returns.
         let wait = unsafe { WaitForSingleObject(handle, 1_000) };
         if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
             Some(Self(handle))
         } else {
+            // SAFETY: the wait failed, so this branch is the only owner of `handle` and
+            // closes it exactly once.
             let _ = unsafe { CloseHandle(handle) };
             None
         }
@@ -85,7 +92,10 @@ impl Drop for SessionRegisterLock {
     fn drop(&mut self) {
         use windows::Win32::{Foundation::CloseHandle, System::Threading::ReleaseMutex};
 
+        // SAFETY: `self.0` is the handle `acquire` created and waited on successfully, and
+        // `Drop` runs once, so the mutex is released and the handle closed exactly once.
         let _ = unsafe { ReleaseMutex(self.0) };
+        // SAFETY: the same handle, released above and owned by nothing else.
         let _ = unsafe { CloseHandle(self.0) };
     }
 }
@@ -176,7 +186,7 @@ pub fn record_session(id: &str, name: Option<&str>, project: Option<&str>, now: 
     if let Some(path) = register_path()
         && let Ok(encoded) = serde_json::to_string(&register)
     {
-        let _ = publish(&path, &encoded);
+        let _ = crate::fs_atomic::write(&path, &encoded);
     }
 }
 
@@ -247,22 +257,10 @@ fn process_stem() -> String {
     format!("pid-{}", std::process::id())
 }
 
+/// Several sessions write at once and the application may be reading, so every event is
+/// written whole or not at all.
 fn write_event(path: &std::path::Path, event: &FinishedEvent) -> std::io::Result<()> {
-    publish(path, &serde_json::to_string(event).unwrap_or_default())
-}
-
-/// Writes a file the way every reader here expects to find it: whole, or not at all.
-/// Several sessions write at once and the application may be reading, so the content is
-/// staged under this process's own name and moved into place.
-fn publish(path: &std::path::Path, content: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let staging = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&staging, content)?;
-    std::fs::rename(&staging, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&staging);
-    })
+    crate::fs_atomic::write(path, serde_json::to_string(event).unwrap_or_default())
 }
 
 /// Every event the hooks left behind, removed as they are read.

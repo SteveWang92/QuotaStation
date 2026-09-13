@@ -27,11 +27,19 @@ export interface ThemeSnapshot {
   taskbar: "dark" | "light";
 }
 
+/**
+ * Whether a window is being spent faster or slower than it is elapsing. The core compares
+ * the share used against the share of the window that has passed, so no surface decides it
+ * for itself; `onTrack` is also what a window missing any part of that comparison reads.
+ */
+export type PaceLevel = "onTrack" | "ahead" | "behind";
+
 export interface LimitWindow {
   kind: "primary" | "secondary";
   label: string;
   /** How loud this window's own reading is, on the thresholds every surface shares. */
   statusLevel: "healthy" | "warning" | "critical";
+  pace: PaceLevel;
   usedPercent: number | null;
   windowDurationMins: number | null;
   resetsAt: number | null;
@@ -92,6 +100,11 @@ export interface ProviderSnapshot {
   today: TokenUsage;
   apiEquivalentCostUsd: number | null;
   models: ModelUsage[];
+  /**
+   * The last seven local days of tokens, oldest first and today last, with a day nothing
+   * was recorded on carried as a nought. The comparison with yesterday is its last pair.
+   */
+  dailyTotals: number[];
   freshness: Freshness;
   /**
    * The snapshot mirrors the Rust type exactly, so several fields arrive already folded
@@ -226,6 +239,50 @@ export interface UsageRangeSnapshot {
   devices: DeviceUsage[];
 }
 
+/**
+ * One session as the parser read it, with what the provider's own client said it cost
+ * where the client said anything at all.
+ *
+ * Every session the parser has entries for is here. Claude Code records a cost of its own
+ * only in recent sessions and Codex records none, so the client's side is optional.
+ * Neither cost is a bill — nothing is charged per token on a subscription — so the pair,
+ * where there is a pair, says whether the local estimate still tracks the vendor's own
+ * accounting.
+ */
+export interface SessionCost {
+  /** The client's own identifier. It never leaves this machine. */
+  sessionId: string;
+  sessionStartedAt: string;
+  /** From the session's first entry to its last, measured the same way for every session. */
+  durationMs: number;
+  computedCostUsd: number;
+  /** False once the client's own per-message costs priced the session, which makes both
+      figures the same number and their agreement meaningless. */
+  independent: boolean;
+  /** All null for a session whose client recorded nothing. */
+  reportedCostUsd: number | null;
+  /** False when the client met a model it has no price for, so its total is short. */
+  reportedComplete: boolean | null;
+  apiDurationMs: number | null;
+  linesAdded: number | null;
+  linesRemoved: number | null;
+  usage: TokenUsage;
+  /** The models the session used, most expensive first. */
+  models: string[];
+}
+
+export interface SessionCostSnapshot {
+  /** Newest first. */
+  sessions: SessionCost[];
+  /** Both sums cover only the sessions the client also priced, so the two can be compared
+      with each other. */
+  reportedCostUsd: number;
+  computedCostUsd: number;
+  /** How far back sessions are kept, which is what makes an empty older range explainable
+      rather than a claim that nothing was done. */
+  retentionDays: number;
+}
+
 export interface AcquisitionDiagnostics {
   /** `<provider>_live` or `<provider>_history`. */
   acquisitionPath: string;
@@ -273,6 +330,40 @@ export interface DiagnosticsSnapshot {
 /** How a provider is named where the name sits beside a reading rather than above one. */
 export type ProviderLabelStyle = "short" | "full";
 
+/** How much room the quick panel takes for the same readings. */
+export type QuickPanelDensity = "standard" | "compact";
+
+/**
+ * One segment of the Claude Code status line, named by the core — `model`, `branch`,
+ * `quota:<provider>` and so on. The core sends every segment it can draw, so the list is
+ * also the set the editor offers.
+ */
+export interface StatusLineSegment {
+  id: string;
+  enabled: boolean;
+  /** 1 to 3. */
+  row: number;
+}
+
+export interface StatusLineQuotaFormat {
+  used: boolean;
+  remaining: boolean;
+  countdown: boolean;
+  pace: boolean;
+  bar: boolean;
+}
+
+export type StatusLineSeparators = "classic" | "arrow" | "powerline";
+export type StatusLineColour = "full" | "quotaOnly" | "none";
+
+export interface StatusLineLayout {
+  /** In drawing order within each row. */
+  segments: StatusLineSegment[];
+  quota: StatusLineQuotaFormat;
+  separators: StatusLineSeparators;
+  colour: StatusLineColour;
+}
+
 /** A display whose taskbar can host the status widget. */
 export interface TaskbarDisplay {
   /** The Windows device name the choice is recorded as. */
@@ -296,9 +387,9 @@ export interface AppSettings {
   taskbarWidgetEnabled: boolean;
   /** The chosen display's device name, or null for whichever taskbar is the primary one. */
   taskbarWidgetDisplay: string | null;
+  quickPanelDensity: QuickPanelDensity;
   statusLineProviderLabels: ProviderLabelStyle;
-  statusLineOtherProviders: boolean;
-  statusLineExtraDetails: boolean;
+  statusLineLayout: StatusLineLayout;
   notifyLowQuota: boolean;
   notifyReadFailures: boolean;
   notifyQuotaResets: boolean;
