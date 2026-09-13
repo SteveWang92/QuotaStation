@@ -188,15 +188,22 @@ impl Storage {
     /// Stores each session the parser read, priced from the catalog, with the client's own
     /// figures where it recorded any. A session is written once and then corrected, since
     /// a session logged today is summarised again once more work goes through it.
+    ///
+    /// A session that started before the retention window is skipped: the client's logs
+    /// outlive the window, and writing it again would bring back the row retention removed.
     pub async fn save_session_costs(
         &self,
         provider: ProviderKind,
         sessions: &[SessionCost],
         observed_at: &str,
     ) -> Result<()> {
+        let cutoff = observed_at.parse::<jiff::Timestamp>()?
+            - jiff::SignedDuration::from_hours(24 * SESSION_COST_HISTORY_DAYS);
         let provider_id = self.provider_id(provider).await?;
         let mut tx = self.pool.begin().await?;
-        for session in sessions {
+        for session in sessions.iter().filter(|session| {
+            session.session_started_at.parse::<jiff::Timestamp>().is_ok_and(|at| at >= cutoff)
+        }) {
             sqlx::query(
                 "INSERT INTO session_costs \
                  (provider_instance_id, session_id, session_started_at, duration_ms, \

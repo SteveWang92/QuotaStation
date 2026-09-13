@@ -217,8 +217,18 @@ fn session(
 }
 
 #[tokio::test]
-async fn a_session_cost_is_corrected_in_place_and_dropped_once_it_leaves_the_window() {
+async fn a_session_cost_is_corrected_in_place_and_stays_gone_once_it_leaves_the_window() {
     let (storage, _database) = open_storage().await;
+    storage
+        .save_session_costs(
+            CODEX,
+            &[session("old", "2026-05-01T09:00:00Z", Some(1.0), 1.1)],
+            "2026-05-01T15:00:00Z",
+        )
+        .await
+        .expect("store the session while it is recent");
+    storage.run_retention_at("2026-08-20T15:00:00Z").await.expect("run retention");
+    // The client's logs still hold the old session, so every later parse reads it again.
     storage
         .save_session_costs(
             CODEX,
