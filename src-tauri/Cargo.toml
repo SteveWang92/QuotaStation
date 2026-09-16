@@ -31,7 +31,7 @@ jiff = "0.2"
 notify = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
