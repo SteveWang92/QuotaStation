@@ -626,11 +626,15 @@ const ship = async () => {
   requireCleanIntegrationBranch();
 
   git(["fetch", "origin"]);
-  // A failed dev push in step 5 leaves local dev reset to the squash commit, which cannot
-  // fast-forward from origin/dev. Keep it as it is so step 5 can retry the push.
+  // Step 5 resets dev to main before force-pushing it. When that push is the step that
+  // failed, local dev already is main while origin/dev still holds the pre-merge branch, so
+  // there is nothing to fast-forward — only the push to retry. The squash put dev's tree on
+  // main, so matching trees tell that outstanding push apart from an origin/dev carrying
+  // work the retried force-push would discard.
   const devPushPending =
-    isAncestor(`origin/${DEPLOY_BRANCH}`, INTEGRATION_BRANCH) &&
-    !isAncestor(`origin/${DEPLOY_BRANCH}`, `origin/${INTEGRATION_BRANCH}`);
+    git(["rev-parse", "HEAD"]) === git(["rev-parse", `origin/${DEPLOY_BRANCH}`]) &&
+    !integrationContainsDeploy() &&
+    !git(["diff", "--stat", `origin/${DEPLOY_BRANCH}`, `origin/${INTEGRATION_BRANCH}`]);
   if (!devPushPending) {
     git(["merge", "--ff-only", `origin/${INTEGRATION_BRANCH}`]);
   }
@@ -762,7 +766,7 @@ const ship = async () => {
   if (integrationContainsDeploy()) {
     console.log(`${INTEGRATION_BRANCH} already carries ${DEPLOY_BRANCH}.`);
   } else {
-    if (!isAncestor(DEPLOY_BRANCH, INTEGRATION_BRANCH)) git(["reset", "--hard", DEPLOY_BRANCH]);
+    git(["reset", "--hard", DEPLOY_BRANCH]);
     git(["push", "--force-with-lease", "origin", INTEGRATION_BRANCH]);
     console.log(`Reset ${INTEGRATION_BRANCH} to ${DEPLOY_BRANCH} and force-pushed.`);
   }
