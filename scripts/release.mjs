@@ -308,25 +308,32 @@ const versionFromTitle = (title) => {
 
 const tagExists = (tag) => Boolean(git(["tag", "--list", tag]));
 
+// Only "release not found" means the release is missing. Auth, network, and rate-limit
+// failures surface instead, so they are never mistaken for an unfinished release.
 const githubReleaseExists = (tag) => {
   try {
     gh(["release", "view", tag, "--repo", REPO, "--json", "tagName"]);
+    return true;
+  } catch (e) {
+    if (/release not found/i.test(e.message)) return false;
+    throw e;
+  }
+};
+
+const isAncestor = (ancestor, descendant) => {
+  try {
+    git(["merge-base", "--is-ancestor", ancestor, descendant]);
     return true;
   } catch {
     return false;
   }
 };
 
-// True once the squash-merged deploy branch is an ancestor of the integration
-// branch — i.e. the reset either happened or dev has moved on past it.
-const integrationContainsDeploy = () => {
-  try {
-    git(["merge-base", "--is-ancestor", `origin/${DEPLOY_BRANCH}`, INTEGRATION_BRANCH]);
-    return true;
-  } catch {
-    return false;
-  }
-};
+// True once origin's integration branch carries the squash-merged deploy branch — i.e. the
+// reset reached origin or dev has moved on past it. Local dev alone is not enough: it is
+// reset before the push, so a failed push leaves it carrying main while origin does not.
+const integrationContainsDeploy = () =>
+  isAncestor(`origin/${DEPLOY_BRANCH}`, `origin/${INTEGRATION_BRANCH}`);
 
 const requireCleanIntegrationBranch = () => {
   const branch = git(["branch", "--show-current"]);
@@ -554,6 +561,27 @@ const describeChecks = (rollup) => {
     : "";
 };
 
+// The version the PR title names must be the one every version field and the dated
+// changelog section carry. Shared by the open-PR pre-flight and the merged-PR resume.
+const versionFieldProblems = async (version) => {
+  const problems = [];
+
+  for (const [field, value] of await readVersionFields()) {
+    if (value !== version) {
+      problems.push(
+        `PR title says v${version} but ${field} is ${value ?? "missing"}. Use "reversion" to change the version everywhere at once.`,
+      );
+    }
+  }
+
+  const changelog = await readChangelog();
+  if (!changelog.includes(`## [${version}] - `)) {
+    problems.push(`CHANGELOG.md has no "## [${version}] - <date>" section. Run "prep" first.`);
+  }
+
+  return problems;
+};
+
 const preflight = async (pr, version) => {
   const problems = [];
   const expectedTitle = `chore(release): v${version}`;
@@ -569,18 +597,7 @@ const preflight = async (pr, version) => {
     );
   }
 
-  for (const [field, value] of await readVersionFields()) {
-    if (value !== version) {
-      problems.push(
-        `PR title says v${version} but ${field} is ${value ?? "missing"}. Use "reversion" to change the version everywhere at once.`,
-      );
-    }
-  }
-
-  const changelog = await readChangelog();
-  if (!changelog.includes(`## [${version}] - `)) {
-    problems.push(`CHANGELOG.md has no "## [${version}] - <date>" section. Run "prep" first.`);
-  }
+  problems.push(...(await versionFieldProblems(version)));
 
   if (git(["tag", "--list", `v${version}`])) {
     problems.push(`Tag v${version} already exists.`);
@@ -609,7 +626,14 @@ const ship = async () => {
   requireCleanIntegrationBranch();
 
   git(["fetch", "origin"]);
-  git(["merge", "--ff-only", `origin/${INTEGRATION_BRANCH}`]);
+  // A failed dev push in step 5 leaves local dev reset to the squash commit, which cannot
+  // fast-forward from origin/dev. Keep it as it is so step 5 can retry the push.
+  const devPushPending =
+    isAncestor(`origin/${DEPLOY_BRANCH}`, INTEGRATION_BRANCH) &&
+    !isAncestor(`origin/${DEPLOY_BRANCH}`, `origin/${INTEGRATION_BRANCH}`);
+  if (!devPushPending) {
+    git(["merge", "--ff-only", `origin/${INTEGRATION_BRANCH}`]);
+  }
 
   const open = openReleasePR();
   const releasePR = open ?? mergedReleasePR();
@@ -667,6 +691,15 @@ const ship = async () => {
       throw new Error(
         `No open release PR, and ${releaseTag} is already complete. Run "prep" to start the next release.`,
       );
+    }
+
+    const problems = await versionFieldProblems(version);
+    if (problems.length > 0) {
+      console.error(
+        `Cannot resume ${releaseTag}; the merged PR title does not match the release files:`,
+      );
+      for (const problem of problems) console.error(`  - ${problem}`);
+      process.exit(1);
     }
 
     console.log(
@@ -729,7 +762,7 @@ const ship = async () => {
   if (integrationContainsDeploy()) {
     console.log(`${INTEGRATION_BRANCH} already carries ${DEPLOY_BRANCH}.`);
   } else {
-    git(["reset", "--hard", DEPLOY_BRANCH]);
+    if (!isAncestor(DEPLOY_BRANCH, INTEGRATION_BRANCH)) git(["reset", "--hard", DEPLOY_BRANCH]);
     git(["push", "--force-with-lease", "origin", INTEGRATION_BRANCH]);
     console.log(`Reset ${INTEGRATION_BRANCH} to ${DEPLOY_BRANCH} and force-pushed.`);
   }
