@@ -561,8 +561,9 @@ const describeChecks = (rollup) => {
     : "";
 };
 
-// The version the PR title names must be the one every version field and the dated
-// changelog section carry. Shared by the open-PR pre-flight and the merged-PR resume.
+// The version the PR title names must be the one every version field, the dated changelog
+// section, and its compare link carry. Shared by the open-PR pre-flight and the merged-PR
+// resume.
 const versionFieldProblems = async (version) => {
   const problems = [];
 
@@ -577,6 +578,11 @@ const versionFieldProblems = async (version) => {
   const changelog = await readChangelog();
   if (!changelog.includes(`## [${version}] - `)) {
     problems.push(`CHANGELOG.md has no "## [${version}] - <date>" section. Run "prep" first.`);
+  }
+  if (!changelog.includes(`\n[${version}]: `)) {
+    problems.push(
+      `CHANGELOG.md has no "[${version}]:" compare link. Add it beside the other links at the bottom.`,
+    );
   }
 
   return problems;
@@ -598,6 +604,23 @@ const preflight = async (pr, version) => {
   }
 
   problems.push(...(await versionFieldProblems(version)));
+
+  if (parseUnreleased(await readChangelog())) {
+    problems.push(
+      `CHANGELOG.md has [Unreleased] entries that would ship outside the v${version} notes. Move them into the "## [${version}]" section.`,
+    );
+  }
+
+  // Step 2 fast-forwards local main to the merge; a local main with commits of its own
+  // would stop it after the PR is already merged.
+  if (
+    git(["branch", "--list", DEPLOY_BRANCH]) &&
+    !isAncestor(DEPLOY_BRANCH, `origin/${DEPLOY_BRANCH}`)
+  ) {
+    problems.push(
+      `Local ${DEPLOY_BRANCH} is ahead of or diverged from origin/${DEPLOY_BRANCH}. Reconcile it before shipping.`,
+    );
+  }
 
   if (git(["tag", "--list", `v${version}`])) {
     problems.push(`Tag v${version} already exists.`);
@@ -719,7 +742,7 @@ const ship = async () => {
 
   // 2. Sync main from remote
   git(["checkout", DEPLOY_BRANCH]);
-  git(["pull", "origin", DEPLOY_BRANCH]);
+  git(["pull", "--ff-only", "origin", DEPLOY_BRANCH]);
   console.log(`Synced ${DEPLOY_BRANCH}.`);
 
   // The squash must have carried dev's tree onto main. Anything else means the
