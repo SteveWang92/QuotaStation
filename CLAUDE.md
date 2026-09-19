@@ -108,18 +108,19 @@ history, or account of how the code used to behave. Those belong in issues, comm
 Releasing is manual here, and the maintainer starts it. Never bump a version, tag, create
 the `dev` → `main` pull request, or publish a release without being asked.
 
-`scripts/release.mjs` drives it through the active release skill — `npm run release:prep`,
-`npm run release:reversion -- X.Y.Z`, `npm run release:ship`, each accepting `--dry-run`.
-The script is the authoritative implementation for this repository; the shared
-`prep` / `reversion` / `ship` workflow lives only in the maintainer’s global guidance. Run
-the verification gates yourself before `prep` — the script runs no build and no tests.
+The globally installed `changedeck` CLI drives it through the active release skill —
+`npm run release:prep`, `npm run release:reversion -- X.Y.Z`, `npm run release:ship`, each
+accepting `--dry-run`. `changedeck.json` holds this repository's version fields and
+post-release reminder; the shared `prep` / `reversion` / `ship` workflow lives only in the
+maintainer’s global guidance. Run the verification gates yourself before `prep` — changedeck
+runs no build and no tests.
 
 What is particular to this repository:
 
 - **Five files carry the version and move together**: `package.json`, `package-lock.json`,
   `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock`. They are
-  the script’s `VERSION_FIELDS`; `prep` writes all five and `ship`’s pre-flight refuses a
-  field left behind. Change a prepped version only with `reversion`.
+  the `versionFiles` in `changedeck.json`; `prep` writes all five and `ship`’s pre-flight
+  refuses a field left behind. Change a prepped version only with `reversion`.
 - **`main` holds the released state and nothing deploys from it** — QuotaStation is a
   desktop application, so a release is a tag, its changelog notes, and the installer CI
   attaches to it. The repository’s GitHub default branch is `dev`.

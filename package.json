@@ -34,9 +34,9 @@
     "build:release": "tauri build --no-bundle",
     "build:installer": "tauri build --bundles nsis",
     "icons": "node scripts/icons.mjs",
-    "release:prep": "node scripts/release.mjs prep",
-    "release:reversion": "node scripts/release.mjs reversion",
-    "release:ship": "node scripts/release.mjs ship"
+    "release:prep": "changedeck prep",
+    "release:reversion": "changedeck reversion",
+    "release:ship": "changedeck ship"
   },
   "engines": {
     "node": "24.18.1"
