@@ -133,9 +133,17 @@ Ranges of up to three days use hourly rows. Longer ranges use daily rows. Both a
 the same parse of the same local records, so changing the selected range does not re-read the
 provider files.
 
-Daily rows follow the current Windows time zone. If that time zone changes, the next complete
-parse replaces the affected provider's daily rows in one transaction so dates from two zones
-are not mixed.
+Instants are stored in UTC. Only the hour and day a piece of usage is filed under, and every
+time a surface shows, depend on a time zone, and both follow the application zone: the one
+chosen in **Settings → General**, or the Windows zone when none is chosen. The core computes
+every bucket key and day boundary itself rather than asking SQLite, whose local time can only
+mean the Windows zone. When the zone changes, the next complete parse replaces the affected
+provider's hourly and daily rows in one transaction, and rows imported from other devices are
+read again, so hours from two zones are never mixed.
+
+The zone setting corrects how times are displayed and bucketed, not the clock itself. If the
+computer's clock is wrong in UTC, the timestamps Codex and Claude Code write into their logs
+are wrong at the source, and no display zone can repair them.
 
 Quota readings are summarized by the highest percentage observed during each day. This
 preserves a window that filled and reset before the last reading of the day.

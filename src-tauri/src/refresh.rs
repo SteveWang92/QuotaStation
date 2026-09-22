@@ -187,7 +187,7 @@ async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSn
     // The status line's weekly total and the panel's seven-day trend describe the same week,
     // so it is read once per provider and both are filled from it. A provider whose range
     // cannot be read keeps the series it already has rather than being blanked.
-    let today = jiff::Zoned::now().date();
+    let today = crate::clock::today();
     let week: Vec<String> = (0..7)
         .rev()
         .map(|back| today.checked_sub(jiff::Span::new().days(back)).unwrap_or(today).to_string())
@@ -337,7 +337,7 @@ async fn apply_history(
     let completed_at = now();
     match result {
         Ok((history, aggregation_timezone)) => {
-            let today_date = jiff::Zoned::now().date().to_string();
+            let today_date = crate::clock::today().to_string();
             let today = history.days.iter().find(|day| day.date == today_date).cloned();
             let save_error = state
                 .storage
@@ -486,7 +486,7 @@ mod tests {
     }
 
     fn today() -> String {
-        jiff::Zoned::now().date().to_string()
+        crate::clock::today().to_string()
     }
 
     async fn snapshot_of(state: &Arc<AppState>) -> ProviderSnapshot {

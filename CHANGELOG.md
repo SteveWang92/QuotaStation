@@ -10,6 +10,7 @@ on `main`, with the matching section below as its notes.
 ### Added
 
 - The reset history shows which devices detected each quota restart, merging one restart seen by several computers into a single entry.
+- A time zone can be chosen in Settings for every date, hour and time QuotaStation shows, instead of following Windows.
 
 ### Fixed
 

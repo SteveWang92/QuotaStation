@@ -71,7 +71,7 @@ fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
 /// The adapter answers both from one parse and one deduplication, so an hour never
 /// disagrees with the day it belongs to.
 fn hourly_buckets(summaries: Vec<(String, UsageSummary)>, timezone: &str) -> Vec<HistoryHour> {
-    let zone = jiff::tz::TimeZone::get(timezone).unwrap_or_else(|_| jiff::tz::TimeZone::system());
+    let zone = jiff::tz::TimeZone::get(timezone).unwrap_or_else(|_| crate::clock::zone());
     let cutoff = hours::cutoff_date(&zone);
     summaries
         .into_iter()

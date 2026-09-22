@@ -262,6 +262,10 @@ pub struct AppSettings {
     /// ordinary single-machine case, where nothing is exported or read.
     #[serde(default)]
     pub shared_usage_folder: Option<String>,
+    /// The IANA zone every hour and day bucket and every displayed time follows; unset
+    /// follows Windows. See [`crate::clock`].
+    #[serde(default)]
+    pub time_zone: Option<String>,
 }
 
 /// A fresh identity for this machine.
@@ -301,6 +305,7 @@ impl Default for AppSettings {
             dismissed_reset_notices: Vec::new(),
             quota_disabled_providers: Vec::new(),
             shared_usage_folder: None,
+            time_zone: None,
         }
     }
 }
@@ -325,6 +330,15 @@ pub fn load(path: &Path) -> AppSettings {
                 );
             }
             settings.status_line_layout = settings.status_line_layout.normalized();
+            // A zone name this build does not know — edited by hand, or dropped from the
+            // zone database — cannot be honoured, and is read as no choice made.
+            if settings
+                .time_zone
+                .as_deref()
+                .is_some_and(|name| crate::clock::resolve(name).is_err())
+            {
+                settings.time_zone = None;
+            }
             Some(settings)
         })
         .unwrap_or_default()
@@ -475,7 +489,19 @@ mod tests {
             dismissed_reset_notices: vec!["codex:primary:1781654400".to_string()],
             quota_disabled_providers: vec!["codex".to_string()],
             shared_usage_folder: Some("D:\\Sync\\QuotaStation".to_string()),
+            time_zone: Some("Europe/London".to_string()),
         }
+    }
+
+    #[test]
+    fn an_unknown_time_zone_in_the_file_is_read_as_no_choice() {
+        let path = scratch("unknown-zone");
+        std::fs::write(&path, r#"{"timeZone":"Mars/Olympus_Mons","taskbarWidgetEnabled":false}"#)
+            .expect("write edited settings");
+        let settings = load(&path);
+        assert_eq!(settings.time_zone, None);
+        assert!(!settings.taskbar_widget_enabled, "every other preference is kept");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -469,28 +469,46 @@ impl Storage {
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         provider_id: i64,
     ) -> Result<()> {
+        // Hour keys are local to the application zone, so the instants bounding each window
+        // are read out and keyed here rather than by SQLite, which knows only the Windows zone.
         let window_start = format!(
             "MAX(COALESCE({RESET_PREVIOUS_ANCHOR}, limit_resets.previous_resets_at - \
              limit_resets.window_duration_mins * 60), {RESET_WINDOW_END} - \
              limit_resets.window_duration_mins * 60)"
         );
-        sqlx::query(&format!(
-            "UPDATE limit_resets SET tokens_in_window = ( \
-             SELECT SUM(total_tokens) FROM hourly_usage \
-             WHERE hourly_usage.provider_instance_id = limit_resets.provider_instance_id \
-             AND hour_start >= strftime('%Y-%m-%dT%H:00', {window_start}, 'unixepoch', \
-               'localtime') \
-             AND hour_start <= strftime('%Y-%m-%dT%H:00', limit_resets.previous_resets_at, \
-               'unixepoch', 'localtime') \
-             AND hour_start < strftime('%Y-%m-%dT%H:00', limit_resets.anchored_at, 'unixepoch', \
-               'localtime')) \
-             WHERE provider_instance_id = ? \
-             AND date({window_start}, 'unixepoch', 'localtime') \
-             >= date('now', 'localtime', '-{HOURLY_HISTORY_DAYS} days')"
+        let oldest_hour = crate::clock::day_start(
+            crate::clock::today().saturating_sub(jiff::Span::new().days(HOURLY_HISTORY_DAYS)),
+        )?;
+        let windows = sqlx::query(&format!(
+            "SELECT id, {window_start} AS window_start, previous_resets_at, anchored_at \
+             FROM limit_resets WHERE provider_instance_id = ? AND {window_start} >= ?"
         ))
         .bind(provider_id)
-        .execute(&mut **tx)
+        .bind(oldest_hour)
+        .fetch_all(&mut **tx)
         .await?;
+        for window in windows {
+            let (Some(first), Some(expiry), Some(restart)) = (
+                crate::clock::hour_key(window.try_get("window_start")?),
+                crate::clock::hour_key(window.try_get("previous_resets_at")?),
+                crate::clock::hour_key(window.try_get("anchored_at")?),
+            ) else {
+                continue;
+            };
+            sqlx::query(
+                "UPDATE limit_resets SET tokens_in_window = ( \
+                 SELECT SUM(total_tokens) FROM hourly_usage \
+                 WHERE provider_instance_id = ? AND hour_start >= ? AND hour_start <= ? \
+                 AND hour_start < ?) WHERE id = ?",
+            )
+            .bind(provider_id)
+            .bind(first)
+            .bind(expiry)
+            .bind(restart)
+            .bind(window.try_get::<i64, _>("id")?)
+            .execute(&mut **tx)
+            .await?;
+        }
         Ok(())
     }
 
@@ -628,56 +646,88 @@ impl Storage {
         let start = jiff::civil::Date::from_str(start_date).context("invalid start date")?;
         let end = jiff::civil::Date::from_str(end_date).context("invalid end date")?;
         anyhow::ensure!(start <= end, "start date must not be after end date");
+        // The instants the local range spans in the application zone, which a stored instant
+        // is compared against instead of being dated by SQLite in the Windows zone.
+        let (from, until) =
+            (crate::clock::day_start(start)?, crate::clock::day_start(end.tomorrow()?)?);
         let (start, end) = (start.to_string(), end.to_string());
         let provider_id = self.provider_id(provider).await?;
 
-        // The rollups are day buckets already; only the raw samples have to be dated, and
-        // they are dated locally so this chart shares the usage chart's calendar.
-        let rows = sqlx::query(
-            "SELECT day, window_kind, MAX(peak) AS peak, MAX(duration) AS duration FROM ( \
-             SELECT date(observed_at, 'localtime') AS day, window_kind, \
-             MAX(used_percent) AS peak, MAX(window_duration_mins) AS duration \
-             FROM limit_samples WHERE provider_instance_id = ? AND used_percent IS NOT NULL \
-             GROUP BY day, window_kind \
-             UNION ALL \
-             SELECT date(bucket_start) AS day, window_kind, \
-             MAX(max_used_percent) AS peak, MAX(window_duration_mins) AS duration \
-             FROM limit_rollups WHERE provider_instance_id = ? AND granularity = 'daily' \
-             AND max_used_percent IS NOT NULL \
-             GROUP BY day, window_kind \
-             ) WHERE day BETWEEN ? AND ? GROUP BY day, window_kind ORDER BY day ASC",
+        // Each day's peak per window, from whichever of the two stores holds that day.
+        let mut days: BTreeMap<(LimitKind, String), (f64, Option<i64>)> = BTreeMap::new();
+        let mut record = |kind: LimitKind, day: String, peak: f64, duration: Option<i64>| {
+            let entry = days.entry((kind, day)).or_insert((peak, duration));
+            entry.0 = entry.0.max(peak);
+            entry.1 = entry.1.max(duration);
+        };
+
+        // The rollups are day buckets already, keyed when they were rolled up; only the raw
+        // samples have to be dated, and they are dated in the application zone so this chart
+        // shares the usage chart's calendar.
+        let samples = sqlx::query(
+            "SELECT unixepoch(observed_at) AS observed, window_kind, used_percent, \
+             window_duration_mins FROM limit_samples WHERE provider_instance_id = ? \
+             AND used_percent IS NOT NULL AND unixepoch(observed_at) >= ? \
+             AND unixepoch(observed_at) < ?",
         )
         .bind(provider_id)
+        .bind(from)
+        .bind(until)
+        .fetch_all(&self.pool)
+        .await?;
+        for sample in samples {
+            let (Some(kind), Some(day)) = (
+                parse_kind(&sample.try_get::<String, _>("window_kind")?),
+                crate::clock::day_key(sample.try_get("observed")?),
+            ) else {
+                continue;
+            };
+            record(
+                kind,
+                day,
+                sample.try_get("used_percent")?,
+                sample.try_get("window_duration_mins")?,
+            );
+        }
+        let rollups = sqlx::query(
+            "SELECT date(bucket_start) AS day, window_kind, MAX(max_used_percent) AS peak, \
+             MAX(window_duration_mins) AS duration FROM limit_rollups \
+             WHERE provider_instance_id = ? AND granularity = 'daily' \
+             AND max_used_percent IS NOT NULL AND date(bucket_start) BETWEEN ? AND ? \
+             GROUP BY day, window_kind",
+        )
         .bind(provider_id)
         .bind(&start)
         .bind(&end)
         .fetch_all(&self.pool)
         .await?;
+        for rollup in rollups {
+            let Some(kind) = parse_kind(&rollup.try_get::<String, _>("window_kind")?) else {
+                continue;
+            };
+            record(
+                kind,
+                rollup.try_get("day")?,
+                rollup.try_get("peak")?,
+                rollup.try_get("duration")?,
+            );
+        }
 
         let mut windows: BTreeMap<LimitKind, (Option<i64>, Vec<QuotaHistoryPoint>)> =
             BTreeMap::new();
-        for row in rows {
-            let Some(kind) =
-                row.try_get::<String, _>("window_kind").ok().as_deref().and_then(parse_kind)
-            else {
-                continue;
-            };
+        for ((kind, date), (peak_used_percent, duration)) in days {
             let window = windows.entry(kind).or_insert_with(|| (None, Vec::new()));
-            window.0 = window.0.max(row.try_get::<Option<i64>, _>("duration").unwrap_or(None));
-            window.1.push(QuotaHistoryPoint {
-                date: row.get("day"),
-                peak_used_percent: row.get::<f64, _>("peak"),
-            });
+            window.0 = window.0.max(duration);
+            window.1.push(QuotaHistoryPoint { date, peak_used_percent });
         }
 
         let reset_rows = sqlx::query(&format!(
             "SELECT {RESET_COLUMNS} FROM limit_resets WHERE provider_instance_id = ? \
-             AND date(anchored_at, 'unixepoch', 'localtime') BETWEEN ? AND ? \
-             ORDER BY anchored_at ASC"
+             AND anchored_at >= ? AND anchored_at < ? ORDER BY anchored_at ASC"
         ))
         .bind(provider_id)
-        .bind(&start)
-        .bind(&end)
+        .bind(from)
+        .bind(until)
         .fetch_all(&self.pool)
         .await?;
 

@@ -26,7 +26,9 @@ Each computer writes only its own file and reads the files written by the others
 QuotaStation server or primary computer, and two devices never edit the same file. The usage
 in a file made in a different time zone is skipped, because its hourly rows describe different
 local hours, and the shared-folder status reports it. Its quota restarts are still read,
-because a restart happens at the same instant everywhere.
+because a restart happens at the same instant everywhere. The zone that counts is the one set
+in **Settings → General → Time zone**, not the Windows one, so a computer whose Windows zone
+is wrong can still share usage by choosing the same zone as the others.
 
 Quota restarts describe the provider account rather than one device, so every computer merges
 them into one history. When two computers detect the same restart a few seconds or minutes

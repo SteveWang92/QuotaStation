@@ -82,7 +82,7 @@ fn hourly_buckets(
     pricing: &PricingMap,
     speed: CodexSpeedPolicy,
 ) -> Result<Vec<HistoryHour>> {
-    let zone = jiff::tz::TimeZone::get(timezone).unwrap_or_else(|_| jiff::tz::TimeZone::system());
+    let zone = jiff::tz::TimeZone::get(timezone).unwrap_or_else(|_| crate::clock::zone());
     let cutoff = hours::cutoff_date(&zone);
     let mut buckets: BTreeMap<String, Vec<CodexTokenUsageEvent>> = BTreeMap::new();
     for event in events {

@@ -240,7 +240,8 @@ fn collect_resets(
     alerts.push(Alert { title: format!("{} quota reset", provider.display_name), body });
 }
 
-/// When something happens, in local time on the 24-hour clock every other surface uses.
+/// When something happens, in the application zone on the 24-hour clock every other surface
+/// uses.
 ///
 /// The date is carried whenever it is not today's. A weekly window restarting "at 22:30" is
 /// the wrong answer four days early, and a notification is read once with no window beside it
@@ -250,7 +251,7 @@ fn local_moment(epoch: i64) -> Option<String> {
 }
 
 fn written_moment(epoch: i64, now: i64) -> Option<String> {
-    let zone = jiff::tz::TimeZone::system();
+    let zone = crate::clock::zone();
     let moment = jiff::Timestamp::from_second(epoch).ok()?.to_zoned(zone.clone());
     let today = jiff::Timestamp::from_second(now).ok()?.to_zoned(zone);
     let format = match moment.date() == today.date() {

@@ -12,6 +12,10 @@ import type {
   ThemePreference,
 } from "../types";
 
+/** Every zone the webview knows. The core checks a choice against its own zone database and
+ * refuses a name it does not know, which the card then reports. */
+const TIME_ZONES = Intl.supportedValuesOf("timeZone");
+
 /**
  * How the application sits on the machine: whether Windows starts it, whether it draws the
  * taskbar status, and the desktop shortcut.
@@ -93,6 +97,22 @@ export function GeneralSettings() {
     setError(null);
     try {
       await saveAppSettings({ quickPanelDensity: density });
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  /**
+   * Every date and hour QuotaStation keys and shows follows this zone. A computer whose
+   * Windows zone is wrong can be set right here without touching Windows.
+   */
+  const changeTimeZone = useCallback(async (zone: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await saveAppSettings({ timeZone: zone === "" ? null : zone });
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -255,6 +275,21 @@ export function GeneralSettings() {
               >
                 <option value="standard">Standard</option>
                 <option value="compact">Compact</option>
+              </select>
+            </label>
+            <label>
+              Time zone
+              <select
+                value={settings?.timeZone ?? ""}
+                disabled={busy || settings === null}
+                onChange={(event) => void changeTimeZone(event.target.value)}
+              >
+                <option value="">Follow Windows ({settings?.systemTimeZone ?? "…"})</option>
+                {TIME_ZONES.map((zone) => (
+                  <option key={zone} value={zone}>
+                    {zone}
+                  </option>
+                ))}
               </select>
             </label>
             <label>

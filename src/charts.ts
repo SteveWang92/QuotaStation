@@ -7,8 +7,9 @@
  * same date range. The functions here produce that axis, the value scale under it, and the
  * geometry the marks are drawn from; nothing here knows about SVG.
  */
-import { toLocalDateString, toLocalHourString } from "./dateRanges";
+
 import type { TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot } from "./types";
+import { addDays, dateOf, hoursBetween, instantOf } from "./zone";
 
 const TOKEN_FIELDS: Array<keyof TokenUsage> = [
   "input",
@@ -52,17 +53,10 @@ export function calendarDays(startDate: string, endDate: string): string[] {
  * the hours nobody has lived through yet are not empty usage, they are not yet hours.
  */
 export function calendarHours(startDate: string, endDate: string, now = new Date()): string[] {
-  const days = calendarDays(startDate, endDate);
-  const today = toLocalDateString(now);
-  const hours: string[] = [];
-  for (const day of days) {
-    const lastHour = day === today ? now.getHours() : 23;
-    if (day > today) break;
-    for (let hour = 0; hour <= lastHour; hour += 1) {
-      hours.push(`${day}T${String(hour).padStart(2, "0")}:00`);
-    }
-  }
-  return hours;
+  const today = dateOf(now.getTime());
+  if (startDate > today) return [];
+  const last = endDate < today ? instantOf(`${addDays(endDate, 1)}T00:00`) - 1 : now.getTime();
+  return hoursBetween(instantOf(`${startDate}T00:00`), last);
 }
 
 /**
@@ -72,14 +66,7 @@ export function calendarHours(startDate: string, endDate: string, now = new Date
  * starts at a midnight nor runs on to one; the days it touches are partial at both ends.
  */
 export function windowHours(startHour: string, endHour: string): string[] {
-  const hours: string[] = [];
-  const cursor = new Date(`${startHour}:00`);
-  const end = new Date(`${endHour}:00`);
-  while (cursor <= end) {
-    hours.push(toLocalHourString(cursor));
-    cursor.setHours(cursor.getHours() + 1);
-  }
-  return hours;
+  return hoursBetween(instantOf(startHour), instantOf(endHour));
 }
 
 /**

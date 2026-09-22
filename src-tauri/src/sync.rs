@@ -73,10 +73,6 @@ fn valid_device_id(device_id: &str) -> bool {
         && device_id.chars().all(|character| character.is_ascii_hexdigit())
 }
 
-fn system_timezone() -> String {
-    jiff::tz::TimeZone::system().iana_name().unwrap_or("UTC").to_string()
-}
-
 /// Publishes this machine's aggregates and reads in whatever the others have published.
 ///
 /// Runs after every refresh rather than behind a button: a machine used for a fortnight and
@@ -139,7 +135,7 @@ async fn export(
         format_version: FORMAT_VERSION,
         device_id: device_id.to_string(),
         device_name: device_name.to_string(),
-        timezone: system_timezone(),
+        timezone: crate::clock::zone_name(),
         parser_revision: CCUSAGE_REVISION.to_string(),
         daily,
         hourly,
@@ -314,7 +310,7 @@ async fn import_one(
     check_rows(&published.daily, false)?;
     check_rows(&published.hourly, true)?;
     check_resets(&published.resets)?;
-    let timezone = system_timezone();
+    let timezone = crate::clock::zone_name();
     let same_zone = published.timezone == timezone;
 
     state
@@ -413,7 +409,7 @@ mod tests {
     async fn a_file_from_another_time_zone_gives_its_restarts_but_not_its_usage() {
         let (storage, _database) = crate::storage::test_support::open_storage().await;
         let state = Arc::new(AppState::for_tests(storage));
-        let other_zone = if system_timezone() == "Pacific/Auckland" {
+        let other_zone = if crate::clock::zone_name() == "Pacific/Auckland" {
             "Europe/London"
         } else {
             "Pacific/Auckland"

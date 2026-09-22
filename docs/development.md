@@ -277,7 +277,7 @@ activity log** button reveals it.
 Changing the selected history range queries the stored SQLite rows — daily, or hourly for a range
 short enough to be drawn that way; they do not trigger a new parse of the Codex session logs.
 
-What is retained and for how long, how daily buckets follow the system time zone, and why
+What is retained and for how long, how daily buckets follow the application time zone, and why
 each rule is what it is are all in
 [Architecture — Local database](architecture.md#local-database). Retention runs at startup
 and every 24 hours, never during a refresh, and never issues `VACUUM`.

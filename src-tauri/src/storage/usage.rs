@@ -262,8 +262,8 @@ impl Storage {
     /// Every session that started inside a range, newest first, with the costs of the
     /// comparable ones summed. `None` is the combined view, as it is for usage.
     ///
-    /// The range is read in local days like every other history query, because the dates
-    /// on screen are the ones the reader picked in their own timezone.
+    /// The range is read in the application zone's days like every other history query,
+    /// because the dates on screen are the ones the reader picked in that zone.
     pub async fn session_costs(
         &self,
         provider: Option<ProviderKind>,
@@ -274,6 +274,8 @@ impl Storage {
             Some(kind) => Some(self.provider_id(kind).await?),
             None => None,
         };
+        let from = crate::clock::day_start(jiff::civil::Date::from_str(start_date)?)?;
+        let until = crate::clock::day_start(jiff::civil::Date::from_str(end_date)?.tomorrow()?)?;
         let rows = sqlx::query(
             "SELECT session_id, session_started_at, duration_ms, computed_cost_usd, \
              independent, reported_cost_usd, reported_complete, api_duration_ms, lines_added, \
@@ -281,13 +283,13 @@ impl Storage {
              total_tokens, models \
              FROM session_costs \
              WHERE (? IS NULL OR provider_instance_id = ?) \
-             AND date(session_started_at, 'localtime') BETWEEN ? AND ? \
+             AND unixepoch(session_started_at) >= ? AND unixepoch(session_started_at) < ? \
              ORDER BY session_started_at DESC",
         )
         .bind(provider_id)
         .bind(provider_id)
-        .bind(start_date)
-        .bind(end_date)
+        .bind(from)
+        .bind(until)
         .fetch_all(&self.pool)
         .await?;
         let sessions: Vec<SessionCost> = rows.iter().map(session_cost_from_row).collect();

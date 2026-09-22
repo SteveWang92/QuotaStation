@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import { errorMessage } from "./errors";
 import type { AppSettings } from "./types";
+import { setZone } from "./zone";
 
 const FIRST_RETRY_MS = 250;
 const MAX_RETRY_MS = 5_000;
@@ -46,6 +47,8 @@ function notify() {
 
 function publish(next: AppSettings) {
   current = next;
+  // Before anyone is told, so the redraw the new record causes is already in its zone.
+  setZone(next.resolvedTimeZone);
   loadError = null;
   retryDelay = FIRST_RETRY_MS;
   retriesLeft = MAX_RETRIES;

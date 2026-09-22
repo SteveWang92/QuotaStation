@@ -278,11 +278,8 @@ async fn a_range_answers_with_the_sessions_that_started_in_its_local_days() {
         .expect("store the comparisons");
     // The rows are filtered by the local day they started on, which is the day the
     // reader picked on screen, so the expected day is read the same way.
-    let day: String = sqlx::query_scalar("SELECT date(?, 'localtime')")
-        .bind("2026-08-20T09:00:00Z")
-        .fetch_one(&storage.pool)
-        .await
-        .expect("the local day of the wanted session");
+    let started = "2026-08-20T09:00:00Z".parse::<jiff::Timestamp>().expect("an instant");
+    let day = crate::clock::day_key(started.as_second()).expect("the wanted session's day");
 
     let snapshot = storage.session_costs(Some(CODEX), &day, &day).await.expect("read the range");
 
@@ -345,12 +342,9 @@ async fn retention_keeps_daily_quota_summaries_without_an_hourly_layer() {
     let (storage, _database) = open_storage().await;
     let provider_id = storage.provider_id(CODEX).await.expect("read provider id");
     let observed_at = "2026-01-01T01:00:00Z";
-    let expected_local_bucket: String =
-        sqlx::query_scalar("SELECT strftime('%Y-%m-%dT00:00:00', ?, 'localtime')")
-            .bind(observed_at)
-            .fetch_one(&storage.pool)
-            .await
-            .expect("calculate the sample's local day");
+    let observed = observed_at.parse::<jiff::Timestamp>().expect("an instant").as_second();
+    let expected_local_bucket =
+        format!("{}T00:00:00", crate::clock::day_key(observed).expect("the sample's local day"));
     sqlx::query(
         "INSERT INTO limit_samples \
          (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
@@ -946,10 +940,10 @@ async fn a_claude_window_the_status_line_published_records_its_restart() {
 /// restart anchored there falls at. The day moves with the clock because a window's total
 /// is only rebuilt while the hours behind it are still kept.
 fn yesterday_at(hour: i8) -> (String, i64) {
-    let date = jiff::Zoned::now().date().yesterday().expect("a previous day");
+    let date = crate::clock::today().yesterday().expect("a previous day");
     let epoch = date
         .at(hour, 0, 0, 0)
-        .to_zoned(jiff::tz::TimeZone::system())
+        .to_zoned(crate::clock::zone())
         .expect("a resolvable local hour")
         .timestamp()
         .as_second();
@@ -986,7 +980,7 @@ async fn two_restarts(
         )
         .await
         .expect("record the two restarts");
-    let date = jiff::Zoned::now().date().yesterday().expect("a previous day").to_string();
+    let date = crate::clock::today().yesterday().expect("a previous day").to_string();
     storage
         .save_history(
             CODEX,
@@ -1061,7 +1055,7 @@ async fn a_weekly_window_is_paired_with_the_weekly_restart_before_it() {
         )
         .await
         .expect("record the restarts");
-    let date = jiff::Zoned::now().date().yesterday().expect("a previous day").to_string();
+    let date = crate::clock::today().yesterday().expect("a previous day").to_string();
     storage
         .save_history(
             CODEX,
@@ -1311,4 +1305,30 @@ async fn an_unattributed_file_credits_its_own_device_and_a_relayed_local_detecti
     assert!(detections[0].local, "this machine's own reading was the narrowest");
     assert_eq!(detections[0].device_name.as_deref(), Some("Desk"));
     assert_eq!(detections[1].device_name.as_deref(), Some("Device aa01"));
+}
+
+/// A computer whose Windows zone is wrong shows the chosen zone's days: a reading and a
+/// restart just after midnight in Auckland belong to that Auckland day, whatever zone
+/// Windows reports.
+#[tokio::test]
+async fn quota_history_follows_the_chosen_zone_rather_than_the_windows_one() {
+    crate::clock::set_for_test(Some("Pacific/Auckland"));
+    let (storage, _database) = open_storage().await;
+    // 00:30 on 2 June in Auckland, which is still 1 June in UTC.
+    let observed_at = "2026-06-01T12:30:00Z";
+    storage
+        .save_live(CODEX, &weekly_live_read_at(40.0, 1_786_800_000, observed_at), observed_at)
+        .await
+        .expect("save a reading");
+    let anchor = "2026-06-01T12:40:00Z".parse::<jiff::Timestamp>().expect("an instant");
+    import_resets(&storage, "aa01", &[shared_reset(None, anchor.as_second(), None)]).await;
+
+    let first = storage.load_quota_history(CODEX, "2026-06-01", "2026-06-01").await;
+    let second = storage.load_quota_history(CODEX, "2026-06-02", "2026-06-02").await;
+    crate::clock::set_for_test(None);
+
+    let (first, second) = (first.expect("load 1 June"), second.expect("load 2 June"));
+    assert!(first.windows.is_empty() && first.resets.is_empty(), "nothing happened on 1 June");
+    assert_eq!(second.windows[0].points[0].date, "2026-06-02");
+    assert_eq!(second.resets.len(), 1, "the restart falls on the Auckland day");
 }

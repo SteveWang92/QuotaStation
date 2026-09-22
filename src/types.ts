@@ -426,4 +426,10 @@ export interface AppSettings {
   quotaDisabledProviders: string[];
   /** Folder whose aggregate-only usage files are exchanged with other devices. */
   sharedUsageFolder: string | null;
+  /** The IANA zone chosen for every bucket and displayed time, or null to follow Windows. */
+  timeZone: string | null;
+  /** The zone in force, as the core resolved it. Read-only: not a choice. */
+  resolvedTimeZone: string;
+  /** The Windows zone, which `timeZone: null` follows. Read-only. */
+  systemTimeZone: string;
 }

@@ -1,4 +1,5 @@
 import type { LimitResetEvent, ResetDetection } from "./types";
+import { currentZone, dateOf, today } from "./zone";
 
 /**
  * The interface is English-only, so every surface formats numbers and dates the same way
@@ -8,6 +9,9 @@ import type { LimitResetEvent, ResetDetection } from "./types";
  * Clock times are always 24-hour. Quota windows restart at arbitrary times of day and the
  * surfaces sit beside countdowns, so an am/pm marker is one more thing to read before two
  * timestamps can be compared.
+ *
+ * Every instant is written out in the application zone (see `zone.ts`); a calendar date,
+ * which is a label rather than an instant, is written out in UTC so no zone can move it.
  */
 export const LOCALE = "en-AU";
 
@@ -31,6 +35,7 @@ export function formatTimestamp(value: string | null): string {
     dateStyle: "medium",
     timeStyle: "medium",
     hour12: false,
+    timeZone: currentZone(),
   }).format(new Date(value));
 }
 
@@ -72,6 +77,7 @@ export function formatResetTimestamp(epochSeconds: number | null): string {
     dateStyle: "medium",
     timeStyle: "short",
     hour12: false,
+    timeZone: currentZone(),
   }).format(new Date(epochSeconds * 1_000));
 }
 
@@ -81,13 +87,14 @@ export function formatResetTimestamp(epochSeconds: number | null): string {
  */
 export function formatShortMoment(epochSeconds: number): string {
   const moment = new Date(epochSeconds * 1_000);
-  const today = moment.toDateString() === new Date().toDateString();
+  const sameDay = dateOf(moment.getTime()) === today();
   return new Intl.DateTimeFormat(LOCALE, {
-    day: today ? undefined : "numeric",
-    month: today ? undefined : "short",
+    day: sameDay ? undefined : "numeric",
+    month: sameDay ? undefined : "short",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    timeZone: currentZone(),
   }).format(moment);
 }
 
@@ -203,6 +210,7 @@ export function formatDayAndTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    timeZone: currentZone(),
   }).format(new Date(value));
 }
 
@@ -217,9 +225,11 @@ export function formatDuration(milliseconds: number): string {
 
 /** A calendar day at chart-axis length, for example 3 Aug. */
 export function formatAxisDate(value: string): string {
-  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short" }).format(
-    new Date(`${value}T00:00:00`),
-  );
+  return new Intl.DateTimeFormat(LOCALE, {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  }).format(new Date(`${value}T00:00:00Z`));
 }
 
 /**

@@ -235,7 +235,7 @@ impl Storage {
             .collect();
 
         snapshot.recent_resets = self.load_recent_resets(provider).await?;
-        let date = jiff::Zoned::now().date().to_string();
+        let date = crate::clock::today().to_string();
         let today = self.load_usage_range(Some(provider), None, &date, &date).await?;
         snapshot.today = today.usage;
         snapshot.models = today.models;

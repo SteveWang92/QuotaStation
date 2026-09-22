@@ -159,7 +159,7 @@ pub async fn read_history(
     kind: ProviderKind,
 ) -> Result<(HistorySnapshot, String, Option<Vec<SessionCost>>)> {
     let before = usage_file_state(kind)?;
-    let timezone = jiff::tz::TimeZone::system().iana_name().unwrap_or("UTC").to_string();
+    let timezone = crate::clock::zone_name();
     let (history, sessions) = match kind {
         ProviderKind::Codex => codex::read_history(&timezone)
             .await

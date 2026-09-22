@@ -1,5 +1,6 @@
 mod alerts;
 mod autostart;
+mod clock;
 mod commands;
 mod diagnostic_export;
 mod fs_atomic;
@@ -574,6 +575,10 @@ pub fn run() {
             let settings_path =
                 app_data_dir.join(if demo { demo::SETTINGS_FILE } else { "settings.json" });
             let settings = ensure_device_identity(&settings_path, settings::load(&settings_path));
+            // `settings::load` has already dropped a name the zone database does not know.
+            if let Err(error) = clock::choose(settings.time_zone.as_deref()) {
+                log::write(format!("the chosen time zone could not be applied: {error:#}"));
+            }
             let device_name =
                 settings.device_name.clone().unwrap_or_else(settings::default_device_name);
             let storage = tauri::async_runtime::block_on(Storage::open(&database_path))

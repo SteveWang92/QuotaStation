@@ -271,9 +271,32 @@ pub(crate) fn get_provider_choices() -> Vec<ProviderChoice> {
         .collect()
 }
 
+/// The settings as the renderer reads them: the record itself, and the zones it resolves to,
+/// which the record cannot carry because they are not choices.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SettingsView {
+    #[serde(flatten)]
+    settings: AppSettings,
+    /// The zone every time is shown in: the chosen one, or the Windows zone.
+    resolved_time_zone: String,
+    /// The Windows zone, for the entry that follows it.
+    system_time_zone: String,
+}
+
+impl SettingsView {
+    fn of(settings: AppSettings) -> Self {
+        Self {
+            settings,
+            resolved_time_zone: crate::clock::zone_name(),
+            system_time_zone: crate::clock::system_zone_name(),
+        }
+    }
+}
+
 #[tauri::command]
-pub(crate) fn get_app_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
-    state.settings()
+pub(crate) fn get_app_settings(state: State<'_, Arc<AppState>>) -> SettingsView {
+    SettingsView::of(state.settings())
 }
 
 /// Which preferences a save actually moved, named rather than valued wherever the value is
@@ -322,6 +345,10 @@ fn settings_changes(previous: &AppSettings, next: &AppSettings) -> Vec<String> {
     if previous.device_name != next.device_name {
         changes.push("this machine's name".to_string());
     }
+    if previous.time_zone != next.time_zone {
+        changes
+            .push(format!("time zone {}", next.time_zone.as_deref().unwrap_or("follows Windows")));
+    }
     if previous.shared_usage_folder != next.shared_usage_folder {
         changes.push(format!(
             "shared usage folder {}",
@@ -342,8 +369,15 @@ pub(crate) async fn set_app_settings(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     settings: AppSettings,
-) -> Result<AppSettings, String> {
+) -> Result<SettingsView, String> {
     let previous = state.settings();
+    let zone_changed = previous.time_zone != settings.time_zone;
+    if zone_changed {
+        // Refused before anything is saved, so an unknown name never reaches the file.
+        if let Some(name) = settings.time_zone.as_deref() {
+            crate::clock::resolve(name).map_err(|error| error.to_string())?;
+        }
+    }
     let quota_changed = previous.quota_disabled_providers != settings.quota_disabled_providers;
     let taskbar_changed = previous.taskbar_widget_enabled != settings.taskbar_widget_enabled;
     let display_changed = previous.taskbar_widget_display != settings.taskbar_widget_display;
@@ -366,6 +400,17 @@ pub(crate) async fn set_app_settings(
     }
     if theme_changed {
         apply_theme(&app, updated.theme);
+    }
+    if zone_changed {
+        // Every stored hour and day is keyed in the zone it was parsed in, so a new zone
+        // takes a full parse: the history refresh sees the zone differ from the one the rows
+        // were aggregated in and rebuilds them in one transaction.
+        crate::clock::choose(updated.time_zone.as_deref()).map_err(|error| error.to_string())?;
+        let refresh_app = app.clone();
+        let refresh_state = state.inner().clone();
+        tauri::async_runtime::spawn(async move {
+            refresh::refresh_history(&refresh_app, &refresh_state).await;
+        });
     }
     if quota_changed {
         // Switching quota off has to clear it from the surfaces now rather than at the next
@@ -395,7 +440,7 @@ pub(crate) async fn set_app_settings(
     // dialog lives in one of them, so without this the others go on drawing the preference
     // they were started with — a quick panel still laid out at the density it was opened at
     // days ago.
-    let _ = app.emit("settings-changed", updated.clone());
+    let _ = app.emit("settings-changed", SettingsView::of(updated.clone()));
     if taskbar_changed {
         set_taskbar_widget_visible(&app, updated.taskbar_widget_enabled);
     } else if display_changed && updated.taskbar_widget_enabled {
@@ -403,7 +448,7 @@ pub(crate) async fn set_app_settings(
         // choice answer immediately, which is what a person changing it is watching for.
         schedule_taskbar_widget_placement(&app);
     }
-    Ok(updated)
+    Ok(SettingsView::of(updated))
 }
 
 /// Whether Claude Code hands its quota to QuotaStation, for the card that offers to set
