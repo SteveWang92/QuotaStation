@@ -475,6 +475,8 @@ mod tests {
             early_by_seconds: 0,
             tokens_in_window: None,
             classification: ResetClassification::Scheduled,
+            anchor_spread_seconds: 0,
+            detections: Vec::new(),
         };
         // A restart is recognised from the collapse in the share itself, so the reading at
         // the restart is always a low one; the window filling up again is what earns the
@@ -576,6 +578,8 @@ mod tests {
             early_by_seconds: 0,
             tokens_in_window: None,
             classification: ResetClassification::Scheduled,
+            anchor_spread_seconds: 0,
+            detections: Vec::new(),
         };
         let mut restarted = provider(vec![window(LimitKind::Secondary, 20.0, 1_800_604_800)]);
         restarted.recent_resets = vec![restart];
@@ -610,6 +614,8 @@ mod tests {
             early_by_seconds: 0,
             tokens_in_window: None,
             classification: ResetClassification::Scheduled,
+            anchor_spread_seconds: 0,
+            detections: Vec::new(),
         };
         let mut announced = Announced::default();
         let settings = AppSettings::default();

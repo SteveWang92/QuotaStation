@@ -269,10 +269,35 @@ pub struct LimitResetEvent {
     pub tokens_in_window: Option<u64>,
     pub early_by_seconds: i64,
     pub classification: ResetClassification,
+    /// How far apart the detections below place the restart: the latest anchor minus the
+    /// earliest.
+    pub anchor_spread_seconds: i64,
+    /// Every device's detection of this restart, the one the fields above come from first.
+    pub detections: Vec<ResetDetection>,
 }
 
-/// Account-level reset facts safe to exchange through the shared folder. The token total is
-/// intentionally absent: each receiving machine derives it from the usage it has imported.
+/// One device's detection of a restart. Each device's own judgement is kept beside the
+/// event's rather than folded into it, so a disagreement stays visible.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetDetection {
+    /// The device's name, or `None` for a restart recorded before detections were
+    /// attributed to a device.
+    pub device_name: Option<String>,
+    pub local: bool,
+    pub source: String,
+    pub anchored_at: i64,
+    pub classification: ResetClassification,
+}
+
+/// One device's detection of a restart, safe to exchange through the shared folder. The
+/// token total is intentionally absent: each receiving machine derives it from the usage it
+/// has imported.
+///
+/// A file carries every detection its machine knows, including ones relayed from other
+/// devices, so a restart outlives the file of the device that saw it. The attribution and
+/// bracket are absent from a file an earlier build wrote, whose detections are that file's
+/// own device's.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedResetEvent {
@@ -287,6 +312,15 @@ pub struct SharedResetEvent {
     pub classification: ResetClassification,
     pub source: String,
     pub detected_at: String,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    #[serde(default)]
+    pub device_name: Option<String>,
+    /// When the two readings the detection compared were taken.
+    #[serde(default)]
+    pub bracket_start: Option<i64>,
+    #[serde(default)]
+    pub bracket_end: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1014,6 +1048,8 @@ pub struct DeviceDiagnostics {
     /// When this device's aggregates were last read in. `None` for the local device, whose
     /// rows are written by the parser rather than imported.
     pub last_import_at: Option<String>,
+    /// How many quota restarts this device detected, as far as this machine knows.
+    pub restart_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -253,12 +253,17 @@ async fn apply_live(
     let mut signed_out = None;
     match result {
         Ok(live) => {
-            let save_error = state
-                .storage
-                .save_live(provider, &live, &completed_at)
-                .await
-                .err()
-                .map(storage_error);
+            let (recorded_restart, save_error) =
+                match state.storage.save_live(provider, &live, &completed_at).await {
+                    Ok(recorded) => (recorded, None),
+                    Err(error) => (false, Some(storage_error(error))),
+                };
+            // A restart is news for the other devices, and the history refresh that normally
+            // carries it there can be an hour away.
+            if recorded_restart {
+                let shared_folder = crate::sync::run(state).await;
+                *state.shared_folder_diagnostics.write().await = shared_folder;
+            }
             // Reading the restarts back after the save keeps one owner of the detection,
             // so a restart recognised by this very save is already part of the snapshot.
             let (recent_resets, reset_error) =

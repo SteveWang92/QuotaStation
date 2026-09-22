@@ -307,6 +307,7 @@ async fn migrations_leave_only_the_tables_the_core_writes() {
             "devices",
             "hourly_usage",
             "limit_current",
+            "limit_reset_observations",
             "limit_resets",
             "limit_rollups",
             "limit_samples",
@@ -487,9 +488,9 @@ async fn the_usage_start_date_follows_provider_and_device_filters() {
                 display_name: "Workshop",
                 parser_revision: "test",
                 source_modified_at: 1,
-                daily: &daily,
-                hourly: &[],
+                usage: Some((&daily, &[])),
                 resets: &[],
+                local_id: "0a0a",
             },
             "2026-08-03T10:01:00Z",
         )
@@ -535,9 +536,9 @@ async fn a_device_filter_narrows_daily_and_hourly_usage_without_hiding_the_split
                 display_name: "Workshop",
                 parser_revision: "test",
                 source_modified_at: 1,
-                daily: &daily,
-                hourly: &hourly,
+                usage: Some((&daily, &hourly)),
                 resets: &[],
+                local_id: "0a0a",
             },
             "2026-08-01T10:01:00Z",
         )
@@ -575,9 +576,9 @@ async fn imported_usage_makes_a_provider_available_without_local_history() {
                 display_name: "Workshop",
                 parser_revision: "test",
                 source_modified_at: 1,
-                daily: &daily,
-                hourly: &[],
+                usage: Some((&daily, &[])),
                 resets: &[],
+                local_id: "0a0a",
             },
             "2026-08-01T10:01:00Z",
         )
@@ -1185,4 +1186,129 @@ async fn the_backfill_recovers_restarts_from_readings_taken_while_the_app_was_cl
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].classification, ResetClassification::Unplanned);
     assert!(storage.reset_backfill_start(CODEX).await.expect("read cursor").is_some());
+}
+
+/// One device's detection of a five-hour restart anchored at `anchored_at`, as a shared file
+/// carries it.
+fn shared_reset(
+    device_id: Option<&str>,
+    anchored_at: i64,
+    bracket: Option<(i64, i64)>,
+) -> crate::domain::SharedResetEvent {
+    crate::domain::SharedResetEvent {
+        provider: "codex".to_string(),
+        window_kind: LimitKind::Primary,
+        window_duration_mins: 300,
+        anchored_at,
+        new_resets_at: anchored_at + 18_000,
+        previous_resets_at: anchored_at + 3_600,
+        used_percent_before: 70.0,
+        early_by_seconds: 3_600,
+        classification: ResetClassification::Scheduled,
+        source: "live".to_string(),
+        detected_at: "2027-01-15T08:00:00Z".to_string(),
+        device_id: device_id.map(str::to_string),
+        device_name: device_id.map(|id| format!("Device {id}")),
+        bracket_start: bracket.map(|(start, _)| start),
+        bracket_end: bracket.map(|(_, end)| end),
+    }
+}
+
+async fn import_resets(
+    storage: &Storage,
+    file_device: &str,
+    resets: &[crate::domain::SharedResetEvent],
+) {
+    storage
+        .import_device(
+            &DeviceImport {
+                id: file_device,
+                display_name: &format!("Device {file_device}"),
+                parser_revision: "test",
+                source_modified_at: 1,
+                usage: Some((&[], &[])),
+                resets,
+                local_id: "0a0a",
+            },
+            "2027-01-15T09:00:00Z",
+        )
+        .await
+        .expect("import the device's file");
+}
+
+#[tokio::test]
+async fn one_restart_two_devices_saw_ninety_seconds_apart_is_one_restart_seen_by_both() {
+    let (storage, _database) = open_storage().await;
+    let anchor = 1_800_000_000;
+    // The first device's readings were twenty minutes apart, the second's two minutes.
+    import_resets(
+        &storage,
+        "aa01",
+        &[shared_reset(None, anchor, Some((anchor - 600, anchor + 600)))],
+    )
+    .await;
+    import_resets(
+        &storage,
+        "bb02",
+        &[shared_reset(None, anchor + 90, Some((anchor + 30, anchor + 150)))],
+    )
+    .await;
+
+    let events = storage.load_reset_history(CODEX).await.expect("load resets");
+    assert_eq!(events.len(), 1, "both detections describe one restart");
+    let event = &events[0];
+    assert_eq!(event.anchored_at, anchor + 90, "the narrower pair of readings speaks for it");
+    assert_eq!(event.anchor_spread_seconds, 90);
+    let names: Vec<_> =
+        event.detections.iter().map(|detection| detection.device_name.as_deref()).collect();
+    assert_eq!(names, [Some("Device bb02"), Some("Device aa01")]);
+}
+
+#[tokio::test]
+async fn two_restarts_of_one_window_three_hours_apart_stay_separate() {
+    let (storage, _database) = open_storage().await;
+    let anchor = 1_800_000_000;
+    import_resets(&storage, "aa01", &[shared_reset(None, anchor, None)]).await;
+    import_resets(&storage, "bb02", &[shared_reset(None, anchor + 3 * 3_600, None)]).await;
+
+    assert_eq!(storage.load_reset_history(CODEX).await.expect("load resets").len(), 2);
+}
+
+#[tokio::test]
+async fn an_unattributed_file_credits_its_own_device_and_a_relayed_local_detection_is_not_repeated()
+{
+    let (storage, _database) = open_storage().await;
+    storage.record_local_device("Desk").await.expect("name this machine");
+    let anchor = 1_800_000_000;
+    // This machine saw the restart itself.
+    let observations = [
+        WindowObservation {
+            observed_at: anchor - 300,
+            kind: LimitKind::Primary,
+            used_percent: 70.0,
+            window_duration_mins: 300,
+            resets_at: anchor + 3_600,
+        },
+        WindowObservation {
+            observed_at: anchor + 300,
+            kind: LimitKind::Primary,
+            used_percent: 1.0,
+            window_duration_mins: 300,
+            resets_at: anchor + 18_000,
+        },
+    ];
+    storage.backfill_resets(CODEX, &observations, "2027-01-15T08:00:00Z").await.expect("backfill");
+
+    // An earlier build's file attributes nothing, and another device relays this machine's
+    // own detection back under this machine's shared identifier.
+    import_resets(&storage, "aa01", &[shared_reset(None, anchor, None)]).await;
+    import_resets(&storage, "bb02", &[shared_reset(Some("0a0a"), anchor, None)]).await;
+
+    let events = storage.load_reset_history(CODEX).await.expect("load resets");
+    assert_eq!(events.len(), 1);
+    let detections = &events[0].detections;
+    assert_eq!(detections.len(), 2, "this machine is listed once, beside the file's device");
+    assert!(detections[0].local, "this machine's own reading was the narrowest");
+    assert_eq!(detections[0].device_name.as_deref(), Some("Desk"));
+    assert_eq!(detections[1].device_name.as_deref(), Some("Device aa01"));
 }

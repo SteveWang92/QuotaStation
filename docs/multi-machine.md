@@ -17,18 +17,26 @@ Each device writes one JSON file containing:
 - the time zone and parser version used to calculate the totals;
 - hourly and daily token totals grouped by provider and model;
 - the estimated API cost for each row; and
-- confirmed quota reset events.
+- the quota restarts it knows of, each with the name and ID of the device that detected it.
 
 The file never contains project names, local paths, session IDs, prompts, account details,
 credentials, source code, or raw provider logs.
 
 Each computer writes only its own file and reads the files written by the others. There is no
-QuotaStation server or primary computer, and two devices never edit the same file. A file made
-in a different time zone is skipped because its hourly rows describe different local hours.
+QuotaStation server or primary computer, and two devices never edit the same file. The usage
+in a file made in a different time zone is skipped, because its hourly rows describe different
+local hours, and the shared-folder status reports it. Its quota restarts are still read,
+because a restart happens at the same instant everywhere.
 
-Reset events describe the provider account rather than one device, so every computer merges
-them into one history. The estimated token total for each reset window is recalculated from
-the usage available on the computer reading the file.
+Quota restarts describe the provider account rather than one device, so every computer merges
+them into one history. When two computers detect the same restart a few seconds or minutes
+apart, it is recorded once, timed by whichever computer measured it most precisely, and
+**Settings → Reset history** lists every computer that saw it. Hover over the list to see each
+computer's own timing and judgement; a difference of more than a minute appears as ±N min. Each
+file carries the restarts its computer learned from others as well as its own, so a restart
+reaches every computer even when the one that saw it is offline. A computer that records a new
+restart shares it straight away. The estimated token total for each reset window is
+recalculated from the usage available on the computer reading the file.
 
 ## Files created by sync tools
 

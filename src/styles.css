@@ -290,6 +290,7 @@ button { font: inherit; }
    it takes the panel's own inset rather than the settings page's flush edge. The label
    comes first there: one row per window says which window it is, not when it happened. */
 .latest-resets { padding: 4px 28px 12px; grid-template-columns: minmax(0, 1fr) minmax(0, 168px) 72px 62px max-content; }
+.reset-history ul { grid-template-columns: minmax(0, 188px) minmax(0, 1fr) minmax(0, 1fr) 72px 62px max-content; }
 .latest-resets li > *:first-child { color: var(--text-dim); }
 .reset-inventory { height: 42px; display: flex; align-items: center; gap: 30px; padding: 0 28px; font-size: 14px; }
 .reset-count { display: contents; }

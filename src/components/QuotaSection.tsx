@@ -7,6 +7,7 @@ import {
   formatCountdown,
   formatEarlyBy,
   formatResetTimestamp,
+  formatSeenOn,
 } from "../format";
 import { quotaColor } from "../theme";
 import type { LimitResetEvent, LimitWindow, ProviderKey } from "../types";
@@ -147,7 +148,11 @@ function LatestResets({ resets }: { resets: LimitResetEvent[] }) {
   return (
     <ul className="latest-resets">
       {resets.map((event) => (
-        <li key={event.windowDurationMins} className={event.classification}>
+        <li
+          key={event.windowDurationMins}
+          className={event.classification}
+          title={formatSeenOn(event) ?? undefined}
+        >
           <span>{event.windowLabel} last restarted</span>
           <time dateTime={new Date(event.anchoredAt * 1000).toISOString()}>
             {formatResetTimestamp(event.anchoredAt)}

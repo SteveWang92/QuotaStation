@@ -65,6 +65,20 @@ export interface LimitResetEvent {
   tokensInWindow: number | null;
   earlyBySeconds: number;
   classification: "scheduled" | "unplanned";
+  /** How far apart the detections place the restart: the latest anchor minus the earliest. */
+  anchorSpreadSeconds: number;
+  /** Every device's detection of this restart, the one the fields above come from first. */
+  detections: ResetDetection[];
+}
+
+/** One device's detection of a restart, with that device's own judgement of it. */
+export interface ResetDetection {
+  /** `null` for a restart recorded before detections were attributed to a device. */
+  deviceName: string | null;
+  local: boolean;
+  source: "live" | "backfill";
+  anchoredAt: number;
+  classification: "scheduled" | "unplanned";
 }
 
 export interface ModelUsage {
@@ -311,6 +325,8 @@ export interface DeviceDiagnostics {
   displayName: string;
   local: boolean;
   lastImportAt: string | null;
+  /** How many quota restarts this device detected, as far as this machine knows. */
+  restartCount: number;
 }
 
 export interface DiagnosticsSnapshot {

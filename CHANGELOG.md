@@ -7,9 +7,14 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Added
+
+- The reset history shows which devices detected each quota restart, merging one restart seen by several computers into a single entry.
+
 ### Fixed
 
 - Claude usage above 100% in low-priority mode is shown as reported instead of marking the Claude reading stale.
+- Quota restarts from a computer set to a different time zone are shared instead of being refused along with its usage.
 
 ## [1.2.0] - 2026-09-13
 

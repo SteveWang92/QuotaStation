@@ -9,8 +9,9 @@ use anyhow::Result;
 use sqlx::Row;
 
 use crate::domain::SharedResetEvent;
-use crate::domain::{DeviceUsageRow, LimitResetEvent, ResetClassification};
+use crate::domain::{DeviceUsageRow, LimitResetEvent};
 
+use super::resets::{ResetObservation, parse_classification};
 use super::{LOCAL_DEVICE, Storage, parse_kind};
 
 /// A device as the database holds it. The local one is always present; the others arrive
@@ -23,6 +24,8 @@ pub struct DeviceRecord {
     /// The modification time of the file this device's rows were read from, which is what
     /// decides whether the next refresh has to read it again.
     pub source_modified_at: Option<i64>,
+    /// How many restart detections are attributed to this device.
+    pub restart_count: i64,
 }
 
 /// One remote device's exported aggregates, ready to replace what is stored for it.
@@ -31,9 +34,15 @@ pub struct DeviceImport<'a> {
     pub display_name: &'a str,
     pub parser_revision: &'a str,
     pub source_modified_at: i64,
-    pub daily: &'a [DeviceUsageRow],
-    pub hourly: &'a [DeviceUsageRow],
+    /// The daily and hourly rows, or `None` when they were refused. Refused rows leave the
+    /// device's stored usage and its file's modification time alone, so the next refresh
+    /// reads the file again and reports the refusal again.
+    pub usage: Option<(&'a [DeviceUsageRow], &'a [DeviceUsageRow])>,
+    /// Restarts are instants no time zone affects, so they are imported whatever happened
+    /// to the rows.
     pub resets: &'a [SharedResetEvent],
+    /// This machine's own shared identifier, which a detection relayed back to it carries.
+    pub local_id: &'a str,
 }
 
 impl Storage {
@@ -55,8 +64,10 @@ impl Storage {
     /// Every device the totals are built from, this machine first.
     pub async fn load_devices(&self) -> Result<Vec<DeviceRecord>> {
         let rows = sqlx::query(
-            "SELECT id, display_name, last_import_at, source_modified_at FROM devices \
-             ORDER BY id = ? DESC, display_name ASC",
+            "SELECT id, display_name, last_import_at, source_modified_at, ( \
+               SELECT COUNT(*) FROM limit_reset_observations \
+               WHERE limit_reset_observations.device = devices.id) AS restart_count \
+             FROM devices ORDER BY id = ? DESC, display_name ASC",
         )
         .bind(LOCAL_DEVICE)
         .fetch_all(&self.pool)
@@ -68,6 +79,7 @@ impl Storage {
                 display_name: row.get("display_name"),
                 last_import_at: row.get("last_import_at"),
                 source_modified_at: row.get("source_modified_at"),
+                restart_count: row.get("restart_count"),
             })
             .collect())
     }
@@ -82,21 +94,41 @@ impl Storage {
         ))
     }
 
-    /// The complete account-level set, including facts learned from another device. Each
-    /// independent export therefore converges even if the original observer is offline.
-    pub async fn load_reset_export(&self) -> Result<Vec<SharedResetEvent>> {
+    /// Every attributed restart detection this machine knows, including ones learned from
+    /// another device, so each independent export converges even while the device that saw
+    /// a restart is offline. This machine's own are named by its shared identifier.
+    ///
+    /// A restart recorded before detections were attributed is left out: whichever device
+    /// saw it, every device sharing at the time already has it, and a reader would credit
+    /// it to this machine.
+    pub async fn load_reset_export(
+        &self,
+        local_id: &str,
+        local_name: &str,
+    ) -> Result<Vec<SharedResetEvent>> {
         let rows = sqlx::query(
             "SELECT provider_instances.provider, window_kind, window_duration_mins, anchored_at, \
              new_resets_at, previous_resets_at, used_percent_before, early_by_seconds, \
-             classification, source, detected_at FROM limit_resets \
-             JOIN provider_instances ON provider_instances.id = limit_resets.provider_instance_id \
-             ORDER BY provider, window_duration_mins, new_resets_at",
+             classification, source, detected_at, device, \
+             COALESCE(devices.display_name, device_name) AS name, bracket_start, bracket_end \
+             FROM limit_reset_observations \
+             JOIN provider_instances \
+               ON provider_instances.id = limit_reset_observations.provider_instance_id \
+             LEFT JOIN devices ON devices.id = limit_reset_observations.device \
+             WHERE device IS NOT NULL \
+             ORDER BY provider, window_duration_mins, new_resets_at, device",
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
             .filter_map(|row| {
+                let device: String = row.try_get("device").ok()?;
+                let (device_id, device_name) = if device == LOCAL_DEVICE {
+                    (local_id.to_string(), Some(local_name.to_string()))
+                } else {
+                    (device, row.try_get("name").ok()?)
+                };
                 Some(SharedResetEvent {
                     provider: row.try_get("provider").ok()?,
                     window_kind: parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?,
@@ -106,13 +138,15 @@ impl Storage {
                     previous_resets_at: row.try_get("previous_resets_at").ok()?,
                     used_percent_before: row.try_get("used_percent_before").ok()?,
                     early_by_seconds: row.try_get("early_by_seconds").ok()?,
-                    classification: match row.try_get::<String, _>("classification").ok()?.as_str()
-                    {
-                        "unplanned" => ResetClassification::Unplanned,
-                        _ => ResetClassification::Scheduled,
-                    },
+                    classification: parse_classification(
+                        &row.try_get::<String, _>("classification").ok()?,
+                    ),
                     source: row.try_get("source").ok()?,
                     detected_at: row.try_get("detected_at").ok()?,
+                    device_id: Some(device_id),
+                    device_name,
+                    bracket_start: row.try_get("bracket_start").ok()?,
+                    bracket_end: row.try_get("bracket_end").ok()?,
                 })
             })
             .collect())
@@ -146,13 +180,16 @@ impl Storage {
             .collect())
     }
 
-    /// Replaces one remote device's rows with the set its exported file carries.
+    /// Replaces one remote device's rows with the set its exported file carries, and merges
+    /// the restart detections it relays.
     ///
-    /// Wholesale, because the file is that device's whole record: a day it no longer
-    /// reports is a day it no longer has, and merging would keep a figure its own machine
-    /// has already corrected. Rows naming a provider this build does not know are skipped
-    /// — the other machine may be a version ahead — and the restart totals are rebuilt,
-    /// since the hours a recorded window spans have just gained another machine's work.
+    /// Rows are replaced wholesale, because the file is that device's whole record: a day
+    /// it no longer reports is a day it no longer has, and merging would keep a figure its
+    /// own machine has already corrected. Detections are merged instead, because the file
+    /// carries other devices' as well as its own. Anything naming a provider this build
+    /// does not know is skipped — the other machine may be a version ahead — and the
+    /// restart totals are rebuilt, since the hours a recorded window spans have just gained
+    /// another machine's work.
     pub async fn import_device(
         &self,
         device: &DeviceImport<'_>,
@@ -167,50 +204,48 @@ impl Storage {
                 .collect();
 
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "INSERT INTO devices (id, display_name, last_import_at, source_modified_at) \
-             VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET \
-               display_name = excluded.display_name, last_import_at = excluded.last_import_at, \
-               source_modified_at = excluded.source_modified_at",
-        )
-        .bind(device.id)
-        .bind(device.display_name)
-        .bind(imported_at)
-        .bind(device.source_modified_at)
-        .execute(&mut *tx)
-        .await?;
-        for table in ["daily_usage", "hourly_usage"] {
-            sqlx::query(&format!("DELETE FROM {table} WHERE device = ?"))
-                .bind(device.id)
-                .execute(&mut *tx)
-                .await?;
-        }
-
         let mut written = 0;
-        for (table, bucket, rows) in [
-            ("daily_usage", "usage_date", device.daily),
-            ("hourly_usage", "hour_start", device.hourly),
-        ] {
-            for row in rows {
-                let Some(&provider_id) = providers.get(&row.provider) else { continue };
-                Self::insert_imported_row(
-                    &mut tx,
-                    provider_id,
-                    device,
-                    table,
-                    bucket,
-                    row,
-                    imported_at,
-                )
-                .await?;
-                written += 1;
+        if let Some((daily, hourly)) = device.usage {
+            sqlx::query(
+                "INSERT INTO devices (id, display_name, last_import_at, source_modified_at) \
+                 VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET \
+                   display_name = excluded.display_name, last_import_at = excluded.last_import_at, \
+                   source_modified_at = excluded.source_modified_at",
+            )
+            .bind(device.id)
+            .bind(device.display_name)
+            .bind(imported_at)
+            .bind(device.source_modified_at)
+            .execute(&mut *tx)
+            .await?;
+            for table in ["daily_usage", "hourly_usage"] {
+                sqlx::query(&format!("DELETE FROM {table} WHERE device = ?"))
+                    .bind(device.id)
+                    .execute(&mut *tx)
+                    .await?;
             }
+            written =
+                Self::insert_imported_rows(&mut tx, &providers, device, daily, hourly, imported_at)
+                    .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO devices (id, display_name) VALUES (?, ?) \
+                 ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name",
+            )
+            .bind(device.id)
+            .bind(device.display_name)
+            .execute(&mut *tx)
+            .await?;
         }
         for reset in device.resets {
             let Some(&provider_id) = providers.get(&reset.provider) else { continue };
-            if !matches!(reset.source.as_str(), "live" | "backfill") {
-                continue;
-            }
+            // A file an earlier build wrote attributes nothing, and everything in it is that
+            // file's own device's.
+            let (observer, observer_name) = match reset.device_id.as_deref() {
+                None => (device.id, Some(device.display_name)),
+                Some(id) if id == device.local_id => (LOCAL_DEVICE, None),
+                Some(id) => (id, reset.device_name.as_deref()),
+            };
             let event = LimitResetEvent {
                 window_kind: reset.window_kind,
                 window_label: reset.window_kind.window_label(Some(reset.window_duration_mins)),
@@ -222,14 +257,45 @@ impl Storage {
                 tokens_in_window: None,
                 early_by_seconds: reset.early_by_seconds,
                 classification: reset.classification,
+                anchor_spread_seconds: 0,
+                detections: Vec::new(),
             };
-            Self::insert_reset(&mut tx, provider_id, &event, &reset.source, &reset.detected_at)
-                .await?;
+            let observation = ResetObservation {
+                device: observer,
+                device_name: observer_name,
+                event: &event,
+                source: &reset.source,
+                detected_at: &reset.detected_at,
+                bracket: reset.bracket_start.zip(reset.bracket_end),
+            };
+            Self::merge_reset(&mut tx, provider_id, &observation).await?;
         }
         for &provider_id in providers.values() {
             Self::refresh_reset_tokens(&mut tx, provider_id).await?;
         }
         tx.commit().await?;
+        Ok(written)
+    }
+
+    async fn insert_imported_rows(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        providers: &BTreeMap<String, i64>,
+        device: &DeviceImport<'_>,
+        daily: &[DeviceUsageRow],
+        hourly: &[DeviceUsageRow],
+        imported_at: &str,
+    ) -> Result<usize> {
+        let mut written = 0;
+        for (table, bucket, rows) in
+            [("daily_usage", "usage_date", daily), ("hourly_usage", "hour_start", hourly)]
+        {
+            for row in rows {
+                let Some(&provider_id) = providers.get(&row.provider) else { continue };
+                Self::insert_imported_row(tx, provider_id, device, table, bucket, row, imported_at)
+                    .await?;
+                written += 1;
+            }
+        }
         Ok(written)
     }
 

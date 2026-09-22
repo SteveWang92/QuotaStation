@@ -150,6 +150,9 @@ export function DiagnosticsPanel({
               ) : (
                 <small>Last imported {formatTimestamp(device.lastImportAt)}</small>
               )}
+              <small>
+                {device.restartCount} quota restart{device.restartCount === 1 ? "" : "s"} detected
+              </small>
             </div>
           ))}
         </div>

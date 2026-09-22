@@ -50,13 +50,15 @@ struct ExportFile {
     device_id: String,
     device_name: String,
     /// The time zone the buckets below are keyed in. Local hour and day keys from two
-    /// zones describe different spans of time and cannot be added together, so an import
-    /// from a machine on another zone is refused rather than shifted.
+    /// zones describe different spans of time and cannot be added together, so the rows of
+    /// a machine on another zone are refused rather than shifted. Its restarts are still
+    /// read: each is a set of instants no zone affects.
     timezone: String,
     parser_revision: String,
     daily: Vec<DeviceUsageRow>,
     hourly: Vec<DeviceUsageRow>,
-    /// Optional so an upgraded machine still imports a pre-reset-sharing file.
+    /// Every restart detection the writing machine knows, its own and those relayed from
+    /// other devices. Optional so an upgraded machine still imports a pre-reset-sharing file.
     #[serde(default)]
     resets: Vec<SharedResetEvent>,
 }
@@ -132,7 +134,7 @@ async fn export(
     // exporting into nowhere for as long as it took someone to notice.
     anyhow::ensure!(folder.is_dir(), "The shared usage folder was not found.");
     let (daily, hourly) = state.storage.load_local_export().await?;
-    let resets = state.storage.load_reset_export().await?;
+    let resets = state.storage.load_reset_export(device_id, device_name).await?;
     let content = serde_json::to_vec(&ExportFile {
         format_version: FORMAT_VERSION,
         device_id: device_id.to_string(),
@@ -199,7 +201,8 @@ async fn import_others(state: &Arc<AppState>, folder: &Path, device_id: &str) ->
         {
             continue;
         }
-        if let Err(error) = import_one(state, &entry.path(), file_device, modified).await {
+        if let Err(error) = import_one(state, &entry.path(), file_device, device_id, modified).await
+        {
             failures.push(format!("{name}: {}", sanitize_error(&error.to_string(), "unreadable")));
         }
     }
@@ -248,6 +251,18 @@ fn check_rows(rows: &[DeviceUsageRow], hourly: bool) -> Result<()> {
 fn check_resets(resets: &[SharedResetEvent]) -> Result<()> {
     for reset in resets {
         anyhow::ensure!(
+            reset.device_id.as_deref().is_none_or(valid_device_id),
+            "carries an invalid reset device"
+        );
+        anyhow::ensure!(
+            match (reset.bracket_start, reset.bracket_end) {
+                (Some(start), Some(end)) => start <= end,
+                (None, None) => true,
+                _ => false,
+            },
+            "carries an invalid reset bracket"
+        );
+        anyhow::ensure!(
             matches!(reset.source.as_str(), "live" | "backfill"),
             "carries an invalid reset source"
         );
@@ -284,6 +299,7 @@ async fn import_one(
     state: &Arc<AppState>,
     path: &Path,
     file_device: &str,
+    local_id: &str,
     modified: i64,
 ) -> Result<()> {
     let published: ExportFile = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -293,17 +309,13 @@ async fn import_one(
     );
     anyhow::ensure!(published.device_id == file_device, "names a different device inside");
     anyhow::ensure!(valid_device_id(&published.device_id), "names an invalid device");
-    let timezone = system_timezone();
-    anyhow::ensure!(
-        published.timezone == timezone,
-        "aggregated in {} rather than {timezone}",
-        published.timezone
-    );
     // The imported values are bound directly into SQLite and later read as signed integers,
     // dates and reset facts, so the external document has to fit those exact representations.
     check_rows(&published.daily, false)?;
     check_rows(&published.hourly, true)?;
     check_resets(&published.resets)?;
+    let timezone = system_timezone();
+    let same_zone = published.timezone == timezone;
 
     state
         .storage
@@ -313,13 +325,15 @@ async fn import_one(
                 display_name: &published.device_name,
                 parser_revision: &published.parser_revision,
                 source_modified_at: modified,
-                daily: &published.daily,
-                hourly: &published.hourly,
+                usage: same_zone
+                    .then_some((published.daily.as_slice(), published.hourly.as_slice())),
                 resets: &published.resets,
+                local_id,
             },
             &jiff::Timestamp::now().to_string(),
         )
         .await?;
+    anyhow::ensure!(same_zone, "usage aggregated in {} rather than {timezone}", published.timezone);
     Ok(())
 }
 
@@ -384,11 +398,76 @@ mod tests {
             classification: crate::domain::ResetClassification::Scheduled,
             source: "live".into(),
             detected_at: "2027-01-15T08:00:00Z".into(),
+            device_id: None,
+            device_name: None,
+            bracket_start: None,
+            bracket_end: None,
         };
         assert!(check_resets(&[reset.clone()]).is_ok());
 
         reset.new_resets_at += 1;
         assert!(check_resets(&[reset]).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_file_from_another_time_zone_gives_its_restarts_but_not_its_usage() {
+        let (storage, _database) = crate::storage::test_support::open_storage().await;
+        let state = Arc::new(AppState::for_tests(storage));
+        let other_zone = if system_timezone() == "Pacific/Auckland" {
+            "Europe/London"
+        } else {
+            "Pacific/Auckland"
+        };
+        let file = ExportFile {
+            format_version: FORMAT_VERSION,
+            device_id: "bb02".into(),
+            device_name: "Laptop".into(),
+            timezone: other_zone.into(),
+            parser_revision: "test".into(),
+            daily: vec![row("2026-08-29")],
+            hourly: vec![row("2026-08-29T09:00")],
+            resets: vec![SharedResetEvent {
+                provider: "codex".into(),
+                window_kind: crate::domain::LimitKind::Primary,
+                window_duration_mins: 300,
+                anchored_at: 1_800_000_000,
+                new_resets_at: 1_800_018_000,
+                previous_resets_at: 1_800_003_600,
+                used_percent_before: 82.0,
+                early_by_seconds: 3_600,
+                classification: crate::domain::ResetClassification::Scheduled,
+                source: "live".into(),
+                detected_at: "2027-01-15T08:00:00Z".into(),
+                device_id: None,
+                device_name: None,
+                bracket_start: None,
+                bracket_end: None,
+            }],
+        };
+        let path = std::env::temp_dir().join(format!(
+            "quotastation-sync-{}-{}",
+            std::process::id(),
+            file_name("bb02")
+        ));
+        std::fs::write(&path, serde_json::to_vec(&file).expect("serialize")).expect("write file");
+
+        let result = import_one(&state, &path, "bb02", "0a0a", 1).await;
+        let _ = std::fs::remove_file(&path);
+
+        assert!(result.is_err(), "the refused rows are still reported");
+        let resets = state
+            .storage
+            .load_reset_history(crate::providers::ProviderKind::Codex)
+            .await
+            .expect("load resets");
+        assert_eq!(resets.len(), 1, "the restart is imported whatever the zone");
+        assert_eq!(resets[0].detections[0].device_name.as_deref(), Some("Laptop"));
+        let usage = state
+            .storage
+            .load_usage_range(None, Some("bb02"), "2026-08-29", "2026-08-29")
+            .await
+            .expect("load usage");
+        assert_eq!(usage.usage.total, 0, "rows keyed in another zone are not added");
     }
 
     #[test]
@@ -408,6 +487,10 @@ mod tests {
             classification: crate::domain::ResetClassification::Unplanned,
             source: "live".into(),
             detected_at: "2027-01-15T08:00:00Z".into(),
+            device_id: None,
+            device_name: None,
+            bracket_start: None,
+            bracket_end: None,
         };
         assert!(check_resets(&[reset]).is_ok());
     }

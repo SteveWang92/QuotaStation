@@ -210,6 +210,7 @@ mod tests {
                 display_name: "Private computer".to_string(),
                 local: true,
                 last_import_at: None,
+                restart_count: 0,
             }],
             parser_revision: "parser".to_string(),
             pricing_catalog_revision: "pricing".to_string(),

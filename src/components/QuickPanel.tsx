@@ -13,6 +13,7 @@ import {
   formatDelta,
   formatNumber,
   formatResetTimestamp,
+  formatSeenOn,
   formatShortMoment,
   formatWindowBadge,
 } from "../format";
@@ -91,10 +92,11 @@ function CompactRestart({ snapshot }: { snapshot: ProviderSnapshot }) {
   const restart = snapshot.recentResets[0];
   if (!restart) return null;
   const before = `${Math.round(restart.usedPercentBefore)}%`;
+  const seenOn = formatSeenOn(restart);
   return (
     <p
       className="quick-restart"
-      title={`${restart.windowLabel} restarted ${formatResetTimestamp(restart.anchoredAt)} at ${before} used`}
+      title={`${restart.windowLabel} restarted ${formatResetTimestamp(restart.anchoredAt)} at ${before} used${seenOn ? ` · ${seenOn}` : ""}`}
     >
       <span>Restart</span>
       <strong>{formatWindowBadge(restart.windowDurationMins, restart.windowLabel)}</strong>

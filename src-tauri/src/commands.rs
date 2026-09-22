@@ -517,6 +517,7 @@ async fn collect_diagnostics(
             id: device.id,
             display_name: device.display_name,
             last_import_at: device.last_import_at,
+            restart_count: device.restart_count.unsigned_abs(),
         })
         .collect();
     Ok(DiagnosticsSnapshot {

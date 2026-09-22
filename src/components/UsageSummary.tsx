@@ -19,6 +19,7 @@ import {
   formatDelta,
   formatNumber,
   formatRevision,
+  formatSeenOn,
 } from "../format";
 import { SERIES_LIMIT, SERIES_REST, SERIES_SLOTS } from "../series";
 import type {
@@ -250,7 +251,9 @@ export function UsageSummary({
   const quotaMarkers: ChartMarker[] = (quotaHistory?.resets ?? []).map((reset) => ({
     id: `${reset.windowKind}-${reset.anchoredAt}`,
     bucket: toLocalDateString(new Date(reset.anchoredAt * 1_000)),
-    label: `${reset.windowLabel} restarted (${reset.classification})`,
+    label: [`${reset.windowLabel} restarted (${reset.classification})`, formatSeenOn(reset)]
+      .filter(Boolean)
+      .join(" · "),
     tone: reset.classification === "unplanned" ? "warning" : "muted",
   }));
 

@@ -2,7 +2,8 @@
 //! belongs to, and the restart the tracker infers from the pair.
 //!
 //! `crate::resets` decides that a window restarted; this stores the decision and reads it
-//! back.
+//! back. Each device's detection of a restart is an observation, and the restart itself is
+//! the event those observations merge into — see [`Storage::merge_reset`].
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -14,12 +15,32 @@ use sqlx::Row;
 
 use crate::domain::{
     HOURLY_HISTORY_DAYS, LimitKind, LimitResetEvent, LiveSnapshot, QuotaHistoryPoint,
-    QuotaHistorySnapshot, QuotaHistoryWindow, ResetClassification, WindowSource,
+    QuotaHistorySnapshot, QuotaHistoryWindow, ResetClassification, ResetDetection, WindowSource,
 };
 use crate::providers::ProviderKind;
-use crate::resets::{ResetTracker, WindowObservation, detect};
+use crate::resets::{ResetTracker, WindowObservation, detect, grouping_tolerance_seconds};
 
-use super::{Storage, epoch_seconds, parse_kind};
+use super::{LOCAL_DEVICE, Storage, epoch_seconds, parse_kind};
+
+/// Which of a restart's observations speaks for it: the one whose two readings were closest
+/// together, because the restart happened between them; then a live read before a rollout
+/// log; then the device, so the choice never depends on the order observations arrived in.
+/// A detection recorded before brackets were kept has none and comes last.
+const REPRESENTATIVE_ORDER: &str = "bracket_end - bracket_start IS NULL, \
+    bracket_end - bracket_start, source <> 'live', device, anchored_at";
+
+/// One device's detection of a restart, as [`Storage::merge_reset`] files it.
+pub(super) struct ResetObservation<'a> {
+    /// [`LOCAL_DEVICE`] or another device's shared identifier.
+    pub device: &'a str,
+    /// The name a device reported itself by, kept for a device whose own file this machine
+    /// has not read. `None` for this machine.
+    pub device_name: Option<&'a str>,
+    pub event: &'a LimitResetEvent,
+    pub source: &'a str,
+    pub detected_at: &'a str,
+    pub bracket: Option<(i64, i64)>,
+}
 
 /// The rollout scan skips files older than its previous run, with this much overlap so a
 /// window that reset across the boundary still has an earlier reading to compare against.
@@ -32,8 +53,9 @@ const RECENT_RESET_LIMIT: i64 = 8;
 /// The columns every query over `limit_resets` selects. The token total among them is
 /// stored rather than summed on the way out, so it outlives the hourly rows it was built
 /// from — see [`Storage::refresh_reset_tokens`].
-const RESET_COLUMNS: &str = "window_kind, window_duration_mins, anchored_at, new_resets_at, previous_resets_at, \
-    used_percent_before, tokens_in_window, early_by_seconds, classification";
+const RESET_COLUMNS: &str = "id, window_kind, window_duration_mins, anchored_at, new_resets_at, \
+    previous_resets_at, used_percent_before, tokens_in_window, early_by_seconds, classification, \
+    anchor_spread_seconds";
 
 /// The restart before this one of the same window, which is where the window this one
 /// closed began. `NULL` for the first restart recorded of a window. A window is identified
@@ -60,16 +82,21 @@ pub(super) fn kind_column(kind: LimitKind) -> &'static str {
     }
 }
 
-/// One recorded restart, from a row carrying [`RESET_COLUMNS`]. The recent list and the
-/// range query select the same columns, so they read them the same way.
-fn reset_event(row: sqlx::sqlite::SqliteRow) -> Option<LimitResetEvent> {
-    let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
-    let window_duration_mins: i64 = row.try_get("window_duration_mins").ok()?;
-    let classification = match row.try_get::<String, _>("classification").ok()?.as_str() {
+pub(super) fn parse_classification(value: &str) -> ResetClassification {
+    match value {
         "unplanned" => ResetClassification::Unplanned,
         _ => ResetClassification::Scheduled,
-    };
-    Some(LimitResetEvent {
+    }
+}
+
+/// One recorded restart and its row id, from a row carrying [`RESET_COLUMNS`]. The recent
+/// list and the range query select the same columns, so they read them the same way; the
+/// detections are attached by [`Storage::with_detections`].
+fn reset_event(row: sqlx::sqlite::SqliteRow) -> Option<(i64, LimitResetEvent)> {
+    let kind = parse_kind(&row.try_get::<String, _>("window_kind").ok()?)?;
+    let window_duration_mins: i64 = row.try_get("window_duration_mins").ok()?;
+    let classification = parse_classification(&row.try_get::<String, _>("classification").ok()?);
+    let event = LimitResetEvent {
         window_kind: kind,
         window_label: kind.window_label(Some(window_duration_mins)),
         window_duration_mins,
@@ -84,7 +111,10 @@ fn reset_event(row: sqlx::sqlite::SqliteRow) -> Option<LimitResetEvent> {
             .and_then(|tokens| u64::try_from(tokens).ok()),
         early_by_seconds: row.try_get("early_by_seconds").ok()?,
         classification,
-    })
+        anchor_spread_seconds: row.try_get("anchor_spread_seconds").ok()?,
+        detections: Vec::new(),
+    };
+    Some((row.try_get("id").ok()?, event))
 }
 
 /// Each provider replays its own logs, so the scan watermarks cannot share a row.
@@ -93,13 +123,17 @@ fn backfill_job_name(provider: ProviderKind) -> String {
 }
 
 impl Storage {
+    /// Stores a live reading, and reports whether it recorded a restart nothing had recorded
+    /// before — which is news the other devices should hear without waiting for the next
+    /// history refresh.
     pub async fn save_live(
         &self,
         provider: ProviderKind,
         live: &LiveSnapshot,
         observed_at: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let provider_id = self.provider_id(provider).await?;
+        let mut recorded = false;
         // A restart is inferred only from the source that publishes the window rather than
         // deriving it — see `ProviderKind::authoritative_window_source`. Comparing a reading
         // against one that measured the same window a different way manufactures restarts.
@@ -129,7 +163,15 @@ impl Storage {
                 // against belongs to the window, not to the name it arrived under.
                 let Some(earlier) = previous.get(&window_duration_mins) else { continue };
                 if let Some(event) = detect(*earlier, current) {
-                    Self::insert_reset(&mut tx, provider_id, &event, "live", observed_at).await?;
+                    let observation = ResetObservation {
+                        device: LOCAL_DEVICE,
+                        device_name: None,
+                        event: &event,
+                        source: "live",
+                        detected_at: observed_at,
+                        bracket: Some((earlier.observed_at, current.observed_at)),
+                    };
+                    recorded |= Self::merge_reset(&mut tx, provider_id, &observation).await?;
                 }
             }
         }
@@ -188,7 +230,7 @@ impl Storage {
         }
         Self::refresh_reset_tokens(&mut tx, provider_id).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(recorded)
     }
 
     /// The windows a percentage has already been measured for. A reading that has none
@@ -247,20 +289,88 @@ impl Storage {
         Ok(observations)
     }
 
-    pub(super) async fn insert_reset(
+    /// Files one device's detection of a restart, and reports whether it began a restart
+    /// nothing had recorded before. Live detection, the rollout backfill and the shared
+    /// folder all write restarts through here and nowhere else.
+    ///
+    /// The detection joins the recorded restart of its window whose anchor is nearest within
+    /// [`grouping_tolerance_seconds`], or starts one of its own. Real restarts of one window
+    /// are hours apart, so a chain of detections each close to the next but not to the
+    /// first cannot arise and is not re-clustered. The restart's fields are then rewritten
+    /// from its [`REPRESENTATIVE_ORDER`] observation; the others are kept beside it rather
+    /// than voted on. A detection a device already filed is left as it was, which is what
+    /// makes reading the same file twice harmless.
+    pub(super) async fn merge_reset(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         provider_id: i64,
-        event: &LimitResetEvent,
-        source: &str,
-        detected_at: &str,
-    ) -> Result<()> {
-        sqlx::query(
-            "INSERT OR IGNORE INTO limit_resets \
-             (provider_instance_id, window_kind, window_duration_mins, anchored_at, new_resets_at, \
-              previous_resets_at, used_percent_before, early_by_seconds, classification, source, detected_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        observation: &ResetObservation<'_>,
+    ) -> Result<bool> {
+        let event = observation.event;
+        let filed: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM limit_reset_observations WHERE provider_instance_id = ? \
+             AND device = ? AND window_duration_mins = ? AND new_resets_at = ?",
         )
         .bind(provider_id)
+        .bind(observation.device)
+        .bind(event.window_duration_mins)
+        .bind(event.new_resets_at)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if filed.is_some() {
+            return Ok(false);
+        }
+
+        let joined: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM limit_resets WHERE provider_instance_id = ? \
+             AND window_duration_mins = ? AND ABS(anchored_at - ?) <= ? \
+             ORDER BY ABS(anchored_at - ?), id LIMIT 1",
+        )
+        .bind(provider_id)
+        .bind(event.window_duration_mins)
+        .bind(event.anchored_at)
+        .bind(grouping_tolerance_seconds(event.window_duration_mins))
+        .bind(event.anchored_at)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let (reset_id, created) = match joined {
+            Some(reset_id) => (reset_id, false),
+            None => {
+                let reset_id = sqlx::query_scalar(
+                    "INSERT INTO limit_resets \
+                     (provider_instance_id, window_kind, window_duration_mins, anchored_at, \
+                      new_resets_at, previous_resets_at, used_percent_before, early_by_seconds, \
+                      classification, source, detected_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                )
+                .bind(provider_id)
+                .bind(kind_column(event.window_kind))
+                .bind(event.window_duration_mins)
+                .bind(event.anchored_at)
+                .bind(event.new_resets_at)
+                .bind(event.previous_resets_at)
+                .bind(event.used_percent_before)
+                .bind(event.early_by_seconds)
+                .bind(event.classification.as_str())
+                .bind(observation.source)
+                .bind(observation.detected_at)
+                .fetch_one(&mut **tx)
+                .await?;
+                (reset_id, true)
+            }
+        };
+
+        sqlx::query(
+            "INSERT INTO limit_reset_observations \
+             (reset_id, provider_instance_id, device, device_name, window_kind, \
+              window_duration_mins, anchored_at, new_resets_at, previous_resets_at, \
+              used_percent_before, early_by_seconds, classification, source, detected_at, \
+              bracket_start, bracket_end) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(reset_id)
+        .bind(provider_id)
+        .bind(observation.device)
+        .bind(observation.device_name)
         .bind(kind_column(event.window_kind))
         .bind(event.window_duration_mins)
         .bind(event.anchored_at)
@@ -269,11 +379,75 @@ impl Storage {
         .bind(event.used_percent_before)
         .bind(event.early_by_seconds)
         .bind(event.classification.as_str())
-        .bind(source)
-        .bind(detected_at)
+        .bind(observation.source)
+        .bind(observation.detected_at)
+        .bind(observation.bracket.map(|(start, _)| start))
+        .bind(observation.bracket.map(|(_, end)| end))
         .execute(&mut **tx)
         .await?;
-        Ok(())
+        // A restart recorded before detections were attributed stands in for a device
+        // nobody knew; an attributed detection of the same restart is that device.
+        sqlx::query("DELETE FROM limit_reset_observations WHERE reset_id = ? AND device IS NULL")
+            .bind(reset_id)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query(&format!(
+            "UPDATE limit_resets SET (window_kind, anchored_at, new_resets_at, previous_resets_at, \
+               used_percent_before, early_by_seconds, classification, source, detected_at) = ( \
+               SELECT window_kind, anchored_at, new_resets_at, previous_resets_at, \
+               used_percent_before, early_by_seconds, classification, source, detected_at \
+               FROM limit_reset_observations WHERE reset_id = limit_resets.id \
+               ORDER BY {REPRESENTATIVE_ORDER} LIMIT 1), \
+             anchor_spread_seconds = ( \
+               SELECT MAX(anchored_at) - MIN(anchored_at) FROM limit_reset_observations \
+               WHERE reset_id = limit_resets.id) \
+             WHERE id = ?"
+        ))
+        .bind(reset_id)
+        .execute(&mut **tx)
+        .await?;
+        Ok(created)
+    }
+
+    /// Attaches every device's detection to the restarts read back, the representative's
+    /// first, and drops the row ids they were matched by.
+    async fn with_detections(
+        &self,
+        rows: Vec<sqlx::sqlite::SqliteRow>,
+    ) -> Result<Vec<LimitResetEvent>> {
+        let events: Vec<(i64, LimitResetEvent)> =
+            rows.into_iter().filter_map(reset_event).collect();
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Row ids read back from the database, so writing them into the statement is safe.
+        let ids = events.iter().map(|(id, _)| id.to_string()).collect::<Vec<_>>().join(",");
+        let rows = sqlx::query(&format!(
+            "SELECT reset_id, device, COALESCE(devices.display_name, device_name) AS name, \
+             source, anchored_at, classification FROM limit_reset_observations \
+             LEFT JOIN devices ON devices.id = limit_reset_observations.device \
+             WHERE reset_id IN ({ids}) ORDER BY {REPRESENTATIVE_ORDER}"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        let mut detections: BTreeMap<i64, Vec<ResetDetection>> = BTreeMap::new();
+        for row in rows {
+            let device: Option<String> = row.try_get("device")?;
+            detections.entry(row.try_get("reset_id")?).or_default().push(ResetDetection {
+                local: device.as_deref() == Some(LOCAL_DEVICE),
+                device_name: device.and(row.try_get("name")?),
+                source: row.try_get("source")?,
+                anchored_at: row.try_get("anchored_at")?,
+                classification: parse_classification(&row.try_get::<String, _>("classification")?),
+            });
+        }
+        Ok(events
+            .into_iter()
+            .map(|(id, mut event)| {
+                event.detections = detections.remove(&id).unwrap_or_default();
+                event
+            })
+            .collect())
     }
 
     /// Fills in the tokens each recorded restart carried, for the events whose hourly rows
@@ -350,16 +524,24 @@ impl Storage {
         merged.sort_by_key(|observation| observation.observed_at);
 
         let mut tracker = ResetTracker::default();
-        let mut events = Vec::new();
+        let mut detections = Vec::new();
         for observation in merged {
-            if let Some(event) = tracker.push(observation) {
-                events.push(event);
+            if let Some(detection) = tracker.push(observation) {
+                detections.push(detection);
             }
         }
 
         let mut tx = self.pool.begin().await?;
-        for event in &events {
-            Self::insert_reset(&mut tx, provider_id, event, "backfill", scanned_at).await?;
+        for detection in &detections {
+            let observation = ResetObservation {
+                device: LOCAL_DEVICE,
+                device_name: None,
+                event: &detection.event,
+                source: "backfill",
+                detected_at: scanned_at,
+                bracket: Some(detection.bracket),
+            };
+            Self::merge_reset(&mut tx, provider_id, &observation).await?;
         }
         Self::refresh_reset_tokens(&mut tx, provider_id).await?;
         sqlx::query(
@@ -372,7 +554,7 @@ impl Storage {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(events.len())
+        Ok(detections.len())
     }
 
     async fn load_sample_observations(&self, provider_id: i64) -> Result<Vec<WindowObservation>> {
@@ -414,7 +596,7 @@ impl Storage {
         .bind(provider_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().filter_map(reset_event).collect())
+        self.with_detections(rows).await
     }
 
     pub async fn load_recent_resets(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
@@ -427,7 +609,7 @@ impl Storage {
         .bind(RECENT_RESET_LIMIT)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().filter_map(reset_event).collect())
+        self.with_detections(rows).await
     }
 
     /// What each quota window did across a date range, one point per local day.
@@ -510,7 +692,7 @@ impl Storage {
                     points,
                 })
                 .collect(),
-            resets: reset_rows.into_iter().filter_map(reset_event).collect(),
+            resets: self.with_detections(reset_rows).await?,
         })
     }
 }

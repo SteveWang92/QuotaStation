@@ -1,3 +1,5 @@
+import type { LimitResetEvent, ResetDetection } from "./types";
+
 /**
  * The interface is English-only, so every surface formats numbers and dates the same way
  * instead of following whatever locale the machine reports. This single constant is the
@@ -100,6 +102,49 @@ export function formatEarlyBy(seconds: number): string {
   }
   const hours = Math.round(seconds / 3_600);
   return hours <= 1 ? "under an hour early" : `${hours} hours early`;
+}
+
+function detectionDevice(detection: ResetDetection): string {
+  return detection.deviceName ?? "An earlier record";
+}
+
+/** Each device that detected a restart, named once, the one whose timing it carries first. */
+export function formatDetectedBy(event: LimitResetEvent): string {
+  return [...new Set(event.detections.map(detectionDevice))].join(", ");
+}
+
+/**
+ * "Seen on N devices" for a restart more than one device detected, and nothing for the
+ * ordinary case of one: a tooltip that always says it would be read as saying nothing.
+ */
+export function formatSeenOn(event: LimitResetEvent): string | null {
+  const devices = new Set(event.detections.map(detectionDevice)).size;
+  return devices > 1 ? `Seen on ${devices} devices` : null;
+}
+
+/**
+ * How far the devices' timing of a restart disagreed, once it is more than the second or
+ * two of rounding every provider's expiry carries.
+ */
+export function formatAnchorSpread(event: LimitResetEvent): string | null {
+  if (event.anchorSpreadSeconds <= 60) return null;
+  return `±${Math.round(event.anchorSpreadSeconds / 60)} min`;
+}
+
+/**
+ * Every device's detection of a restart, one per line, for a tooltip. A device that judged
+ * the restart differently is kept and said so rather than outvoted.
+ */
+export function describeDetections(event: LimitResetEvent): string {
+  const lines = event.detections.map(
+    (detection) =>
+      `${detectionDevice(detection)} · ${detection.source === "live" ? "live read" : "rollout log"} · ${formatResetTimestamp(detection.anchoredAt)} · ${detection.classification}`,
+  );
+  const dissent = event.detections.find(
+    (detection) => detection.classification !== event.classification,
+  );
+  if (dissent) lines.push(`Another device recorded this as ${dissent.classification}`);
+  return lines.join("\n");
 }
 
 function windowParts(durationMins: number) {
