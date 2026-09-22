@@ -452,7 +452,7 @@ impl ProviderSnapshot {
             };
             return;
         }
-        let now = jiff::Timestamp::now().as_second();
+        let now = crate::clock::now().as_second();
         for limit in &mut self.limits {
             let age = now.saturating_sub(limit.observed_at);
             let max_age = match limit.source {
@@ -483,9 +483,7 @@ impl ProviderSnapshot {
         self.stale_age_seconds = self
             .limits
             .iter()
-            .map(|limit| {
-                jiff::Timestamp::now().as_second().saturating_sub(limit.observed_at) as u64
-            })
+            .map(|limit| crate::clock::now().as_second().saturating_sub(limit.observed_at) as u64)
             .max()
             .or_else(|| self.last_live_success_at.as_deref().and_then(age_seconds));
         // A signed-out provider has an answer rather than a fault, and saying which one it
@@ -537,18 +535,21 @@ impl ProviderSnapshot {
 pub struct WorkspaceSnapshot {
     pub providers: Vec<ProviderSnapshot>,
     pub aggregate: CompactStatus,
+    /// How far this computer's clock is behind internet time, in milliseconds, so the
+    /// renderer's countdowns run on the corrected clock too. Zero when unmeasured.
+    pub clock_offset_ms: i64,
 }
 
 impl WorkspaceSnapshot {
     pub fn new(providers: Vec<ProviderSnapshot>) -> Self {
         let aggregate = aggregate_status(&providers);
-        Self { providers, aggregate }
+        Self { providers, aggregate, clock_offset_ms: crate::clock::offset_ms() }
     }
 }
 
 fn age_seconds(value: &str) -> Option<u64> {
     let observed = value.parse::<jiff::Timestamp>().ok()?;
-    let elapsed = jiff::Timestamp::now().duration_since(observed);
+    let elapsed = crate::clock::now().duration_since(observed);
     Some(elapsed.as_secs().max(0) as u64)
 }
 
@@ -1008,6 +1009,7 @@ pub struct DiagnosticsSnapshot {
     pub acquisitions: Vec<AcquisitionDiagnostics>,
     pub retention: RetentionDiagnostics,
     pub shared_folder: SharedFolderDiagnostics,
+    pub clock: ClockDiagnostics,
     /// Every machine contributing to the totals, this one first. A machine that stopped
     /// exporting still appears, with the time its aggregates were last read: totals that
     /// quietly lost a contributor are worse than totals that say so.
@@ -1021,6 +1023,16 @@ pub struct DiagnosticsSnapshot {
     /// executable lives, what Claude Code's hooks point at — that a bug report about "0.1.0"
     /// is not answerable without it.
     pub build_kind: String,
+}
+
+/// What the check against internet time measured, when it is on.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClockDiagnostics {
+    pub enabled: bool,
+    pub offset_ms: i64,
+    pub last_checked_at: Option<String>,
+    pub error: Option<String>,
 }
 
 /// What the shared usage folder last did. `off` is the state with no folder chosen, which

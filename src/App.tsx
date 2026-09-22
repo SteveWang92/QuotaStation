@@ -12,6 +12,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { TaskbarWidget } from "./components/TaskbarWidget";
 import { UsageSummary } from "./components/UsageSummary";
 import { errorMessage } from "./errors";
+import { formatClockOffset } from "./format";
 import { statusColor, watchTheme } from "./theme";
 import type { DiagnosticsSnapshot, ProviderSnapshot, WorkspaceSnapshot } from "./types";
 import { useSnapshot } from "./useSnapshot";
@@ -24,6 +25,7 @@ const EMPTY_DIAGNOSTICS: DiagnosticsSnapshot = {
   acquisitions: [],
   retention: { status: "pending", lastCompletedAt: null, error: null },
   sharedFolder: { status: "off", lastCompletedAt: null, error: null },
+  clock: { enabled: false, offsetMs: 0, lastCheckedAt: null, error: null },
   devices: [],
   parserRevision: "",
   pricingCatalogRevision: "",
@@ -239,6 +241,14 @@ function Dashboard() {
         />
       ) : (
         <>
+          {/* A clock this far off makes every countdown and every reading's time wrong by
+              as much, which is worth saying above everything it affects. */}
+          {formatClockOffset(workspace.clockOffsetMs) ? (
+            <p className="clock-banner" role="status">
+              {formatClockOffset(workspace.clockOffsetMs)}. Countdowns are corrected; fix the
+              Windows clock to correct the times Codex and Claude Code record.
+            </p>
+          ) : null}
           {loaded && workspace.providers.length === 0 ? <ProviderSetup /> : null}
           {/* The grid is the quota display, so a provider whose quota is switched off has
               no panel here at all. Its usage keeps its place in the history below. */}

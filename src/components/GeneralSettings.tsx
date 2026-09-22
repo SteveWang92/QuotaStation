@@ -120,6 +120,22 @@ export function GeneralSettings() {
     }
   }, []);
 
+  /**
+   * The one request QuotaStation would send of its own — an SNTP query to
+   * time.windows.com carrying no user data — so it is off until chosen.
+   */
+  const changeClockCheck = useCallback(async (clockCheck: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await saveAppSettings({ clockCheck });
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
   const changeTaskbarWidget = useCallback(async (enabled: boolean) => {
     setBusy(true);
     setError(null);
@@ -239,8 +255,8 @@ export function GeneralSettings() {
         <div className="provider-consent-body">
           <h2>Application</h2>
           <p>
-            Where QuotaStation shows up on this machine. Nothing here reads a provider or leaves the
-            local system.
+            Where QuotaStation shows up on this machine. Nothing here reads a provider, and only the
+            clock check, when switched on, sends a request off this machine.
           </p>
           {settingsError ? (
             <p className="provider-consent-error">Settings: {settingsError}</p>
@@ -291,6 +307,15 @@ export function GeneralSettings() {
                   </option>
                 ))}
               </select>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={settings?.clockCheck ?? false}
+                disabled={busy || settings === null}
+                onChange={(event) => void changeClockCheck(event.target.checked)}
+              />
+              Check the clock against internet time
             </label>
             <label>
               <input

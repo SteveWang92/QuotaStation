@@ -213,6 +213,21 @@ details. See [Multi-machine usage](multi-machine.md) for the file contents and s
   and settings changes, renderer failures — but no session content, credential, or provider
   path. It is bounded by size alone: 16 MB, then one roll.
 - The pricing catalog is embedded at build time, so a clean build does not download it.
+- The only request QuotaStation sends of its own is the opt-in clock check below, which
+  carries no user data.
+
+## Clock check
+
+A wrong computer clock breaks what a time zone cannot fix: countdowns run against it, and a
+reading dated by it no longer lines up with the reset times the server publishes. Providers
+publish no server time, so the clock can be checked against internet time instead. The check
+is off unless it is switched on in **Settings → General**. When on, the core sends one SNTP
+request to `time.windows.com` at startup and every two hours — QuotaStation's only outbound
+request of its own, a 48-byte packet carrying nothing but the computer's current time — and
+applies the measured offset wherever a reading is dated or compared with server time, and to
+the interface's countdowns. A failed check keeps the previous offset and is reported in
+Diagnostics; switching the check off forgets the offset. Timestamps the clients wrote into
+their own logs are left as written, because the offset when they were written is unknown.
 
 ## Reused code
 

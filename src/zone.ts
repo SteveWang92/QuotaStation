@@ -21,6 +21,21 @@ export function currentZone(): string | undefined {
 export const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 
+/**
+ * How far this computer's clock is behind internet time, as the core last measured it.
+ * Countdowns run on [`now`] so they agree with the core, which dates readings the same way.
+ */
+let clockOffsetMs = 0;
+
+export function setClockOffset(offsetMs: number): void {
+  clockOffsetMs = offsetMs;
+}
+
+/** The current time in milliseconds, corrected by the measured clock offset. */
+export function now(): number {
+  return Date.now() + clockOffsetMs;
+}
+
 function parts(epochMs: number) {
   const values: Record<string, string> = {};
   for (const part of new Intl.DateTimeFormat("en-CA", {
@@ -50,7 +65,7 @@ export function hourOf(epochMs: number): string {
 }
 
 export function today(): string {
-  return dateOf(Date.now());
+  return dateOf(now());
 }
 
 /** A calendar date moved by whole days. Dates are labels, so no zone enters this. */

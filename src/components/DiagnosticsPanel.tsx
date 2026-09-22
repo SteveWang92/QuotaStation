@@ -13,6 +13,14 @@ interface DiagnosticsPanelProps {
   interfaceError: string | null;
 }
 
+/** The measured offset as this clock's error: ahead is fast, behind is slow. */
+function formatOffset(offsetMs: number): string {
+  const seconds = Math.abs(offsetMs) / 1_000;
+  if (seconds < 0.5) return "on time";
+  const amount = seconds < 90 ? `${seconds.toFixed(1)} s` : `${Math.round(seconds / 60)} min`;
+  return `${amount} ${offsetMs < 0 ? "fast" : "slow"}`;
+}
+
 const SOURCE_LABELS: Record<LimitWindow["source"], string> = {
   app_server: "App server",
   session_log: "Session log",
@@ -115,6 +123,28 @@ export function DiagnosticsPanel({
           </small>
           {diagnostics.sharedFolder.error ? (
             <small className="diagnostic-error">{diagnostics.sharedFolder.error}</small>
+          ) : null}
+        </div>
+        <div className="diagnostic-item">
+          <span>Clock check</span>
+          <strong
+            className={
+              !diagnostics.clock.enabled
+                ? "pending"
+                : diagnostics.clock.error
+                  ? "failed"
+                  : "succeeded"
+            }
+          >
+            {diagnostics.clock.enabled ? formatOffset(diagnostics.clock.offsetMs) : "not enabled"}
+          </strong>
+          <small>
+            {diagnostics.clock.enabled
+              ? `Last checked ${formatTimestamp(diagnostics.clock.lastCheckedAt)}`
+              : "The clock is not compared with internet time"}
+          </small>
+          {diagnostics.clock.error ? (
+            <small className="diagnostic-error">{diagnostics.clock.error}</small>
           ) : null}
         </div>
         <div className="diagnostic-item">

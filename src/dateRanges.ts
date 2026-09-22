@@ -1,5 +1,5 @@
 import { formatAxisHour, hourDate, LOCALE } from "./format";
-import { addDays, dateOf, HOUR_MS, hourOf, instantOf, today } from "./zone";
+import { addDays, dateOf, HOUR_MS, hourOf, instantOf, now, today } from "./zone";
 
 export type RangePreset = "24h" | "today" | "3d" | "7d" | "30d" | "all" | "custom";
 
@@ -65,7 +65,7 @@ function createWindowRange(): DateRangeSelection {
   return {
     preset: "24h",
     label: `Last ${WINDOW_HOURS} hours`,
-    ...windowEndingAt(instantOf(hourOf(Date.now()))),
+    ...windowEndingAt(instantOf(hourOf(now()))),
   };
 }
 

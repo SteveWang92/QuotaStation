@@ -66,4 +66,5 @@ export const EMPTY_WORKSPACE: WorkspaceSnapshot = {
     level: "unavailable",
     label: "Starting",
   },
+  clockOffsetMs: 0,
 };

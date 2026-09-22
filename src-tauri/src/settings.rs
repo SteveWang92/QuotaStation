@@ -266,6 +266,10 @@ pub struct AppSettings {
     /// follows Windows. See [`crate::clock`].
     #[serde(default)]
     pub time_zone: Option<String>,
+    /// Whether this computer's clock is checked against internet time. Off unless chosen,
+    /// because it is the one request QuotaStation would send of its own.
+    #[serde(default)]
+    pub clock_check: bool,
 }
 
 /// A fresh identity for this machine.
@@ -306,6 +310,7 @@ impl Default for AppSettings {
             quota_disabled_providers: Vec::new(),
             shared_usage_folder: None,
             time_zone: None,
+            clock_check: false,
         }
     }
 }
@@ -490,6 +495,7 @@ mod tests {
             quota_disabled_providers: vec!["codex".to_string()],
             shared_usage_folder: Some("D:\\Sync\\QuotaStation".to_string()),
             time_zone: Some("Europe/London".to_string()),
+            clock_check: true,
         }
     }
 

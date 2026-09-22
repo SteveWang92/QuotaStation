@@ -427,8 +427,10 @@ fn storage_error(error: anyhow::Error) -> String {
     sanitize_error(&error.to_string(), STORAGE_FALLBACK)
 }
 
+/// When a refresh started or finished, by the corrected clock: these date the readings and
+/// restarts it records, which are compared with the server's own times.
 fn now() -> String {
-    jiff::Timestamp::now().to_string()
+    crate::clock::now().to_string()
 }
 
 #[cfg(test)]

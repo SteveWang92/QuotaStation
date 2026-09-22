@@ -11,6 +11,7 @@ on `main`, with the matching section below as its notes.
 
 - The reset history shows which devices detected each quota restart, merging one restart seen by several computers into a single entry.
 - A time zone can be chosen in Settings for every date, hour and time QuotaStation shows, instead of following Windows.
+- An optional check compares the computer's clock with internet time, corrects countdowns and reading times, and warns when the clock is more than two minutes off.
 
 ### Fixed
 

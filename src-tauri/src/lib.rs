@@ -50,6 +50,9 @@ use storage::Storage;
 /// must never change another program's settings.
 const UNINSTALL_CLEANUP_ARG: &str = "--uninstall-cleanup";
 
+/// How often the clock is checked against internet time while that check is on.
+const CLOCK_CHECK_INTERVAL: Duration = Duration::from_secs(2 * 60 * 60);
+
 /// Removes the external commands QuotaStation registered in Claude Code, and reports an
 /// exit code only when this process was started by the uninstaller.
 ///
@@ -707,6 +710,17 @@ pub fn run() {
                     loop {
                         interval.tick().await;
                         refresh::refresh_history(&app_handle, &history_state).await;
+                    }
+                });
+                // At startup and every two hours; with the check off each tick only confirms
+                // the offset is zero and sends nothing. A clock drifts by seconds a day, so
+                // two hours finds a wrong one long before it matters to a countdown.
+                let clock_state = app.state::<Arc<AppState>>().inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(CLOCK_CHECK_INTERVAL);
+                    loop {
+                        interval.tick().await;
+                        clock::refresh_offset(clock_state.settings().clock_check).await;
                     }
                 });
             }

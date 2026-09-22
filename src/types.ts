@@ -155,6 +155,8 @@ export interface ProviderSnapshot {
 export interface WorkspaceSnapshot {
   providers: ProviderSnapshot[];
   aggregate: CompactStatus;
+  /** How far this computer's clock is behind internet time, in milliseconds; 0 unmeasured. */
+  clockOffsetMs: number;
 }
 
 /**
@@ -320,6 +322,13 @@ export interface SharedFolderDiagnostics {
   error: string | null;
 }
 
+export interface ClockDiagnostics {
+  enabled: boolean;
+  offsetMs: number;
+  lastCheckedAt: string | null;
+  error: string | null;
+}
+
 export interface DeviceDiagnostics {
   id: string;
   displayName: string;
@@ -334,6 +343,7 @@ export interface DiagnosticsSnapshot {
   acquisitions: AcquisitionDiagnostics[];
   retention: { status: string; lastCompletedAt: string | null; error: string | null };
   sharedFolder: SharedFolderDiagnostics;
+  clock: ClockDiagnostics;
   devices: DeviceDiagnostics[];
   parserRevision: string;
   pricingCatalogRevision: string;
@@ -432,4 +442,6 @@ export interface AppSettings {
   resolvedTimeZone: string;
   /** The Windows zone, which `timeZone: null` follows. Read-only. */
   systemTimeZone: string;
+  /** Whether this computer's clock is checked against internet time every two hours. */
+  clockCheck: boolean;
 }

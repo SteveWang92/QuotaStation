@@ -183,7 +183,7 @@ struct Reading {
 /// says nothing about the one now running.
 pub fn read_windows() -> Result<Vec<LimitWindow>> {
     let Some(reading) = load_reading()? else { return Ok(Vec::new()) };
-    windows_from(&reading, jiff::Timestamp::now().as_second())
+    windows_from(&reading, crate::clock::now().as_second())
 }
 
 /// When the bridge last recorded a reading, for the interface to explain how current the

@@ -1,5 +1,5 @@
 import type { LimitResetEvent, ResetDetection } from "./types";
-import { currentZone, dateOf, today } from "./zone";
+import { currentZone, dateOf, now, today } from "./zone";
 
 /**
  * The interface is English-only, so every surface formats numbers and dates the same way
@@ -40,7 +40,7 @@ export function formatTimestamp(value: string | null): string {
 }
 
 function countdownParts(epochSeconds: number) {
-  const totalMinutes = Math.floor(Math.max(0, epochSeconds * 1_000 - Date.now()) / 60_000);
+  const totalMinutes = Math.floor(Math.max(0, epochSeconds * 1_000 - now()) / 60_000);
   return {
     days: Math.floor(totalMinutes / 1_440),
     hours: Math.floor((totalMinutes % 1_440) / 60),
@@ -50,7 +50,7 @@ function countdownParts(epochSeconds: number) {
 
 export function formatCountdown(epochSeconds: number | null): string {
   if (epochSeconds === null) return "Unknown";
-  if (epochSeconds * 1_000 <= Date.now()) return "Expired";
+  if (epochSeconds * 1_000 <= now()) return "Expired";
   const { days, hours, minutes } = countdownParts(epochSeconds);
   return days > 0 ? `${days}d ${hours}h ${minutes}m` : `${hours}h ${minutes}m`;
 }
@@ -58,9 +58,20 @@ export function formatCountdown(epochSeconds: number | null): string {
 /** Same countdown truncated for surfaces that only have room for two units. */
 export function formatCompactCountdown(epochSeconds: number | null): string {
   if (epochSeconds === null) return "—";
-  if (epochSeconds * 1_000 <= Date.now()) return "Expired";
+  if (epochSeconds * 1_000 <= now()) return "Expired";
   const { days, hours, minutes } = countdownParts(epochSeconds);
   return days > 0 ? `${days}d ${hours}h` : `${hours}h ${minutes}m`;
+}
+
+/**
+ * How far this computer's clock is off, in words, once it is off by more than two minutes;
+ * nothing below that, where a countdown is still right to the minute it shows.
+ */
+export function formatClockOffset(offsetMs: number): string | null {
+  const minutes = Math.round(Math.abs(offsetMs) / 60_000);
+  if (Math.abs(offsetMs) <= 120_000) return null;
+  // The offset is what has to be added to this clock, so a negative one means it is ahead.
+  return `This computer's clock is ${minutes} min ${offsetMs < 0 ? "fast" : "slow"}`;
 }
 
 /**

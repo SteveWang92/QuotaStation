@@ -205,6 +205,7 @@ mod tests {
                 error: Some("Private computer at C:\\Users\\owner".to_string()),
             },
             shared_folder: SharedFolderDiagnostics::default(),
+            clock: crate::domain::ClockDiagnostics::default(),
             devices: vec![DeviceDiagnostics {
                 id: "secret-device-id".to_string(),
                 display_name: "Private computer".to_string(),

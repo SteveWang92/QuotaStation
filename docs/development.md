@@ -284,6 +284,12 @@ and every 24 hours, never during a refresh, and never issues `VACUUM`.
 
 See [Multi-machine usage](multi-machine.md) for sharing totals between computers.
 
+`settings.json` in the same directory holds the preferences. Two of them change how time is
+read: `timeZone`, an IANA zone name every bucket and displayed time follows (unset follows
+Windows, and an unknown name is refused), and `clockCheck`, off by default, which checks the
+clock against internet time every two hours — see
+[Architecture — Clock check](architecture.md#clock-check).
+
 ## Refresh and diagnostics
 
 The [architecture guide](architecture.md#provider-data) explains where each provider's data

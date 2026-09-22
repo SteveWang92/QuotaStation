@@ -27,6 +27,7 @@ const STORED: AppSettings = {
   timeZone: null,
   resolvedTimeZone: "UTC",
   systemTimeZone: "UTC",
+  clockCheck: false,
 };
 
 /** The settings module keeps one record for the whole window, so each test needs a fresh one. */

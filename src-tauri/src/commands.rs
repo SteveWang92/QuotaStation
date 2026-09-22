@@ -349,6 +349,9 @@ fn settings_changes(previous: &AppSettings, next: &AppSettings) -> Vec<String> {
         changes
             .push(format!("time zone {}", next.time_zone.as_deref().unwrap_or("follows Windows")));
     }
+    if previous.clock_check != next.clock_check {
+        changes.push(format!("clock check {}", on_off(next.clock_check)));
+    }
     if previous.shared_usage_folder != next.shared_usage_folder {
         changes.push(format!(
             "shared usage folder {}",
@@ -372,6 +375,7 @@ pub(crate) async fn set_app_settings(
 ) -> Result<SettingsView, String> {
     let previous = state.settings();
     let zone_changed = previous.time_zone != settings.time_zone;
+    let clock_check_changed = previous.clock_check != settings.clock_check;
     if zone_changed {
         // Refused before anything is saved, so an unknown name never reaches the file.
         if let Some(name) = settings.time_zone.as_deref() {
@@ -435,6 +439,18 @@ pub(crate) async fn set_app_settings(
                 refresh::refresh_live_for_provider(&app_handle, &refresh_state, provider).await;
             });
         }
+    }
+    if clock_check_changed {
+        // Switched on, the offset is measured now rather than at the next two-hourly check;
+        // switched off, it is forgotten at once. Either way the countdowns move, so the
+        // snapshot carrying the offset is published again.
+        let check_app = app.clone();
+        let check_state = state.inner().clone();
+        let enabled = updated.clock_check;
+        tauri::async_runtime::spawn(async move {
+            crate::clock::refresh_offset(enabled).await;
+            refresh::republish(&check_app, &check_state).await;
+        });
     }
     // Every window holds its own copy of the settings, read when it was created. The
     // dialog lives in one of them, so without this the others go on drawing the preference
@@ -565,11 +581,18 @@ async fn collect_diagnostics(
             restart_count: device.restart_count.unsigned_abs(),
         })
         .collect();
+    let check = crate::clock::last_check();
     Ok(DiagnosticsSnapshot {
         watcher: state.watcher_diagnostics.read().await.clone(),
         acquisitions,
         retention,
         shared_folder: state.shared_folder_diagnostics.read().await.clone(),
+        clock: domain::ClockDiagnostics {
+            enabled: settings.clock_check,
+            offset_ms: crate::clock::offset_ms(),
+            last_checked_at: check.last_checked_at,
+            error: check.error,
+        },
         devices,
         parser_revision: domain::CCUSAGE_REVISION.to_string(),
         pricing_catalog_revision: domain::PRICING_CATALOG_REVISION.to_string(),

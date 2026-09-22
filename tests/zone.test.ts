@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { calendarHours } from "../src/charts";
 import { createPresetRange } from "../src/dateRanges";
-import { formatResetTimestamp, formatShortMoment } from "../src/format";
-import { dateOf, instantOf, setZone } from "../src/zone";
+import {
+  formatClockOffset,
+  formatCountdown,
+  formatResetTimestamp,
+  formatShortMoment,
+} from "../src/format";
+import { dateOf, instantOf, setClockOffset, setZone } from "../src/zone";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -58,5 +63,24 @@ describe("the application zone", () => {
     setZone("Australia/Sydney");
     expect(instantOf("2026-04-05T02:00")).toBe(Date.UTC(2026, 3, 4, 15));
     expect(instantOf("2026-04-05T04:00")).toBe(Date.UTC(2026, 3, 4, 18));
+  });
+});
+
+describe("the corrected clock", () => {
+  it("counts a window down against internet time rather than a fast local clock", () => {
+    vi.useFakeTimers();
+    // This clock reads 12:10 but the true time is 12:00, and the window resets at 12:05.
+    vi.setSystemTime(Date.UTC(2026, 5, 1, 12, 10));
+    const resetsAt = Date.UTC(2026, 5, 1, 12, 5) / 1_000;
+    expect(formatCountdown(resetsAt)).toBe("Expired");
+    setClockOffset(-600_000);
+    expect(formatCountdown(resetsAt)).toBe("0h 5m");
+    setClockOffset(0);
+  });
+
+  it("warns about a clock more than two minutes off, and only then", () => {
+    expect(formatClockOffset(-420_000)).toBe("This computer's clock is 7 min fast");
+    expect(formatClockOffset(180_000)).toBe("This computer's clock is 3 min slow");
+    expect(formatClockOffset(-60_000)).toBeNull();
   });
 });
