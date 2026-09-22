@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude usage above 100% in low-priority mode is shown as reported instead of marking the Claude reading stale.
+
 ## [1.2.0] - 2026-09-13
 
 ### Added

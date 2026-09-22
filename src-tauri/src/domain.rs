@@ -28,6 +28,11 @@ pub enum CompactStatusLevel {
 pub const WARNING_PERCENT: f64 = 70.0;
 pub const CRITICAL_PERCENT: f64 = 90.0;
 
+/// The largest share a provider may report for a window. Claude Code's low-priority mode
+/// keeps a session working past the limit, so a reading above 100 is real usage rather
+/// than a broken payload; this ceiling only rejects a figure no provider would publish.
+pub const MAX_USED_PERCENT: f64 = 200.0;
+
 /// How loud one window's own reading is.
 ///
 /// The core says which of the three a reading has earned and stops there. What each level

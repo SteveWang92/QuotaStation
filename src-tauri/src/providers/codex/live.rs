@@ -16,7 +16,8 @@ use tokio::{
 
 use crate::{
     domain::{
-        Freshness, LimitKind, LimitWindow, LiveSnapshot, PaceLevel, QuotaLevel, WindowSource,
+        Freshness, LimitKind, LimitWindow, LiveSnapshot, MAX_USED_PERCENT, PaceLevel, QuotaLevel,
+        WindowSource,
     },
     providers::{ProviderKind, SignInRequired, is_sign_in_required},
 };
@@ -249,7 +250,7 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
             .get("resetsAt")
             .and_then(Value::as_i64)
             .with_context(|| format!("schema_incompatible: {field} bucket omitted resetsAt"))?;
-        if !used_percent.is_finite() || !(0.0..=100.0).contains(&used_percent) {
+        if !used_percent.is_finite() || !(0.0..=MAX_USED_PERCENT).contains(&used_percent) {
             bail!("schema_incompatible: {field} bucket has an invalid percentage");
         }
         if resets_at < observed_at - 60 || resets_at > observed_at + minutes * 60 * 2 {

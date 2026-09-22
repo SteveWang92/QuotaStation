@@ -21,7 +21,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState,
-    domain::{CCUSAGE_REVISION, DeviceUsageRow, SharedFolderDiagnostics, SharedResetEvent},
+    domain::{
+        CCUSAGE_REVISION, DeviceUsageRow, MAX_USED_PERCENT, SharedFolderDiagnostics,
+        SharedResetEvent,
+    },
     resets::MAX_WINDOW_DURATION_MINS,
     sanitize::sanitize_error,
     storage::DeviceImport,
@@ -250,7 +253,7 @@ fn check_resets(resets: &[SharedResetEvent]) -> Result<()> {
         );
         anyhow::ensure!(
             (1..=MAX_WINDOW_DURATION_MINS).contains(&reset.window_duration_mins)
-                && (0.0..=100.0).contains(&reset.used_percent_before),
+                && (0.0..=MAX_USED_PERCENT).contains(&reset.used_percent_before),
             "carries invalid reset values"
         );
         let duration_seconds = reset.window_duration_mins.checked_mul(60);

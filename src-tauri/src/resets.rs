@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::domain::{LimitKind, LimitResetEvent, ResetClassification};
+use crate::domain::{LimitKind, LimitResetEvent, MAX_USED_PERCENT, ResetClassification};
 
 /// A window restarted more than this long before its published expiry did not restart on
 /// the schedule Codex advertised. Two hours absorbs the polling interval and the drift
@@ -47,8 +47,8 @@ pub struct WindowObservation {
 /// which is what a window is, rather than by the slot Codex published it in.
 pub fn detect(previous: WindowObservation, current: WindowObservation) -> Option<LimitResetEvent> {
     if current.observed_at < previous.observed_at
-        || !(0.0..=100.0).contains(&previous.used_percent)
-        || !(0.0..=100.0).contains(&current.used_percent)
+        || !(0.0..=MAX_USED_PERCENT).contains(&previous.used_percent)
+        || !(0.0..=MAX_USED_PERCENT).contains(&current.used_percent)
         || !(1..=MAX_WINDOW_DURATION_MINS).contains(&current.window_duration_mins)
     {
         return None;
@@ -153,6 +153,15 @@ mod tests {
         let previous = observation(1_000_000, 52.0, 1_000_000 + 4 * 86_400);
         let current = observation(1_010_000, 2.0, 1_009_000 + WEEK_SECONDS);
         assert!(detect(previous, current).is_some());
+    }
+
+    #[test]
+    fn a_window_used_past_its_limit_still_records_its_restart() {
+        let expiry = 1_000_000;
+        let previous = observation(expiry - 600, 104.0, expiry);
+        let current = observation(expiry + 600, 0.0, expiry + 300 + WEEK_SECONDS);
+        let event = detect(previous, current).expect("low-priority usage still restarts");
+        assert_eq!(event.used_percent_before, 104.0);
     }
 
     #[test]

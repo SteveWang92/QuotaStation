@@ -27,8 +27,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    CRITICAL_PERCENT, Freshness, LimitKind, LimitWindow, PaceLevel, QuotaLevel, WARNING_PERCENT,
-    WindowSource, pace_level,
+    CRITICAL_PERCENT, Freshness, LimitKind, LimitWindow, MAX_USED_PERCENT, PaceLevel, QuotaLevel,
+    WARNING_PERCENT, WindowSource, pace_level,
 };
 use crate::providers::ProviderKind;
 use crate::settings::{
@@ -160,7 +160,8 @@ struct RateLimits {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 struct Bucket {
-    /// Percentage of the window consumed, from 0 to 100.
+    /// Percentage of the window consumed, above 100 while low-priority mode runs past the
+    /// limit.
     used_percentage: Option<f64>,
     /// Epoch seconds at which the window restarts.
     resets_at: Option<i64>,
@@ -210,7 +211,7 @@ fn windows_from(reading: &Reading, now: i64) -> Result<Vec<LimitWindow>> {
         let Some(resets_at) = bucket.resets_at else {
             bail!("schema_incompatible: status-line bucket omitted reset time");
         };
-        if !used_percent.is_finite() || !(0.0..=100.0).contains(&used_percent) {
+        if !used_percent.is_finite() || !(0.0..=MAX_USED_PERCENT).contains(&used_percent) {
             bail!("schema_incompatible: invalid status-line percentage");
         }
         if resets_at <= now {
@@ -648,13 +649,13 @@ fn bar(used: f64) -> String {
 /// inside the colour, so the arrow reads as part of the number rather than as a symbol
 /// standing between two columns.
 fn window_text(window: &QuotaWindow, format: QuotaFormat, colour: bool, now: i64) -> String {
-    let used = window.used_percent.clamp(0.0, 100.0);
+    let used = window.used_percent.clamp(0.0, MAX_USED_PERCENT);
     let mut values = Vec::new();
     if format.used {
         values.push(format!("{used:.0}%"));
     }
     if format.remaining {
-        values.push(format!("{:.0}% left", 100.0 - used));
+        values.push(format!("{:.0}% left", (100.0 - used).max(0.0)));
     }
     let marker = format.pace.then(|| pace_marker(window, now)).flatten();
     if let (Some(first), Some(marker)) = (values.first_mut(), marker) {
@@ -964,7 +965,7 @@ fn windows_from_payload(limits: Option<&RateLimits>) -> Vec<QuotaWindow> {
         let bucket = bucket?;
         Some(QuotaWindow {
             label: label.to_string(),
-            used_percent: bucket.used_percentage?.clamp(0.0, 100.0),
+            used_percent: bucket.used_percentage?.clamp(0.0, MAX_USED_PERCENT),
             resets_at: bucket.resets_at,
             window_minutes: Some(minutes),
         })
@@ -1294,6 +1295,16 @@ mod tests {
         let now = 1_800_000_000;
         let old = Reading { observed_at: now - MAX_READING_AGE_SECS - 1, ..reading(now) };
         assert!(windows_from(&old, now).expect("old reading is ignored").is_empty());
+    }
+
+    #[test]
+    fn usage_past_the_limit_in_low_priority_mode_is_kept_as_reported() {
+        let now = 1_800_000_000;
+        let mut over = reading(now);
+        over.five_hour =
+            Some(Bucket { used_percentage: Some(101.0), resets_at: Some(now + 3_600) });
+        let windows = windows_from(&over, now).expect("an over-limit reading is valid");
+        assert_eq!(windows[0].used_percent, Some(101.0));
     }
 
     #[test]
