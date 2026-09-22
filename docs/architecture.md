@@ -137,9 +137,11 @@ Instants are stored in UTC. Only the hour and day a piece of usage is filed unde
 time a surface shows, depend on a time zone, and both follow the application zone: the one
 chosen in **Settings → General**, or the Windows zone when none is chosen. The core computes
 every bucket key and day boundary itself rather than asking SQLite, whose local time can only
-mean the Windows zone. When the zone changes, the next complete parse replaces the affected
-provider's hourly and daily rows in one transaction, and rows imported from other devices are
-read again, so hours from two zones are never mixed.
+mean the Windows zone. When the zone changes, the next complete parse rebuilds the affected
+provider's hourly rows and every daily row the session logs still reach, in one transaction,
+and rows imported from other devices are read again, so hours from two zones are never mixed.
+A day older than the logs — Claude Code deletes old transcripts — cannot be rebuilt and keeps
+the date it was filed under rather than being discarded.
 
 The zone setting corrects how times are displayed and bucketed, not the clock itself. If the
 computer's clock is wrong in UTC, the timestamps Codex and Claude Code write into their logs

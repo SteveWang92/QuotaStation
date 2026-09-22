@@ -64,18 +64,43 @@ impl Storage {
                 .fetch_one(&mut *tx)
                 .await?;
         if previous_timezone.as_deref().is_some_and(|previous| previous != aggregation_timezone) {
-            // Every device's rows go, not just this machine's: an imported row is keyed by
-            // the local hour it was aggregated in, and this machine has just changed which
-            // hours those are. Forgetting where each device's file stood is what brings the
-            // others back — the next refresh reads every one of them again and re-checks it
-            // against the zone now in force.
+            // Every other device's rows go: an imported row is keyed by the local hour it was
+            // aggregated in, and this machine has just changed which hours those are.
+            // Forgetting where each device's file stood is what brings the others back — the
+            // next refresh reads every one of them again and re-checks it against the zone now
+            // in force.
             for table in ["daily_usage", "hourly_usage"] {
-                sqlx::query(&format!("DELETE FROM {table} WHERE provider_instance_id = ?"))
-                    .bind(provider_id)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query(&format!(
+                    "DELETE FROM {table} WHERE provider_instance_id = ? AND device <> ?"
+                ))
+                .bind(provider_id)
+                .bind(LOCAL_DEVICE)
+                .execute(&mut *tx)
+                .await?;
             }
             sqlx::query("UPDATE devices SET source_modified_at = NULL").execute(&mut *tx).await?;
+            // This machine's rows are rebuilt from its logs as far back as the logs still
+            // reach, which is the earliest day this parse produced. The hourly window is far
+            // shorter than any log is kept, so all of it is rebuilt. A day before the logs
+            // reach — Claude Code deletes old transcripts — has nothing left to rebuild it
+            // from, so it keeps the date it was filed under rather than being lost; only the
+            // hours either side of its midnight can sit on the neighbouring day.
+            sqlx::query("DELETE FROM hourly_usage WHERE provider_instance_id = ? AND device = ?")
+                .bind(provider_id)
+                .bind(LOCAL_DEVICE)
+                .execute(&mut *tx)
+                .await?;
+            if let Some(first) = history.days.iter().map(|day| day.date.as_str()).min() {
+                sqlx::query(
+                    "DELETE FROM daily_usage WHERE provider_instance_id = ? AND device = ? \
+                     AND usage_date >= ?",
+                )
+                .bind(provider_id)
+                .bind(LOCAL_DEVICE)
+                .bind(first)
+                .execute(&mut *tx)
+                .await?;
+            }
         }
         sqlx::query(
             "UPDATE provider_instances SET parser_revision = ?, aggregation_timezone = ?, \

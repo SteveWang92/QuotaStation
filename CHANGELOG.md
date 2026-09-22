@@ -17,6 +17,7 @@ on `main`, with the matching section below as its notes.
 
 - Claude usage above 100% in low-priority mode is shown as reported instead of marking the Claude reading stale.
 - Quota restarts from a computer set to a different time zone are shared instead of being refused along with its usage.
+- A time zone change keeps the usage of days whose session logs have since been deleted instead of discarding it.
 
 ## [1.2.0] - 2026-09-13
 

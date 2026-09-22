@@ -589,14 +589,19 @@ async fn imported_usage_makes_a_provider_available_without_local_history() {
 async fn a_timezone_change_rebuilds_provider_history_without_old_date_buckets() {
     let (storage, _database) = open_storage().await;
     let first = HistorySnapshot {
-        days: vec![day("2026-08-01", "gpt-5", 100), day("2026-08-02", "gpt-5", 200)],
-        hours: Vec::new(),
+        days: vec![
+            day("2026-08-01", "gpt-5", 100),
+            day("2026-08-02", "gpt-5", 200),
+            day("2026-08-03", "gpt-5", 50),
+        ],
+        hours: vec![hour("2026-08-03T23:00", "gpt-5", 50)],
     };
     storage
         .save_history(CODEX, &first, "Australia/Brisbane", "2026-08-02T00:00:00Z")
         .await
         .expect("save Brisbane history");
 
+    // The logs now reach back to 2 August only, and 3 August has no usage in New York terms.
     let rebucketed =
         HistorySnapshot { days: vec![day("2026-08-02", "gpt-5", 250)], hours: Vec::new() };
     storage
@@ -605,12 +610,19 @@ async fn a_timezone_change_rebuilds_provider_history_without_old_date_buckets() 
         .expect("rebuild New York history");
 
     let range = storage
-        .load_usage_range(Some(CODEX), None, "2026-08-01", "2026-08-02")
+        .load_usage_range(Some(CODEX), None, "2026-08-01", "2026-08-03")
         .await
         .expect("load range");
-    assert_eq!(range.days.len(), 1, "rows bucketed in the previous timezone must not survive");
-    assert_eq!(range.days[0].date, "2026-08-02");
-    assert_eq!(range.days[0].usage.total, 250);
+    assert_eq!(
+        range.days.iter().map(|day| (day.date.as_str(), day.usage.total)).collect::<Vec<_>>(),
+        [("2026-08-01", 100), ("2026-08-02", 250)],
+        "days the logs reach are rebuilt, and a day before them is kept rather than lost"
+    );
+    let hours = storage
+        .load_usage_hours(Some(CODEX), None, "2026-08-01", "2026-08-03")
+        .await
+        .expect("load hours");
+    assert!(hours.hours.is_empty(), "no hour keyed in the previous zone survives");
 }
 
 #[tokio::test]
@@ -1331,4 +1343,77 @@ async fn quota_history_follows_the_chosen_zone_rather_than_the_windows_one() {
     assert!(first.windows.is_empty() && first.resets.is_empty(), "nothing happened on 1 June");
     assert_eq!(second.windows[0].points[0].date, "2026-06-02");
     assert_eq!(second.resets.len(), 1, "the restart falls on the Auckland day");
+}
+
+/// A restart recorded before detections were attributed is this machine's when its own
+/// readings on both sides of the restart are still stored, and stays unattributed when they
+/// are not — that one was read in from another device.
+#[tokio::test]
+async fn an_earlier_restart_this_machine_has_the_readings_for_becomes_its_own() {
+    let (storage, _database) = open_storage().await;
+    let provider_id = storage.provider_id(CODEX).await.expect("read provider id");
+    for (anchor, previous) in
+        [(1_800_000_000_i64, 1_800_003_600_i64), (1_800_100_000, 1_800_103_600)]
+    {
+        let reset_id: i64 = sqlx::query_scalar(
+            "INSERT INTO limit_resets (provider_instance_id, window_kind, window_duration_mins, \
+             anchored_at, new_resets_at, previous_resets_at, used_percent_before, early_by_seconds, \
+             classification, source, detected_at) \
+             VALUES (?, 'primary', 300, ?, ?, ?, 70.0, 3600, 'scheduled', 'live', 'x') RETURNING id",
+        )
+        .bind(provider_id)
+        .bind(anchor)
+        .bind(anchor + 18_000)
+        .bind(previous)
+        .fetch_one(&storage.pool)
+        .await
+        .expect("record an earlier restart");
+        sqlx::query(
+            "INSERT INTO limit_reset_observations (reset_id, provider_instance_id, device, \
+             window_kind, window_duration_mins, anchored_at, new_resets_at, previous_resets_at, \
+             used_percent_before, early_by_seconds, classification, source, detected_at) \
+             SELECT id, provider_instance_id, NULL, window_kind, window_duration_mins, anchored_at, \
+             new_resets_at, previous_resets_at, used_percent_before, early_by_seconds, \
+             classification, source, detected_at FROM limit_resets WHERE id = ?",
+        )
+        .bind(reset_id)
+        .execute(&storage.pool)
+        .await
+        .expect("as the upgrade left it");
+    }
+    // This machine read the first window before and after its restart, and nothing of the
+    // second.
+    for (observed, resets_at) in
+        [(1_799_999_700_i64, 1_800_003_600_i64), (1_800_000_300, 1_800_018_000)]
+    {
+        sqlx::query(
+            "INSERT INTO limit_samples (provider_instance_id, window_kind, used_percent, \
+             window_duration_mins, resets_at, observed_at) VALUES (?, 'primary', 50.0, 300, ?, ?)",
+        )
+        .bind(provider_id)
+        .bind(resets_at)
+        .bind(jiff::Timestamp::from_second(observed).expect("an instant").to_string())
+        .execute(&storage.pool)
+        .await
+        .expect("store a reading");
+    }
+
+    sqlx::raw_sql(include_str!("../../migrations/0017_attribute_earlier_restarts.sql"))
+        .execute(&storage.pool)
+        .await
+        .expect("attribute the earlier restarts");
+
+    let events = storage.load_reset_history(CODEX).await.expect("load resets");
+    let first = events.iter().find(|event| event.anchored_at == 1_800_000_000).expect("first");
+    let second = events.iter().find(|event| event.anchored_at == 1_800_100_000).expect("second");
+    assert!(first.detections[0].local, "this machine's readings prove it saw the first");
+    let bracket: (Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT bracket_start, bracket_end FROM limit_reset_observations WHERE anchored_at = ?",
+    )
+    .bind(1_800_000_000_i64)
+    .fetch_one(&storage.pool)
+    .await
+    .expect("read the bracket");
+    assert_eq!(bracket, (Some(1_799_999_700), Some(1_800_000_300)));
+    assert_eq!(second.detections[0].device_name, None, "the second is another device's");
 }
