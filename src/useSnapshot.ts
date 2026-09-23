@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { errorMessage } from "./errors";
 import type { WorkspaceSnapshot } from "./types";
 import { onScreen } from "./visible";
+import { setClockOffset } from "./zone";
 
 const POLL_INTERVAL_MS = 30_000;
 const FIRST_RETRY_MS = 250;
@@ -40,6 +41,8 @@ export function useSnapshot(
     let retryDelay = FIRST_RETRY_MS;
 
     const apply = (next: WorkspaceSnapshot) => {
+      // Before the state changes, so the countdowns the new snapshot draws run on it.
+      setClockOffset(next.clockOffsetMs);
       setSnapshot(next);
       setLoaded(true);
       setError(null);

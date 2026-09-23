@@ -64,18 +64,43 @@ impl Storage {
                 .fetch_one(&mut *tx)
                 .await?;
         if previous_timezone.as_deref().is_some_and(|previous| previous != aggregation_timezone) {
-            // Every device's rows go, not just this machine's: an imported row is keyed by
-            // the local hour it was aggregated in, and this machine has just changed which
-            // hours those are. Forgetting where each device's file stood is what brings the
-            // others back — the next refresh reads every one of them again and re-checks it
-            // against the zone now in force.
+            // Every other device's rows go: an imported row is keyed by the local hour it was
+            // aggregated in, and this machine has just changed which hours those are.
+            // Forgetting where each device's file stood is what brings the others back — the
+            // next refresh reads every one of them again and re-checks it against the zone now
+            // in force.
             for table in ["daily_usage", "hourly_usage"] {
-                sqlx::query(&format!("DELETE FROM {table} WHERE provider_instance_id = ?"))
-                    .bind(provider_id)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query(&format!(
+                    "DELETE FROM {table} WHERE provider_instance_id = ? AND device <> ?"
+                ))
+                .bind(provider_id)
+                .bind(LOCAL_DEVICE)
+                .execute(&mut *tx)
+                .await?;
             }
             sqlx::query("UPDATE devices SET source_modified_at = NULL").execute(&mut *tx).await?;
+            // This machine's rows are rebuilt from its logs as far back as the logs still
+            // reach, which is the earliest day this parse produced. The hourly window is far
+            // shorter than any log is kept, so all of it is rebuilt. A day before the logs
+            // reach — Claude Code deletes old transcripts — has nothing left to rebuild it
+            // from, so it keeps the date it was filed under rather than being lost; only the
+            // hours either side of its midnight can sit on the neighbouring day.
+            sqlx::query("DELETE FROM hourly_usage WHERE provider_instance_id = ? AND device = ?")
+                .bind(provider_id)
+                .bind(LOCAL_DEVICE)
+                .execute(&mut *tx)
+                .await?;
+            if let Some(first) = history.days.iter().map(|day| day.date.as_str()).min() {
+                sqlx::query(
+                    "DELETE FROM daily_usage WHERE provider_instance_id = ? AND device = ? \
+                     AND usage_date >= ?",
+                )
+                .bind(provider_id)
+                .bind(LOCAL_DEVICE)
+                .bind(first)
+                .execute(&mut *tx)
+                .await?;
+            }
         }
         sqlx::query(
             "UPDATE provider_instances SET parser_revision = ?, aggregation_timezone = ?, \
@@ -262,8 +287,8 @@ impl Storage {
     /// Every session that started inside a range, newest first, with the costs of the
     /// comparable ones summed. `None` is the combined view, as it is for usage.
     ///
-    /// The range is read in local days like every other history query, because the dates
-    /// on screen are the ones the reader picked in their own timezone.
+    /// The range is read in the application zone's days like every other history query,
+    /// because the dates on screen are the ones the reader picked in that zone.
     pub async fn session_costs(
         &self,
         provider: Option<ProviderKind>,
@@ -274,6 +299,8 @@ impl Storage {
             Some(kind) => Some(self.provider_id(kind).await?),
             None => None,
         };
+        let from = crate::clock::day_start(jiff::civil::Date::from_str(start_date)?)?;
+        let until = crate::clock::day_start(jiff::civil::Date::from_str(end_date)?.tomorrow()?)?;
         let rows = sqlx::query(
             "SELECT session_id, session_started_at, duration_ms, computed_cost_usd, \
              independent, reported_cost_usd, reported_complete, api_duration_ms, lines_added, \
@@ -281,13 +308,13 @@ impl Storage {
              total_tokens, models \
              FROM session_costs \
              WHERE (? IS NULL OR provider_instance_id = ?) \
-             AND date(session_started_at, 'localtime') BETWEEN ? AND ? \
+             AND unixepoch(session_started_at) >= ? AND unixepoch(session_started_at) < ? \
              ORDER BY session_started_at DESC",
         )
         .bind(provider_id)
         .bind(provider_id)
-        .bind(start_date)
-        .bind(end_date)
+        .bind(from)
+        .bind(until)
         .fetch_all(&self.pool)
         .await?;
         let sessions: Vec<SessionCost> = rows.iter().map(session_cost_from_row).collect();

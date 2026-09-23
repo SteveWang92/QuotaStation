@@ -1,4 +1,5 @@
 import { formatAxisHour, hourDate, LOCALE } from "./format";
+import { addDays, dateOf, HOUR_MS, hourOf, instantOf, now, today } from "./zone";
 
 export type RangePreset = "24h" | "today" | "3d" | "7d" | "30d" | "all" | "custom";
 
@@ -33,36 +34,38 @@ export interface DateRangeSelection {
   endHour?: string;
 }
 
-/** A calendar day in the machine's own time zone, which is how every stored date is dated. */
+/** A calendar day in the application zone, which is how every stored date is dated. */
 export function toLocalDateString(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return dateOf(date.getTime());
 }
 
 export function todayString(): string {
-  return toLocalDateString(new Date());
+  return today();
 }
 
-/** The local hour a moment falls in, which is how every stored hourly bucket is keyed. */
+/** The hour a moment falls in, in the application zone, which is how every stored hourly
+ * bucket is keyed. */
 export function toLocalHourString(date: Date): string {
-  return `${toLocalDateString(date)}T${String(date.getHours()).padStart(2, "0")}:00`;
+  return hourOf(date.getTime());
+}
+
+/** A window of [`WINDOW_HOURS`] hours ending with the hour that opened at `endHourStart`. */
+function windowEndingAt(endHourStart: number) {
+  const start = endHourStart - (WINDOW_HOURS - 1) * HOUR_MS;
+  return {
+    startDate: dateOf(start),
+    endDate: dateOf(endHourStart),
+    startHour: hourOf(start),
+    endHour: hourOf(endHourStart),
+  };
 }
 
 /** The last [`WINDOW_HOURS`] hours, ending with the hour in progress. */
 function createWindowRange(): DateRangeSelection {
-  const end = new Date();
-  end.setMinutes(0, 0, 0);
-  const start = new Date(end);
-  start.setHours(end.getHours() - WINDOW_HOURS + 1);
   return {
     preset: "24h",
     label: `Last ${WINDOW_HOURS} hours`,
-    startDate: toLocalDateString(start),
-    endDate: toLocalDateString(end),
-    startHour: toLocalHourString(start),
-    endHour: toLocalHourString(end),
+    ...windowEndingAt(instantOf(hourOf(now()))),
   };
 }
 
@@ -70,14 +73,12 @@ export function createPresetRange(preset: Exclude<RangePreset, "custom">): DateR
   if (preset === "24h") return createWindowRange();
   if (preset === "all") return createAllRange(todayString());
   const days = preset === "today" ? 1 : Number.parseInt(preset, 10);
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(end.getDate() - days + 1);
+  const end = today();
   return {
     preset,
     label: preset === "today" ? "Today" : `Last ${days} days`,
-    startDate: toLocalDateString(start),
-    endDate: toLocalDateString(end),
+    startDate: addDays(end, -(days - 1)),
+    endDate: end,
   };
 }
 
@@ -142,12 +143,15 @@ export function hasRolledOver(selection: DateRangeSelection): boolean {
   );
 }
 
+/** A calendar date is a label rather than an instant, so it is written out in UTC, where
+ * the label and the instant agree. */
 export function formatRangeDate(value: string): string {
   return new Intl.DateTimeFormat(LOCALE, {
     day: "numeric",
     month: "short",
     year: "numeric",
-  }).format(new Date(`${value}T00:00:00`));
+    timeZone: "UTC",
+  }).format(new Date(`${value}T00:00:00Z`));
 }
 
 /** An hour bucket named in full, for example 3 Aug 2026, 14:00. */
@@ -167,24 +171,9 @@ export function previousPeriod(selection: DateRangeSelection): {
   endHour?: string;
 } {
   if (selection.startHour !== undefined) {
-    const start = new Date(`${selection.startHour}:00`);
-    const end = new Date(start);
-    end.setHours(start.getHours() - 1);
-    const earlierStart = new Date(end);
-    earlierStart.setHours(end.getHours() - WINDOW_HOURS + 1);
-    return {
-      startDate: toLocalDateString(earlierStart),
-      endDate: toLocalDateString(end),
-      startHour: toLocalHourString(earlierStart),
-      endHour: toLocalHourString(end),
-    };
+    return windowEndingAt(instantOf(selection.startHour) - HOUR_MS);
   }
-  const start = new Date(`${selection.startDate}T00:00:00`);
-  const end = new Date(`${selection.endDate}T00:00:00`);
-  const length = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;
-  const previousEnd = new Date(start);
-  previousEnd.setDate(start.getDate() - 1);
-  const previousStart = new Date(previousEnd);
-  previousStart.setDate(previousEnd.getDate() - length + 1);
-  return { startDate: toLocalDateString(previousStart), endDate: toLocalDateString(previousEnd) };
+  const length = rangeLengthInDays(selection.startDate, selection.endDate);
+  const previousEnd = addDays(selection.startDate, -1);
+  return { startDate: addDays(previousEnd, -(length - 1)), endDate: previousEnd };
 }

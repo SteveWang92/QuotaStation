@@ -65,6 +65,20 @@ export interface LimitResetEvent {
   tokensInWindow: number | null;
   earlyBySeconds: number;
   classification: "scheduled" | "unplanned";
+  /** How far apart the detections place the restart: the latest anchor minus the earliest. */
+  anchorSpreadSeconds: number;
+  /** Every device's detection of this restart, the one the fields above come from first. */
+  detections: ResetDetection[];
+}
+
+/** One device's detection of a restart, with that device's own judgement of it. */
+export interface ResetDetection {
+  /** `null` for a restart recorded before detections were attributed to a device. */
+  deviceName: string | null;
+  local: boolean;
+  source: "live" | "backfill";
+  anchoredAt: number;
+  classification: "scheduled" | "unplanned";
 }
 
 export interface ModelUsage {
@@ -141,6 +155,8 @@ export interface ProviderSnapshot {
 export interface WorkspaceSnapshot {
   providers: ProviderSnapshot[];
   aggregate: CompactStatus;
+  /** How far this computer's clock is behind internet time, in milliseconds; 0 unmeasured. */
+  clockOffsetMs: number;
 }
 
 /**
@@ -306,11 +322,20 @@ export interface SharedFolderDiagnostics {
   error: string | null;
 }
 
+export interface ClockDiagnostics {
+  enabled: boolean;
+  offsetMs: number;
+  lastCheckedAt: string | null;
+  error: string | null;
+}
+
 export interface DeviceDiagnostics {
   id: string;
   displayName: string;
   local: boolean;
   lastImportAt: string | null;
+  /** How many quota restarts this device detected, as far as this machine knows. */
+  restartCount: number;
 }
 
 export interface DiagnosticsSnapshot {
@@ -318,6 +343,7 @@ export interface DiagnosticsSnapshot {
   acquisitions: AcquisitionDiagnostics[];
   retention: { status: string; lastCompletedAt: string | null; error: string | null };
   sharedFolder: SharedFolderDiagnostics;
+  clock: ClockDiagnostics;
   devices: DeviceDiagnostics[];
   parserRevision: string;
   pricingCatalogRevision: string;
@@ -410,4 +436,12 @@ export interface AppSettings {
   quotaDisabledProviders: string[];
   /** Folder whose aggregate-only usage files are exchanged with other devices. */
   sharedUsageFolder: string | null;
+  /** The IANA zone chosen for every bucket and displayed time, or null to follow Windows. */
+  timeZone: string | null;
+  /** The zone in force, as the core resolved it. Read-only: not a choice. */
+  resolvedTimeZone: string;
+  /** The Windows zone, which `timeZone: null` follows. Read-only. */
+  systemTimeZone: string;
+  /** Whether this computer's clock is checked against internet time every two hours. */
+  clockCheck: boolean;
 }

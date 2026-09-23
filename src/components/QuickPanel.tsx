@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { logActivity } from "../activity";
 import { useAppSettings } from "../appSettings";
 import { bandGeometry } from "../charts";
-import { toLocalDateString } from "../dateRanges";
+
 import { errorMessage } from "../errors";
 import {
   formatAxisDate,
@@ -13,12 +13,14 @@ import {
   formatDelta,
   formatNumber,
   formatResetTimestamp,
+  formatSeenOn,
   formatShortMoment,
   formatWindowBadge,
 } from "../format";
 import { statusColor } from "../theme";
 import type { ProviderSnapshot, WorkspaceSnapshot } from "../types";
 import { useSnapshot } from "../useSnapshot";
+import { addDays, today } from "../zone";
 import { ProviderSetup } from "./ProviderSetup";
 import { QuotaGlanceRow } from "./QuotaGlanceRow";
 import { QuotaSection } from "./QuotaSection";
@@ -44,13 +46,8 @@ function CompactTrend({ snapshot }: { snapshot: ProviderSnapshot }) {
   // below it already does.
   if (peak === 0) return null;
   const { barWidth, left } = bandGeometry(TREND_WIDTH, totals.length, TREND_WIDTH);
-  const midnight = new Date();
-  midnight.setHours(0, 0, 0, 0);
-  const dayOf = (index: number) => {
-    const date = new Date(midnight);
-    date.setDate(date.getDate() - (totals.length - 1 - index));
-    return formatAxisDate(toLocalDateString(date));
-  };
+  const last = today();
+  const dayOf = (index: number) => formatAxisDate(addDays(last, index - (totals.length - 1)));
   return (
     <svg
       className="quick-trend"
@@ -91,10 +88,11 @@ function CompactRestart({ snapshot }: { snapshot: ProviderSnapshot }) {
   const restart = snapshot.recentResets[0];
   if (!restart) return null;
   const before = `${Math.round(restart.usedPercentBefore)}%`;
+  const seenOn = formatSeenOn(restart);
   return (
     <p
       className="quick-restart"
-      title={`${restart.windowLabel} restarted ${formatResetTimestamp(restart.anchoredAt)} at ${before} used`}
+      title={`${restart.windowLabel} restarted ${formatResetTimestamp(restart.anchoredAt)} at ${before} used${seenOn ? ` · ${seenOn}` : ""}`}
     >
       <span>Restart</span>
       <strong>{formatWindowBadge(restart.windowDurationMins, restart.windowLabel)}</strong>

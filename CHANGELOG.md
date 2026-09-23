@@ -7,6 +7,20 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-23
+
+### Added
+
+- The reset history shows which devices detected each quota restart, merging one restart seen by several computers into a single entry.
+- A time zone can be chosen in Settings for every date, hour and time QuotaStation shows, instead of following Windows.
+- An optional check compares the computer's clock with internet time, corrects countdowns and reading times, and warns when the clock is more than two minutes off.
+
+### Fixed
+
+- Claude usage above 100% in low-priority mode is shown as reported instead of marking the Claude reading stale.
+- Quota restarts from a computer set to a different time zone are shared instead of being refused along with its usage.
+- A time zone change keeps the usage of days whose session logs have since been deleted instead of discarding it.
+
 ## [1.2.0] - 2026-09-13
 
 ### Added
@@ -232,7 +246,8 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/SteveWang92/QuotaStation/compare/v0.6.0...v1.0.0

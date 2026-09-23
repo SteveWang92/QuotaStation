@@ -187,7 +187,7 @@ async fn publish_snapshot(app: &AppHandle, state: &Arc<AppState>) -> WorkspaceSn
     // The status line's weekly total and the panel's seven-day trend describe the same week,
     // so it is read once per provider and both are filled from it. A provider whose range
     // cannot be read keeps the series it already has rather than being blanked.
-    let today = jiff::Zoned::now().date();
+    let today = crate::clock::today();
     let week: Vec<String> = (0..7)
         .rev()
         .map(|back| today.checked_sub(jiff::Span::new().days(back)).unwrap_or(today).to_string())
@@ -253,12 +253,20 @@ async fn apply_live(
     let mut signed_out = None;
     match result {
         Ok(live) => {
-            let save_error = state
-                .storage
-                .save_live(provider, &live, &completed_at)
-                .await
-                .err()
-                .map(storage_error);
+            let (recorded_restart, save_error) =
+                match state.storage.save_live(provider, &live, &completed_at).await {
+                    Ok(recorded) => (recorded, None),
+                    Err(error) => (false, Some(storage_error(error))),
+                };
+            // A restart is news for the other devices, and the history refresh that normally
+            // carries it there can be an hour away. The history lock keeps this exchange from
+            // running beside that refresh's own, which writes the same file, and from exporting
+            // rows a zone change is still rebuilding.
+            if recorded_restart {
+                let _history_guard = state.history_refresh_lock.lock().await;
+                let shared_folder = crate::sync::run(state).await;
+                *state.shared_folder_diagnostics.write().await = shared_folder;
+            }
             // Reading the restarts back after the save keeps one owner of the detection,
             // so a restart recognised by this very save is already part of the snapshot.
             let (recent_resets, reset_error) =
@@ -332,7 +340,7 @@ async fn apply_history(
     let completed_at = now();
     match result {
         Ok((history, aggregation_timezone)) => {
-            let today_date = jiff::Zoned::now().date().to_string();
+            let today_date = crate::clock::today().to_string();
             let today = history.days.iter().find(|day| day.date == today_date).cloned();
             let save_error = state
                 .storage
@@ -422,8 +430,10 @@ fn storage_error(error: anyhow::Error) -> String {
     sanitize_error(&error.to_string(), STORAGE_FALLBACK)
 }
 
+/// When a refresh started or finished, by the corrected clock: these date the readings and
+/// restarts it records, which are compared with the server's own times.
 fn now() -> String {
-    jiff::Timestamp::now().to_string()
+    crate::clock::now().to_string()
 }
 
 #[cfg(test)]
@@ -481,7 +491,7 @@ mod tests {
     }
 
     fn today() -> String {
-        jiff::Zoned::now().date().to_string()
+        crate::clock::today().to_string()
     }
 
     async fn snapshot_of(state: &Arc<AppState>) -> ProviderSnapshot {

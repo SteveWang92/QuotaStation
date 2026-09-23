@@ -1,7 +1,7 @@
 {
   "name": "quotastation",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Windows app for tracking AI coding quotas, usage, reset times, and estimated API costs",
   "license": "AGPL-3.0-only",
   "author": "Steve Wang <contact@stevewang.me>",
@@ -34,9 +34,9 @@
     "build:release": "tauri build --no-bundle",
     "build:installer": "tauri build --bundles nsis",
     "icons": "node scripts/icons.mjs",
-    "release:prep": "node scripts/release.mjs prep",
-    "release:reversion": "node scripts/release.mjs reversion",
-    "release:ship": "node scripts/release.mjs ship"
+    "release:prep": "changedeck prep",
+    "release:reversion": "changedeck reversion",
+    "release:ship": "changedeck ship"
   },
   "engines": {
     "node": "24.18.1"
@@ -49,14 +49,14 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.9",
+    "@biomejs/biome": "2.5.10",
     "@tauri-apps/cli": "2.11.4",
     "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.4",
-    "@vitejs/plugin-react": "6.0.5",
-    "@vitest/coverage-v8": "4.1.10",
+    "@types/react-dom": "19.2.5",
+    "@vitejs/plugin-react": "6.1.0",
+    "@vitest/coverage-v8": "4.1.11",
     "typescript": "5.9.3",
-    "vite": "8.2.1",
-    "vitest": "4.1.10"
+    "vite": "8.2.2",
+    "vitest": "4.1.11"
   }
 }

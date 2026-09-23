@@ -10,7 +10,6 @@ import {
   MAX_CUSTOM_RANGE_DAYS,
   type RangePreset,
   todayString,
-  toLocalDateString,
 } from "../dateRanges";
 import {
   formatCompactCurrency,
@@ -19,6 +18,7 @@ import {
   formatDelta,
   formatNumber,
   formatRevision,
+  formatSeenOn,
 } from "../format";
 import { SERIES_LIMIT, SERIES_REST, SERIES_SLOTS } from "../series";
 import type {
@@ -34,6 +34,7 @@ import type {
   UsageHoursSnapshot,
   UsageRangeSnapshot,
 } from "../types";
+import { dateOf } from "../zone";
 import { SessionTable } from "./SessionTable";
 import { type ChartMarker, type ChartSeries, TrendChart } from "./TrendChart";
 
@@ -249,8 +250,10 @@ export function UsageSummary({
   }));
   const quotaMarkers: ChartMarker[] = (quotaHistory?.resets ?? []).map((reset) => ({
     id: `${reset.windowKind}-${reset.anchoredAt}`,
-    bucket: toLocalDateString(new Date(reset.anchoredAt * 1_000)),
-    label: `${reset.windowLabel} restarted (${reset.classification})`,
+    bucket: dateOf(reset.anchoredAt * 1_000),
+    label: [`${reset.windowLabel} restarted (${reset.classification})`, formatSeenOn(reset)]
+      .filter(Boolean)
+      .join(" · "),
     tone: reset.classification === "unplanned" ? "warning" : "muted",
   }));
 

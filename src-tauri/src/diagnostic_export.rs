@@ -205,11 +205,13 @@ mod tests {
                 error: Some("Private computer at C:\\Users\\owner".to_string()),
             },
             shared_folder: SharedFolderDiagnostics::default(),
+            clock: crate::domain::ClockDiagnostics::default(),
             devices: vec![DeviceDiagnostics {
                 id: "secret-device-id".to_string(),
                 display_name: "Private computer".to_string(),
                 local: true,
                 last_import_at: None,
+                restart_count: 0,
             }],
             parser_revision: "parser".to_string(),
             pricing_catalog_revision: "pricing".to_string(),

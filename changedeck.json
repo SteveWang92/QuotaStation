@@ -1,0 +1,12 @@
+{
+  "appName": "QuotaStation",
+  "repo": "SteveWang92/QuotaStation",
+  "versionFiles": [
+    { "path": "package.json", "type": "json", "key": "version" },
+    { "path": "package-lock.json", "type": "npm-lock", "packages": [""] },
+    { "path": "src-tauri/tauri.conf.json", "type": "json", "key": "version" },
+    { "path": "src-tauri/Cargo.toml", "type": "cargo-toml" },
+    { "path": "src-tauri/Cargo.lock", "type": "cargo-lock", "package": "quotastation" }
+  ],
+  "afterShip": "Publishing the release starts .github/workflows/release.yml, which builds the NSIS installer from the tag and attaches it. Confirm that run finished and the installer is on the release before calling the release done: gh run list --repo SteveWang92/QuotaStation --workflow release.yml --limit 1"
+}

@@ -64,7 +64,9 @@ changes Claude Code's settings on an ordinary start.
 ## Privacy
 
 - Usage history, quota readings, settings, and logs stay on the local computer.
-- QuotaStation does not include an HTTP client or call provider APIs directly.
+- QuotaStation does not include an HTTP client or call provider APIs directly. The one request
+  it can send of its own is the optional clock check, an SNTP query to `time.windows.com` that
+  carries no user data and is off unless switched on.
 - Provider credentials remain with the installed client or the operating system.
 - Prompts, source code, raw sessions, account details, and complete file paths are not stored
   in QuotaStation's database or diagnostic export.

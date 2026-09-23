@@ -28,6 +28,11 @@ pub enum CompactStatusLevel {
 pub const WARNING_PERCENT: f64 = 70.0;
 pub const CRITICAL_PERCENT: f64 = 90.0;
 
+/// The largest share a provider may report for a window. Claude Code's low-priority mode
+/// keeps a session working past the limit, so a reading above 100 is real usage rather
+/// than a broken payload; this ceiling only rejects a figure no provider would publish.
+pub const MAX_USED_PERCENT: f64 = 200.0;
+
 /// How loud one window's own reading is.
 ///
 /// The core says which of the three a reading has earned and stops there. What each level
@@ -264,10 +269,35 @@ pub struct LimitResetEvent {
     pub tokens_in_window: Option<u64>,
     pub early_by_seconds: i64,
     pub classification: ResetClassification,
+    /// How far apart the detections below place the restart: the latest anchor minus the
+    /// earliest.
+    pub anchor_spread_seconds: i64,
+    /// Every device's detection of this restart, the one the fields above come from first.
+    pub detections: Vec<ResetDetection>,
 }
 
-/// Account-level reset facts safe to exchange through the shared folder. The token total is
-/// intentionally absent: each receiving machine derives it from the usage it has imported.
+/// One device's detection of a restart. Each device's own judgement is kept beside the
+/// event's rather than folded into it, so a disagreement stays visible.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetDetection {
+    /// The device's name, or `None` for a restart recorded before detections were
+    /// attributed to a device.
+    pub device_name: Option<String>,
+    pub local: bool,
+    pub source: String,
+    pub anchored_at: i64,
+    pub classification: ResetClassification,
+}
+
+/// One device's detection of a restart, safe to exchange through the shared folder. The
+/// token total is intentionally absent: each receiving machine derives it from the usage it
+/// has imported.
+///
+/// A file carries every detection its machine knows, including ones relayed from other
+/// devices, so a restart outlives the file of the device that saw it. The attribution and
+/// bracket are absent from a file an earlier build wrote, whose detections are that file's
+/// own device's.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedResetEvent {
@@ -282,6 +312,15 @@ pub struct SharedResetEvent {
     pub classification: ResetClassification,
     pub source: String,
     pub detected_at: String,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    #[serde(default)]
+    pub device_name: Option<String>,
+    /// When the two readings the detection compared were taken.
+    #[serde(default)]
+    pub bracket_start: Option<i64>,
+    #[serde(default)]
+    pub bracket_end: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -413,7 +452,7 @@ impl ProviderSnapshot {
             };
             return;
         }
-        let now = jiff::Timestamp::now().as_second();
+        let now = crate::clock::now().as_second();
         for limit in &mut self.limits {
             let age = now.saturating_sub(limit.observed_at);
             let max_age = match limit.source {
@@ -444,9 +483,7 @@ impl ProviderSnapshot {
         self.stale_age_seconds = self
             .limits
             .iter()
-            .map(|limit| {
-                jiff::Timestamp::now().as_second().saturating_sub(limit.observed_at) as u64
-            })
+            .map(|limit| crate::clock::now().as_second().saturating_sub(limit.observed_at) as u64)
             .max()
             .or_else(|| self.last_live_success_at.as_deref().and_then(age_seconds));
         // A signed-out provider has an answer rather than a fault, and saying which one it
@@ -498,18 +535,21 @@ impl ProviderSnapshot {
 pub struct WorkspaceSnapshot {
     pub providers: Vec<ProviderSnapshot>,
     pub aggregate: CompactStatus,
+    /// How far this computer's clock is behind internet time, in milliseconds, so the
+    /// renderer's countdowns run on the corrected clock too. Zero when unmeasured.
+    pub clock_offset_ms: i64,
 }
 
 impl WorkspaceSnapshot {
     pub fn new(providers: Vec<ProviderSnapshot>) -> Self {
         let aggregate = aggregate_status(&providers);
-        Self { providers, aggregate }
+        Self { providers, aggregate, clock_offset_ms: crate::clock::offset_ms() }
     }
 }
 
 fn age_seconds(value: &str) -> Option<u64> {
     let observed = value.parse::<jiff::Timestamp>().ok()?;
-    let elapsed = jiff::Timestamp::now().duration_since(observed);
+    let elapsed = crate::clock::now().duration_since(observed);
     Some(elapsed.as_secs().max(0) as u64)
 }
 
@@ -969,6 +1009,7 @@ pub struct DiagnosticsSnapshot {
     pub acquisitions: Vec<AcquisitionDiagnostics>,
     pub retention: RetentionDiagnostics,
     pub shared_folder: SharedFolderDiagnostics,
+    pub clock: ClockDiagnostics,
     /// Every machine contributing to the totals, this one first. A machine that stopped
     /// exporting still appears, with the time its aggregates were last read: totals that
     /// quietly lost a contributor are worse than totals that say so.
@@ -982,6 +1023,16 @@ pub struct DiagnosticsSnapshot {
     /// executable lives, what Claude Code's hooks point at — that a bug report about "0.1.0"
     /// is not answerable without it.
     pub build_kind: String,
+}
+
+/// What the check against internet time measured, when it is on.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClockDiagnostics {
+    pub enabled: bool,
+    pub offset_ms: i64,
+    pub last_checked_at: Option<String>,
+    pub error: Option<String>,
 }
 
 /// What the shared usage folder last did. `off` is the state with no folder chosen, which
@@ -1009,6 +1060,8 @@ pub struct DeviceDiagnostics {
     /// When this device's aggregates were last read in. `None` for the local device, whose
     /// rows are written by the parser rather than imported.
     pub last_import_at: Option<String>,
+    /// How many quota restarts this device detected, as far as this machine knows.
+    pub restart_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

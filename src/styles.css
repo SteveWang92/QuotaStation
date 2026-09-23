@@ -290,6 +290,7 @@ button { font: inherit; }
    it takes the panel's own inset rather than the settings page's flush edge. The label
    comes first there: one row per window says which window it is, not when it happened. */
 .latest-resets { padding: 4px 28px 12px; grid-template-columns: minmax(0, 1fr) minmax(0, 168px) 72px 62px max-content; }
+.reset-history ul { grid-template-columns: minmax(0, 188px) minmax(0, 1fr) minmax(0, 1fr) 72px 62px max-content; }
 .latest-resets li > *:first-child { color: var(--text-dim); }
 .reset-inventory { height: 42px; display: flex; align-items: center; gap: 30px; padding: 0 28px; font-size: 14px; }
 .reset-count { display: contents; }
@@ -312,6 +313,7 @@ button { font: inherit; }
 .provider-panel-header h2 { margin: 0; font-size: 15px; font-weight: 650; }
 .provider-panel-header span { font-size: 12px; font-weight: 630; }
 .provider-panel-error { margin: 0; padding: 8px 11px; border: 1px solid var(--danger-line); border-radius: 4px; color: var(--danger-text); background: var(--danger-surface); font-size: 12px; }
+.clock-banner { margin: 0 0 12px; padding: 8px 11px; border: 1px solid var(--danger-line); border-radius: 4px; color: var(--danger-text); background: var(--danger-surface); font-size: 12px; }
 .provider-quota-note { min-height: 150px; margin: 0; padding: 34px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: var(--surface-glass); font-size: 13px; line-height: 1.5; }
 
 .history-filters { display: flex; align-items: center; gap: 8px; }

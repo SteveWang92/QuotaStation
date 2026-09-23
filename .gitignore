@@ -1,3 +1,48 @@
+# -----------------------------------------------------------------------------
+# Allowlist-style ignore: everything at the repository root is ignored by default and
+# only reviewed paths are un-ignored below. A new top-level file or directory stays
+# invisible to git until it is deliberately added here — fail-closed, so a stray
+# credential or private config cannot be committed by accident.
+# -----------------------------------------------------------------------------
+/*
+
+# --- Tracked directories ---
+!/.cargo/
+!/.github/
+!/.vscode/
+!/docs/
+!/scripts/
+!/src/
+!/src-tauri/
+!/tests/
+!/vendor/
+
+# --- Tracked root files ---
+!/.editorconfig
+!/.gitattributes
+!/.gitignore
+!/.nvmrc
+!/AGENTS.md
+!/biome.jsonc
+!/changedeck.json
+!/CHANGELOG.md
+!/CLAUDE.md
+!/CODE_OF_CONDUCT.md
+!/CONTRIBUTING.md
+!/index.html
+!/LICENSE
+!/package-lock.json
+!/package.json
+!/README.md
+!/rustfmt.toml
+!/SECURITY.md
+!/SUPPORT.md
+!/THIRD_PARTY_NOTICES.md
+!/tsconfig.json
+!/tsconfig.node.json
+!/vite.config.ts
+
+# --- Never track, anywhere in the tree ---
 # Local-only files must use the .local marker.
 *.local
 *.local.*

@@ -1,5 +1,6 @@
 mod alerts;
 mod autostart;
+mod clock;
 mod commands;
 mod diagnostic_export;
 mod fs_atomic;
@@ -48,6 +49,9 @@ use storage::Storage;
 /// command: the updater's `/UPDATE` uninstall keeps every integration, and a normal launch
 /// must never change another program's settings.
 const UNINSTALL_CLEANUP_ARG: &str = "--uninstall-cleanup";
+
+/// How often the clock is checked against internet time while that check is on.
+const CLOCK_CHECK_INTERVAL: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Removes the external commands QuotaStation registered in Claude Code, and reports an
 /// exit code only when this process was started by the uninstaller.
@@ -574,6 +578,10 @@ pub fn run() {
             let settings_path =
                 app_data_dir.join(if demo { demo::SETTINGS_FILE } else { "settings.json" });
             let settings = ensure_device_identity(&settings_path, settings::load(&settings_path));
+            // `settings::load` has already dropped a name the zone database does not know.
+            if let Err(error) = clock::choose(settings.time_zone.as_deref()) {
+                log::write(format!("the chosen time zone could not be applied: {error:#}"));
+            }
             let device_name =
                 settings.device_name.clone().unwrap_or_else(settings::default_device_name);
             let storage = tauri::async_runtime::block_on(Storage::open(&database_path))
@@ -702,6 +710,17 @@ pub fn run() {
                     loop {
                         interval.tick().await;
                         refresh::refresh_history(&app_handle, &history_state).await;
+                    }
+                });
+                // At startup and every two hours; with the check off each tick only confirms
+                // the offset is zero and sends nothing. A clock drifts by seconds a day, so
+                // two hours finds a wrong one long before it matters to a countdown.
+                let clock_state = app.state::<Arc<AppState>>().inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(CLOCK_CHECK_INTERVAL);
+                    loop {
+                        interval.tick().await;
+                        clock::refresh_offset(clock_state.settings().clock_check).await;
                     }
                 });
             }

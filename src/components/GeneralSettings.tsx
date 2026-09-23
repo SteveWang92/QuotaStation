@@ -12,6 +12,10 @@ import type {
   ThemePreference,
 } from "../types";
 
+/** Every zone the webview knows. The core checks a choice against its own zone database and
+ * refuses a name it does not know, which the card then reports. */
+const TIME_ZONES = Intl.supportedValuesOf("timeZone");
+
 /**
  * How the application sits on the machine: whether Windows starts it, whether it draws the
  * taskbar status, and the desktop shortcut.
@@ -93,6 +97,38 @@ export function GeneralSettings() {
     setError(null);
     try {
       await saveAppSettings({ quickPanelDensity: density });
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  /**
+   * Every date and hour QuotaStation keys and shows follows this zone. A computer whose
+   * Windows zone is wrong can be set right here without touching Windows.
+   */
+  const changeTimeZone = useCallback(async (zone: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await saveAppSettings({ timeZone: zone === "" ? null : zone });
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  /**
+   * The one request QuotaStation would send of its own — an SNTP query to
+   * time.windows.com carrying no user data — so it is off until chosen.
+   */
+  const changeClockCheck = useCallback(async (clockCheck: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await saveAppSettings({ clockCheck });
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -219,8 +255,8 @@ export function GeneralSettings() {
         <div className="provider-consent-body">
           <h2>Application</h2>
           <p>
-            Where QuotaStation shows up on this machine. Nothing here reads a provider or leaves the
-            local system.
+            Where QuotaStation shows up on this machine. Nothing here reads a provider, and only the
+            clock check, when switched on, sends a request off this machine.
           </p>
           {settingsError ? (
             <p className="provider-consent-error">Settings: {settingsError}</p>
@@ -256,6 +292,30 @@ export function GeneralSettings() {
                 <option value="standard">Standard</option>
                 <option value="compact">Compact</option>
               </select>
+            </label>
+            <label>
+              Time zone
+              <select
+                value={settings?.timeZone ?? ""}
+                disabled={busy || settings === null}
+                onChange={(event) => void changeTimeZone(event.target.value)}
+              >
+                <option value="">Follow Windows ({settings?.systemTimeZone ?? "…"})</option>
+                {TIME_ZONES.map((zone) => (
+                  <option key={zone} value={zone}>
+                    {zone}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={settings?.clockCheck ?? false}
+                disabled={busy || settings === null}
+                onChange={(event) => void changeClockCheck(event.target.checked)}
+              />
+              Check the clock against internet time
             </label>
             <label>
               <input

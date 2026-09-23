@@ -133,9 +133,19 @@ Ranges of up to three days use hourly rows. Longer ranges use daily rows. Both a
 the same parse of the same local records, so changing the selected range does not re-read the
 provider files.
 
-Daily rows follow the current Windows time zone. If that time zone changes, the next complete
-parse replaces the affected provider's daily rows in one transaction so dates from two zones
-are not mixed.
+Instants are stored in UTC. Only the hour and day a piece of usage is filed under, and every
+time a surface shows, depend on a time zone, and both follow the application zone: the one
+chosen in **Settings → General**, or the Windows zone when none is chosen. The core computes
+every bucket key and day boundary itself rather than asking SQLite, whose local time can only
+mean the Windows zone. When the zone changes, the next complete parse rebuilds the affected
+provider's hourly rows and every daily row the session logs still reach, in one transaction,
+and rows imported from other devices are read again, so hours from two zones are never mixed.
+A day older than the logs — Claude Code deletes old transcripts — cannot be rebuilt and keeps
+the date it was filed under rather than being discarded.
+
+The zone setting corrects how times are displayed and bucketed, not the clock itself. If the
+computer's clock is wrong in UTC, the timestamps Codex and Claude Code write into their logs
+are wrong at the source, and no display zone can repair them.
 
 Quota readings are summarized by the highest percentage observed during each day. This
 preserves a window that filled and reset before the last reading of the day.
@@ -205,6 +215,21 @@ details. See [Multi-machine usage](multi-machine.md) for the file contents and s
   and settings changes, renderer failures — but no session content, credential, or provider
   path. It is bounded by size alone: 16 MB, then one roll.
 - The pricing catalog is embedded at build time, so a clean build does not download it.
+- The only request QuotaStation sends of its own is the opt-in clock check below, which
+  carries no user data.
+
+## Clock check
+
+A wrong computer clock breaks what a time zone cannot fix: countdowns run against it, and a
+reading dated by it no longer lines up with the reset times the server publishes. Providers
+publish no server time, so the clock can be checked against internet time instead. The check
+is off unless it is switched on in **Settings → General**. When on, the core sends one SNTP
+request to `time.windows.com` at startup and every two hours — QuotaStation's only outbound
+request of its own, a 48-byte packet carrying nothing but the computer's current time — and
+applies the measured offset wherever a reading is dated or compared with server time, and to
+the interface's countdowns. A failed check keeps the previous offset and is reported in
+Diagnostics; switching the check off forgets the offset. Timestamps the clients wrote into
+their own logs are left as written, because the offset when they were written is unknown.
 
 ## Reused code
 

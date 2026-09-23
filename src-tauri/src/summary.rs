@@ -238,6 +238,7 @@ mod tests {
         WorkspaceSnapshot {
             aggregate: crate::domain::aggregate_status(std::slice::from_ref(&codex)),
             providers: vec![codex],
+            clock_offset_ms: 0,
         }
     }
 

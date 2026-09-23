@@ -24,6 +24,10 @@ const STORED: AppSettings = {
   dismissedResetNotices: ["codex:primary:1800000000"],
   quotaDisabledProviders: [],
   sharedUsageFolder: null,
+  timeZone: null,
+  resolvedTimeZone: "UTC",
+  systemTimeZone: "UTC",
+  clockCheck: false,
 };
 
 /** The settings module keeps one record for the whole window, so each test needs a fresh one. */

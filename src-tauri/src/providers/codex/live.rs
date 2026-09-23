@@ -16,7 +16,8 @@ use tokio::{
 
 use crate::{
     domain::{
-        Freshness, LimitKind, LimitWindow, LiveSnapshot, PaceLevel, QuotaLevel, WindowSource,
+        Freshness, LimitKind, LimitWindow, LiveSnapshot, MAX_USED_PERCENT, PaceLevel, QuotaLevel,
+        WindowSource,
     },
     providers::{ProviderKind, SignInRequired, is_sign_in_required},
 };
@@ -225,7 +226,10 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
         .and_then(Value::as_object)
         .context("schema_incompatible: rate-limit response omitted rateLimits")?;
     let mut limits = Vec::new();
-    let observed_at = jiff::Timestamp::now().as_second();
+    // Dated by the corrected clock, which is what the server's reset times are measured
+    // against: a fast local clock would otherwise read a window that has minutes left as
+    // already past its reset.
+    let observed_at = crate::clock::now().as_second();
     for (field, kind) in [("primary", LimitKind::Primary), ("secondary", LimitKind::Secondary)] {
         let Some(value) = rate_limits.get(field) else { continue };
         if value.is_null() {
@@ -249,7 +253,7 @@ fn normalize(account: Value, rate_result: Value) -> Result<LiveSnapshot> {
             .get("resetsAt")
             .and_then(Value::as_i64)
             .with_context(|| format!("schema_incompatible: {field} bucket omitted resetsAt"))?;
-        if !used_percent.is_finite() || !(0.0..=100.0).contains(&used_percent) {
+        if !used_percent.is_finite() || !(0.0..=MAX_USED_PERCENT).contains(&used_percent) {
             bail!("schema_incompatible: {field} bucket has an invalid percentage");
         }
         if resets_at < observed_at - 60 || resets_at > observed_at + minutes * 60 * 2 {
@@ -364,6 +368,20 @@ mod tests {
     fn a_credit_count_with_no_detail_rows_reports_no_expiry() {
         let summary = json!({ "rateLimitResetCredits": { "availableCount": 2 } });
         assert_eq!(earliest_credit_expiry(&summary), None);
+    }
+
+    #[test]
+    fn a_reset_time_is_checked_against_the_corrected_clock() {
+        // This computer's clock is ten minutes fast, and the window resets in five.
+        crate::clock::set_offset_for_test(-600_000);
+        let resets_at = crate::clock::now().as_second() + 300;
+        let rates = json!({ "rateLimits": { "primary": {
+            "usedPercent": 40.0, "windowDurationMins": 300, "resetsAt": resets_at,
+        } } });
+        let read = normalize(json!({ "account": {} }), rates);
+        crate::clock::set_offset_for_test(0);
+        let read = read.expect("a reset five minutes away is valid");
+        assert_eq!(read.limits[0].resets_at, Some(resets_at));
     }
 
     #[test]

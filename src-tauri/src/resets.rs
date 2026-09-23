@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::domain::{LimitKind, LimitResetEvent, ResetClassification};
+use crate::domain::{LimitKind, LimitResetEvent, MAX_USED_PERCENT, ResetClassification};
 
 /// A window restarted more than this long before its published expiry did not restart on
 /// the schedule Codex advertised. Two hours absorbs the polling interval and the drift
@@ -29,6 +29,21 @@ const MIN_FORWARD_SHIFT_SECONDS: i64 = 60;
 const ANCHOR_SLACK_SECONDS: i64 = 300;
 pub const MAX_WINDOW_DURATION_MINS: i64 = 366 * 24 * 60;
 
+/// The furthest apart two detections of one restart can place it and still be the same
+/// restart. A restart's instant is recovered from the server's expiry rather than from a
+/// local clock, so the user's computers normally agree to within a second or two; a later
+/// first reading after the restart, or a rollout log against a live read, accounts for the
+/// rest. Two genuine restarts of one window cannot fall this close together, because each
+/// needs the window to have filled again by [`MIN_USED_PERCENT_DROP`] first — and a short
+/// window is held to a tenth of its length all the same.
+const MAX_GROUPING_SECONDS: i64 = 10 * 60;
+
+/// How close a detection has to be to a recorded restart of the same window to be another
+/// device's view of it rather than a restart of its own.
+pub fn grouping_tolerance_seconds(window_duration_mins: i64) -> i64 {
+    MAX_GROUPING_SECONDS.min(window_duration_mins.saturating_mul(60) / 10)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct WindowObservation {
     pub observed_at: i64,
@@ -47,8 +62,8 @@ pub struct WindowObservation {
 /// which is what a window is, rather than by the slot Codex published it in.
 pub fn detect(previous: WindowObservation, current: WindowObservation) -> Option<LimitResetEvent> {
     if current.observed_at < previous.observed_at
-        || !(0.0..=100.0).contains(&previous.used_percent)
-        || !(0.0..=100.0).contains(&current.used_percent)
+        || !(0.0..=MAX_USED_PERCENT).contains(&previous.used_percent)
+        || !(0.0..=MAX_USED_PERCENT).contains(&current.used_percent)
         || !(1..=MAX_WINDOW_DURATION_MINS).contains(&current.window_duration_mins)
     {
         return None;
@@ -86,7 +101,18 @@ pub fn detect(previous: WindowObservation, current: WindowObservation) -> Option
         } else {
             ResetClassification::Scheduled
         },
+        // Which devices saw the restart is a question for the stored event, not for one
+        // detection of it.
+        anchor_spread_seconds: 0,
+        detections: Vec::new(),
     })
+}
+
+/// A restart [`ResetTracker`] recognised, with the times of the two readings it was
+/// recognised between.
+pub struct Detection {
+    pub event: LimitResetEvent,
+    pub bracket: (i64, i64),
 }
 
 /// Runs [`detect`] over a time-ordered stream of observations, keeping the previous
@@ -102,11 +128,16 @@ pub struct ResetTracker {
 }
 
 impl ResetTracker {
-    pub fn push(&mut self, observation: WindowObservation) -> Option<LimitResetEvent> {
+    pub fn push(&mut self, observation: WindowObservation) -> Option<Detection> {
         let key = observation.window_duration_mins;
-        let event = self.previous.get(&key).and_then(|previous| detect(*previous, observation));
+        let detection = self.previous.get(&key).and_then(|previous| {
+            detect(*previous, observation).map(|event| Detection {
+                event,
+                bracket: (previous.observed_at, observation.observed_at),
+            })
+        });
         self.previous.insert(key, observation);
-        event
+        detection
     }
 }
 
@@ -153,6 +184,15 @@ mod tests {
         let previous = observation(1_000_000, 52.0, 1_000_000 + 4 * 86_400);
         let current = observation(1_010_000, 2.0, 1_009_000 + WEEK_SECONDS);
         assert!(detect(previous, current).is_some());
+    }
+
+    #[test]
+    fn a_window_used_past_its_limit_still_records_its_restart() {
+        let expiry = 1_000_000;
+        let previous = observation(expiry - 600, 104.0, expiry);
+        let current = observation(expiry + 600, 0.0, expiry + 300 + WEEK_SECONDS);
+        let event = detect(previous, current).expect("low-priority usage still restarts");
+        assert_eq!(event.used_percent_before, 104.0);
     }
 
     #[test]
@@ -220,7 +260,8 @@ mod tests {
             kind: LimitKind::Secondary,
             ..observation(1_010_000, 0.0, 1_010_000 + WEEK_SECONDS)
         };
-        let event = tracker.push(weekly).expect("the weekly window restarted, wherever it arrived");
+        let event =
+            tracker.push(weekly).expect("the weekly window restarted, wherever it arrived").event;
         assert_eq!(event.window_kind, LimitKind::Secondary);
         assert_eq!(event.used_percent_before, 61.0);
         assert_eq!(event.classification, ResetClassification::Unplanned);

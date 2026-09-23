@@ -1,3 +1,6 @@
+import type { LimitResetEvent, ResetDetection } from "./types";
+import { currentZone, dateOf, now, today } from "./zone";
+
 /**
  * The interface is English-only, so every surface formats numbers and dates the same way
  * instead of following whatever locale the machine reports. This single constant is the
@@ -6,6 +9,9 @@
  * Clock times are always 24-hour. Quota windows restart at arbitrary times of day and the
  * surfaces sit beside countdowns, so an am/pm marker is one more thing to read before two
  * timestamps can be compared.
+ *
+ * Every instant is written out in the application zone (see `zone.ts`); a calendar date,
+ * which is a label rather than an instant, is written out in UTC so no zone can move it.
  */
 export const LOCALE = "en-AU";
 
@@ -29,11 +35,12 @@ export function formatTimestamp(value: string | null): string {
     dateStyle: "medium",
     timeStyle: "medium",
     hour12: false,
+    timeZone: currentZone(),
   }).format(new Date(value));
 }
 
 function countdownParts(epochSeconds: number) {
-  const totalMinutes = Math.floor(Math.max(0, epochSeconds * 1_000 - Date.now()) / 60_000);
+  const totalMinutes = Math.floor(Math.max(0, epochSeconds * 1_000 - now()) / 60_000);
   return {
     days: Math.floor(totalMinutes / 1_440),
     hours: Math.floor((totalMinutes % 1_440) / 60),
@@ -43,7 +50,7 @@ function countdownParts(epochSeconds: number) {
 
 export function formatCountdown(epochSeconds: number | null): string {
   if (epochSeconds === null) return "Unknown";
-  if (epochSeconds * 1_000 <= Date.now()) return "Expired";
+  if (epochSeconds * 1_000 <= now()) return "Expired";
   const { days, hours, minutes } = countdownParts(epochSeconds);
   return days > 0 ? `${days}d ${hours}h ${minutes}m` : `${hours}h ${minutes}m`;
 }
@@ -51,9 +58,20 @@ export function formatCountdown(epochSeconds: number | null): string {
 /** Same countdown truncated for surfaces that only have room for two units. */
 export function formatCompactCountdown(epochSeconds: number | null): string {
   if (epochSeconds === null) return "—";
-  if (epochSeconds * 1_000 <= Date.now()) return "Expired";
+  if (epochSeconds * 1_000 <= now()) return "Expired";
   const { days, hours, minutes } = countdownParts(epochSeconds);
   return days > 0 ? `${days}d ${hours}h` : `${hours}h ${minutes}m`;
+}
+
+/**
+ * How far this computer's clock is off, in words, once it is off by more than two minutes;
+ * nothing below that, where a countdown is still right to the minute it shows.
+ */
+export function formatClockOffset(offsetMs: number): string | null {
+  const minutes = Math.round(Math.abs(offsetMs) / 60_000);
+  if (Math.abs(offsetMs) <= 120_000) return null;
+  // The offset is what has to be added to this clock, so a negative one means it is ahead.
+  return `This computer's clock is ${minutes} min ${offsetMs < 0 ? "fast" : "slow"}`;
 }
 
 /**
@@ -70,6 +88,7 @@ export function formatResetTimestamp(epochSeconds: number | null): string {
     dateStyle: "medium",
     timeStyle: "short",
     hour12: false,
+    timeZone: currentZone(),
   }).format(new Date(epochSeconds * 1_000));
 }
 
@@ -79,13 +98,14 @@ export function formatResetTimestamp(epochSeconds: number | null): string {
  */
 export function formatShortMoment(epochSeconds: number): string {
   const moment = new Date(epochSeconds * 1_000);
-  const today = moment.toDateString() === new Date().toDateString();
+  const sameDay = dateOf(moment.getTime()) === today();
   return new Intl.DateTimeFormat(LOCALE, {
-    day: today ? undefined : "numeric",
-    month: today ? undefined : "short",
+    day: sameDay ? undefined : "numeric",
+    month: sameDay ? undefined : "short",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    timeZone: currentZone(),
   }).format(moment);
 }
 
@@ -100,6 +120,49 @@ export function formatEarlyBy(seconds: number): string {
   }
   const hours = Math.round(seconds / 3_600);
   return hours <= 1 ? "under an hour early" : `${hours} hours early`;
+}
+
+function detectionDevice(detection: ResetDetection): string {
+  return detection.deviceName ?? "An earlier record";
+}
+
+/** Each device that detected a restart, named once, the one whose timing it carries first. */
+export function formatDetectedBy(event: LimitResetEvent): string {
+  return [...new Set(event.detections.map(detectionDevice))].join(", ");
+}
+
+/**
+ * "Seen on N devices" for a restart more than one device detected, and nothing for the
+ * ordinary case of one: a tooltip that always says it would be read as saying nothing.
+ */
+export function formatSeenOn(event: LimitResetEvent): string | null {
+  const devices = new Set(event.detections.map(detectionDevice)).size;
+  return devices > 1 ? `Seen on ${devices} devices` : null;
+}
+
+/**
+ * How far the devices' timing of a restart disagreed, once it is more than the second or
+ * two of rounding every provider's expiry carries.
+ */
+export function formatAnchorSpread(event: LimitResetEvent): string | null {
+  if (event.anchorSpreadSeconds <= 60) return null;
+  return `±${Math.round(event.anchorSpreadSeconds / 60)} min`;
+}
+
+/**
+ * Every device's detection of a restart, one per line, for a tooltip. A device that judged
+ * the restart differently is kept and said so rather than outvoted.
+ */
+export function describeDetections(event: LimitResetEvent): string {
+  const lines = event.detections.map(
+    (detection) =>
+      `${detectionDevice(detection)} · ${detection.source === "live" ? "live read" : "rollout log"} · ${formatResetTimestamp(detection.anchoredAt)} · ${detection.classification}`,
+  );
+  const dissent = event.detections.find(
+    (detection) => detection.classification !== event.classification,
+  );
+  if (dissent) lines.push(`Another device recorded this as ${dissent.classification}`);
+  return lines.join("\n");
 }
 
 function windowParts(durationMins: number) {
@@ -158,6 +221,7 @@ export function formatDayAndTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    timeZone: currentZone(),
   }).format(new Date(value));
 }
 
@@ -172,9 +236,11 @@ export function formatDuration(milliseconds: number): string {
 
 /** A calendar day at chart-axis length, for example 3 Aug. */
 export function formatAxisDate(value: string): string {
-  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short" }).format(
-    new Date(`${value}T00:00:00`),
-  );
+  return new Intl.DateTimeFormat(LOCALE, {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  }).format(new Date(`${value}T00:00:00Z`));
 }
 
 /**

@@ -1,7 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { errorMessage } from "../errors";
-import { formatCompactNumber, formatEarlyBy, formatResetTimestamp } from "../format";
+import {
+  describeDetections,
+  formatAnchorSpread,
+  formatCompactNumber,
+  formatDetectedBy,
+  formatEarlyBy,
+  formatResetTimestamp,
+} from "../format";
 import type { ProviderResetHistory } from "../types";
 
 /**
@@ -57,8 +64,14 @@ export function ResetHistoryPanel() {
               >
                 <time dateTime={new Date(event.anchoredAt * 1000).toISOString()}>
                   {formatResetTimestamp(event.anchoredAt)}
+                  {formatAnchorSpread(event) ? ` ${formatAnchorSpread(event)}` : null}
                 </time>
                 <span>{event.windowLabel}</span>
+                {/* Each device's own timing and judgement stay beside the event's, so a
+                    disagreement is one hover away rather than averaged out of sight. */}
+                <span className="reset-devices" title={describeDetections(event)}>
+                  {formatDetectedBy(event)}
+                </span>
                 <strong>{event.usedPercentBefore.toFixed(0)}% used</strong>
                 {/* Usage is stored by the hour, so a window's total is exact in the middle
                     and approximate at its two ends; the tilde is what says so at a glance. */}
