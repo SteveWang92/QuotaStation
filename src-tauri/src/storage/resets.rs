@@ -632,9 +632,9 @@ impl Storage {
 
     /// What each quota window did across a date range, one point per local day.
     ///
-    /// Two stores answer this between them and they do not overlap: readings younger than
-    /// the retention cutoff are still in `limit_samples` at the granularity they arrived
-    /// at, and everything older survives only as the daily rollups. A day is reduced to
+    /// Two stores answer this between them and they do not overlap: `limit_samples` keeps
+    /// every reading at the granularity it arrived at, and `limit_rollups` holds daily
+    /// summaries only for days whose readings are no longer stored. A day is reduced to
     /// the highest share observed on it, so a window that filled and restarted the same
     /// day still reports how full it got.
     pub async fn load_quota_history(
@@ -664,13 +664,22 @@ impl Storage {
         // The rollups are day buckets already, keyed when they were rolled up; only the raw
         // samples have to be dated, and they are dated in the application zone so this chart
         // shares the usage chart's calendar.
+        // Readings are kept for good, so the range is also compared as text to let the index
+        // narrow it. Every reading is stored as a UTC RFC 3339 string, which sorts by time
+        // to the second; the text bounds sit a second outside the range and the exact
+        // comparison decides the edges.
+        let text_bound =
+            |epoch: i64| jiff::Timestamp::from_second(epoch).map(|instant| instant.to_string());
         let samples = sqlx::query(
             "SELECT unixepoch(observed_at) AS observed, window_kind, used_percent, \
              window_duration_mins FROM limit_samples WHERE provider_instance_id = ? \
+             AND observed_at > ? AND observed_at < ? \
              AND used_percent IS NOT NULL AND unixepoch(observed_at) >= ? \
              AND unixepoch(observed_at) < ?",
         )
         .bind(provider_id)
+        .bind(text_bound(from - 1)?)
+        .bind(text_bound(until + 1)?)
         .bind(from)
         .bind(until)
         .fetch_all(&self.pool)

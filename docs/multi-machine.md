@@ -50,6 +50,14 @@ Install QuotaStation separately on each computer. Do not copy its application-da
 between them. The device ID is created on first start; copying it would make two computers
 overwrite the same shared file.
 
+A computer whose settings are lost — its application data deleted or reset — starts again
+with a new device ID and rebuilds its usage from its own logs. Its old file stays in the
+folder under the old ID and is still read, so that computer's usage is counted twice until
+the old `usage-<old device id>.json` is deleted from the shared folder.
+
+A file written by a newer version of QuotaStation is skipped, and the shared-folder status on
+the computer reading it asks for an update. Older files are always read.
+
 ## Configure QuotaStation
 
 On each computer:

@@ -30,8 +30,11 @@ use crate::{
     storage::DeviceImport,
 };
 
-/// The shape a reader expects. A file written by a newer build is left alone rather than
-/// read as though this one understood it.
+/// The version of the file this build writes. It moves whenever a field is added whose
+/// absence an older file could not be told apart from, or whose meaning changes, so a
+/// reader knows what a file can be trusted to say. A reader accepts every version up to
+/// its own; a newer file is left alone, and reported, rather than read as though this build
+/// understood it.
 const FORMAT_VERSION: u32 = 1;
 
 const FILE_PREFIX: &str = "usage-";
@@ -300,8 +303,8 @@ async fn import_one(
 ) -> Result<()> {
     let published: ExportFile = serde_json::from_slice(&std::fs::read(path)?)?;
     anyhow::ensure!(
-        published.format_version == FORMAT_VERSION,
-        "written by a different version of QuotaStation"
+        published.format_version <= FORMAT_VERSION,
+        "written by a newer QuotaStation; update this computer to read it"
     );
     anyhow::ensure!(published.device_id == file_device, "names a different device inside");
     anyhow::ensure!(valid_device_id(&published.device_id), "names an invalid device");
@@ -464,6 +467,39 @@ mod tests {
             .await
             .expect("load usage");
         assert_eq!(usage.usage.total, 0, "rows keyed in another zone are not added");
+    }
+
+    #[tokio::test]
+    async fn a_file_from_a_newer_build_asks_for_an_update_and_is_not_read() {
+        let (storage, _database) = crate::storage::test_support::open_storage().await;
+        let state = Arc::new(AppState::for_tests(storage));
+        let file = ExportFile {
+            format_version: FORMAT_VERSION + 1,
+            device_id: "cc03".into(),
+            device_name: "Laptop".into(),
+            timezone: crate::clock::zone_name(),
+            parser_revision: "test".into(),
+            daily: vec![row("2026-08-29")],
+            hourly: Vec::new(),
+            resets: Vec::new(),
+        };
+        let path = std::env::temp_dir().join(format!(
+            "quotastation-sync-{}-{}",
+            std::process::id(),
+            file_name("cc03")
+        ));
+        std::fs::write(&path, serde_json::to_vec(&file).expect("serialize")).expect("write file");
+
+        let result = import_one(&state, &path, "cc03", "0a0a", 1).await;
+        let _ = std::fs::remove_file(&path);
+
+        assert!(result.expect_err("a newer file is refused").to_string().contains("update"));
+        let usage = state
+            .storage
+            .load_usage_range(None, Some("cc03"), "2026-08-29", "2026-08-29")
+            .await
+            .expect("load usage");
+        assert_eq!(usage.usage.total, 0);
     }
 
     #[test]

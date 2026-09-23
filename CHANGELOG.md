@@ -7,6 +7,11 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Changed
+
+- Quota readings and per-session cost comparisons are kept indefinitely instead of for 90 days.
+- A shared usage file written by a newer QuotaStation is reported as needing an update instead of as unreadable.
+
 ## [1.3.0] - 2026-09-23
 
 ### Added

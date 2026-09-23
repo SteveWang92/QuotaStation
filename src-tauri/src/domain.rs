@@ -817,9 +817,6 @@ pub struct SessionCostSnapshot {
     /// rather than a partial one.
     pub reported_cost_usd: f64,
     pub computed_cost_usd: f64,
-    /// How far back sessions are kept, so a range reaching past that says why it is empty
-    /// rather than implying no work was done then.
-    pub retention_days: i64,
 }
 
 /// How far the catalog's pricing is from the client's own, over the sessions that carry

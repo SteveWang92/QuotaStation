@@ -294,9 +294,6 @@ export interface SessionCostSnapshot {
       with each other. */
   reportedCostUsd: number;
   computedCostUsd: number;
-  /** How far back sessions are kept, which is what makes an empty older range explainable
-      rather than a claim that nothing was done. */
-  retentionDays: number;
 }
 
 export interface AcquisitionDiagnostics {

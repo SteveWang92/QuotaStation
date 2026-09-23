@@ -1,5 +1,8 @@
-//! How long the normalized data is kept: the hourly layer is rolled up into the daily one
-//! and the readings behind it are dropped once they leave the window.
+//! How long the normalized data is kept. Quota readings, daily usage, restarts and session
+//! costs are kept for good: together they grow by tens of megabytes a year, and each is a
+//! record nothing can rebuild once the logs behind it are gone. Only what exists for a short
+//! view or for diagnostics is dropped — hourly usage past the window the parser fills, and
+//! old refresh records.
 
 use std::collections::BTreeMap;
 
@@ -9,7 +12,7 @@ use sqlx::Row;
 use crate::domain::{HOURLY_HISTORY_DAYS, RetentionDiagnostics};
 use crate::sanitize::sanitize_error;
 
-use super::{SAMPLE_HISTORY_DAYS, SESSION_COST_HISTORY_DAYS, Storage};
+use super::Storage;
 
 impl Storage {
     pub async fn run_retention_if_due(&self) -> Result<()> {
@@ -49,15 +52,6 @@ impl Storage {
         // summary before removing that superseded intermediate layer. Reset segments remain
         // separate so a day's boundary values do not cross a detected restart.
         Self::roll_up_legacy_hours(&mut tx).await?;
-        // Keep recent readings at source granularity, then preserve only a daily summary.
-        Self::roll_up_samples(&mut tx, now).await?;
-
-        sqlx::query(&format!(
-            "DELETE FROM limit_samples WHERE datetime(observed_at) < datetime(?, '-{SAMPLE_HISTORY_DAYS} days')"
-        ))
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
         sqlx::query("DELETE FROM limit_rollups WHERE granularity = 'hourly'")
             .execute(&mut *tx)
             .await?;
@@ -70,13 +64,7 @@ impl Storage {
             .bind(today.saturating_sub(jiff::Span::new().days(HOURLY_HISTORY_DAYS)).to_string())
             .execute(&mut *tx)
             .await?;
-        sqlx::query(&format!(
-            "DELETE FROM session_costs \
-             WHERE datetime(session_started_at) < datetime(?, '-{SESSION_COST_HISTORY_DAYS} days')"
-        ))
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
+
         sqlx::query(
             "DELETE FROM refresh_runs WHERE id NOT IN (SELECT MAX(id) FROM refresh_runs GROUP BY provider_instance_id, acquisition_path) \
              AND ((status = 'succeeded' AND datetime(completed_at) < datetime(?, '-30 days')) \
@@ -88,49 +76,6 @@ impl Storage {
              last_completed_at=excluded.last_completed_at, last_status=excluded.last_status, last_error=NULL",
         ).bind(now).execute(&mut *tx).await?;
         tx.commit().await?;
-        Ok(())
-    }
-
-    /// Summarises every reading older than the sample window into one row per local day,
-    /// window and published expiry. The day is the application zone's, so the samples are
-    /// grouped here rather than by SQLite, which knows only the Windows zone.
-    async fn roll_up_samples(
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        now: &str,
-    ) -> Result<()> {
-        let rows = sqlx::query(&format!(
-            "SELECT provider_instance_id, window_kind, window_duration_mins, resets_at, \
-             used_percent, unixepoch(observed_at) AS observed FROM limit_samples \
-             WHERE datetime(observed_at) < datetime(?, '-{SAMPLE_HISTORY_DAYS} days') \
-             ORDER BY observed_at, id"
-        ))
-        .bind(now)
-        .fetch_all(&mut **tx)
-        .await?;
-
-        let mut days: BTreeMap<RollupKey, DailyRollup> = BTreeMap::new();
-        for row in rows {
-            let Some(day) = crate::clock::day_key(row.try_get("observed")?) else { continue };
-            let resets_at: Option<i64> = row.try_get("resets_at")?;
-            let used: Option<f64> = row.try_get("used_percent")?;
-            let summary = days
-                .entry(RollupKey {
-                    provider_id: row.try_get("provider_instance_id")?,
-                    day,
-                    kind: row.try_get("window_kind")?,
-                    duration: row.try_get("window_duration_mins")?,
-                    resets_at,
-                    segment: resets_at.map_or_else(|| "none".to_string(), |at| at.to_string()),
-                })
-                .or_default();
-            summary.first.get_or_insert(used);
-            summary.last = used;
-            summary.count += 1;
-            summary.measure(used, used, used, 1);
-        }
-        for (key, summary) in days {
-            summary.write(tx, &key).await?;
-        }
         Ok(())
     }
 

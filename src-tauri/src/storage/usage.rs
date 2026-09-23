@@ -14,8 +14,8 @@ use crate::domain::{
 use crate::providers::ProviderKind;
 
 use super::{
-    AGGREGATE_SERVICE_TIER, Bucket, BucketTable, LOCAL_DEVICE, MODEL_SEPARATOR,
-    SESSION_COST_HISTORY_DAYS, Storage, add_usage, rank_models,
+    AGGREGATE_SERVICE_TIER, Bucket, BucketTable, LOCAL_DEVICE, MODEL_SEPARATOR, Storage, add_usage,
+    rank_models,
 };
 
 /// One stored session comparison, as the surfaces read it back.
@@ -212,23 +212,17 @@ impl Storage {
 
     /// Stores each session the parser read, priced from the catalog, with the client's own
     /// figures where it recorded any. A session is written once and then corrected, since
-    /// a session logged today is summarised again once more work goes through it.
-    ///
-    /// A session that started before the retention window is skipped: the client's logs
-    /// outlive the window, and writing it again would bring back the row retention removed.
+    /// a session logged today is summarised again once more work goes through it. A row
+    /// stays after the client deletes the log behind it, because nothing else records it.
     pub async fn save_session_costs(
         &self,
         provider: ProviderKind,
         sessions: &[SessionCost],
         observed_at: &str,
     ) -> Result<()> {
-        let cutoff = observed_at.parse::<jiff::Timestamp>()?
-            - jiff::SignedDuration::from_hours(24 * SESSION_COST_HISTORY_DAYS);
         let provider_id = self.provider_id(provider).await?;
         let mut tx = self.pool.begin().await?;
-        for session in sessions.iter().filter(|session| {
-            session.session_started_at.parse::<jiff::Timestamp>().is_ok_and(|at| at >= cutoff)
-        }) {
+        for session in sessions {
             sqlx::query(
                 "INSERT INTO session_costs \
                  (provider_instance_id, session_id, session_started_at, duration_ms, \
@@ -325,12 +319,7 @@ impl Storage {
         let reported_cost_usd =
             compared.clone().filter_map(|session| session.reported_cost_usd).sum();
         let computed_cost_usd = compared.map(|session| session.computed_cost_usd).sum();
-        Ok(SessionCostSnapshot {
-            sessions,
-            reported_cost_usd,
-            computed_cost_usd,
-            retention_days: SESSION_COST_HISTORY_DAYS,
-        })
+        Ok(SessionCostSnapshot { sessions, reported_cost_usd, computed_cost_usd })
     }
 
     /// Providers that have usage rows on any device. Imported rows count exactly like

@@ -120,14 +120,20 @@ own row; it stays in the local database and is not part of the shared-folder exp
 
 | Data | Retention |
 | --- | --- |
-| Five-minute quota readings | 90 days |
+| Five-minute quota readings | Indefinitely |
 | Daily quota summaries | Indefinitely |
 | Hourly usage totals | 14 days |
 | Daily usage totals | Indefinitely |
 | Confirmed quota reset events | Indefinitely |
-| Per-session summaries | 90 days |
+| Per-session summaries | Indefinitely |
 | Successful refresh records | 30 days |
 | Failed refresh records | 180 days |
+
+Everything that records usage or quota is kept for good. It is the only copy once the
+providers' logs are gone, and together it grows by tens of megabytes a year. Two things are
+dropped on purpose: hourly usage past the fourteen days the parser fills, because a zone change
+rebuilds it from the logs and an hour older than them could not be rebuilt, and refresh
+records, which only Diagnostics reads.
 
 Ranges of up to three days use hourly rows. Longer ranges use daily rows. Both are produced by
 the same parse of the same local records, so changing the selected range does not re-read the
@@ -141,7 +147,8 @@ mean the Windows zone. When the zone changes, the next complete parse rebuilds t
 provider's hourly rows and every daily row the session logs still reach, in one transaction,
 and rows imported from other devices are read again, so hours from two zones are never mixed.
 A day older than the logs — Claude Code deletes old transcripts — cannot be rebuilt and keeps
-the date it was filed under rather than being discarded.
+the date it was filed under rather than being discarded. It also keeps the cost it was priced
+at; its per-model token counts are still there if it ever has to be priced again.
 
 The zone setting corrects how times are displayed and bucketed, not the clock itself. If the
 computer's clock is wrong in UTC, the timestamps Codex and Claude Code write into their logs
@@ -230,6 +237,33 @@ applies the measured offset wherever a reading is dated or compared with server 
 the interface's countdowns. A failed check keeps the previous offset and is reported in
 Diagnostics; switching the check off forgets the offset. Timestamps the clients wrote into
 their own logs are left as written, because the offset when they were written is unknown.
+Stored readings and restarts do not record whether an offset applied when they were dated, so
+they are never re-dated afterwards.
+
+## Changing stored or shared data
+
+A record that outlives its source can never be corrected by re-reading that source, and a
+shared file is read by builds older and newer than the one that wrote it. A change to what is
+stored or shared therefore answers these before it lands:
+
+- **Instants are UTC.** A local day or hour is derived from an instant when it is read. A table
+  that has to store a local key records the zone it was keyed in, as `aggregation_timezone`
+  does for usage, so a zone change can find what it has to rebuild.
+- **What cannot be rebuilt is named.** A row that survives its source log records what produced
+  it — parser revision, pricing catalog, zone — or the fact that it can never be recomputed
+  is written here, so a later fix knows which rows it cannot reach.
+- **Shared records carry their origin.** Every record a device exports says which device
+  produced it. A reader never infers origin from whose file a record arrived in, and a record
+  of unknown origin is not exported.
+- **The shared format has a version.** `FORMAT_VERSION` in `sync.rs` moves whenever a field
+  is added whose absence an older file cannot be told apart from, or whose meaning changes. A
+  reader accepts every version up to its own and reports a newer one as needing an update.
+- **Mixed versions are expected.** Two computers can run different builds while both are on,
+  and either can upgrade first; each change is checked for what an older reader makes of the
+  new file and what the new reader makes of an old one.
+- **Migrations are forward-only.** An older build refuses a database a newer one has
+  migrated, so a migration that removes or rewrites data is one there is no stepping back
+  from.
 
 ## Reused code
 
