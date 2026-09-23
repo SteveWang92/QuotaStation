@@ -92,9 +92,13 @@ export async function reloadAppSettings(): Promise<void> {
  * outside React, exactly as the theme watch is: each window read the settings when it was
  * created and the dialog that changes them lives in one of them, so without this the
  * others go on drawing the preference they were started with.
+ *
+ * The first read happens here too rather than waiting for a card to mount: the zone every
+ * chart and time is drawn in comes from it, and a window can show neither card at all.
  */
 export function watchAppSettings(): void {
   void listen<AppSettings>("settings-changed", ({ payload }) => publish(payload));
+  void reloadAppSettings();
 }
 
 /** The settings as last read or written, with a visible failure and retry path. */

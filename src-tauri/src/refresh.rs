@@ -259,8 +259,11 @@ async fn apply_live(
                     Err(error) => (false, Some(storage_error(error))),
                 };
             // A restart is news for the other devices, and the history refresh that normally
-            // carries it there can be an hour away.
+            // carries it there can be an hour away. The history lock keeps this exchange from
+            // running beside that refresh's own, which writes the same file, and from exporting
+            // rows a zone change is still rebuilding.
             if recorded_restart {
+                let _history_guard = state.history_refresh_lock.lock().await;
                 let shared_folder = crate::sync::run(state).await;
                 *state.shared_folder_diagnostics.write().await = shared_folder;
             }

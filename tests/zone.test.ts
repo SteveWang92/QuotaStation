@@ -46,7 +46,7 @@ describe("the application zone", () => {
   it("gives a day the clocks go back on its repeated hour once", () => {
     setZone("Australia/Sydney");
     // Sydney leaves daylight saving at 03:00 on 5 April 2026, repeating 02:00.
-    const hours = calendarHours("2026-04-05", "2026-04-05", new Date(Date.UTC(2026, 3, 6)));
+    const hours = calendarHours("2026-04-05", "2026-04-05", Date.UTC(2026, 3, 6));
     expect(hours).toHaveLength(24);
     expect(new Set(hours).size).toBe(24);
   });
@@ -54,7 +54,7 @@ describe("the application zone", () => {
   it("gives a day the clocks go forward on only the hours it had", () => {
     setZone("Australia/Sydney");
     // Sydney enters daylight saving at 02:00 on 4 October 2026, skipping 02:00.
-    const hours = calendarHours("2026-10-04", "2026-10-04", new Date(Date.UTC(2026, 9, 5)));
+    const hours = calendarHours("2026-10-04", "2026-10-04", Date.UTC(2026, 9, 5));
     expect(hours).toHaveLength(23);
     expect(hours).not.toContain("2026-10-04T02:00");
   });

@@ -9,7 +9,7 @@
  */
 
 import type { TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot } from "./types";
-import { addDays, dateOf, hoursBetween, instantOf } from "./zone";
+import { addDays, dateOf, hoursBetween, instantOf, now } from "./zone";
 
 const TOKEN_FIELDS: Array<keyof TokenUsage> = [
   "input",
@@ -52,10 +52,10 @@ export function calendarDays(startDate: string, endDate: string): string[] {
  * A range ending today stops at the hour in progress rather than running on to midnight:
  * the hours nobody has lived through yet are not empty usage, they are not yet hours.
  */
-export function calendarHours(startDate: string, endDate: string, now = new Date()): string[] {
-  const today = dateOf(now.getTime());
+export function calendarHours(startDate: string, endDate: string, nowMs = now()): string[] {
+  const today = dateOf(nowMs);
   if (startDate > today) return [];
-  const last = endDate < today ? instantOf(`${addDays(endDate, 1)}T00:00`) - 1 : now.getTime();
+  const last = endDate < today ? instantOf(`${addDays(endDate, 1)}T00:00`) - 1 : nowMs;
   return hoursBetween(instantOf(`${startDate}T00:00`), last);
 }
 

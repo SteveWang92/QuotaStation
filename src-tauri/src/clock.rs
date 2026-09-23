@@ -16,7 +16,7 @@ use std::{
     net::UdpSocket,
     sync::{
         RwLock,
-        atomic::{AtomicI64, Ordering},
+        atomic::{AtomicI64, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -98,6 +98,10 @@ pub fn hour_key(epoch: i64) -> Option<String> {
 /// local clock for the corrected time. Zero until a check has measured it.
 static OFFSET_MS: AtomicI64 = AtomicI64::new(0);
 
+/// Moves on each time the check is switched off, so a measurement already in flight when it
+/// was lands on nothing instead of restoring an offset the user has just turned off.
+static SWITCHED_OFF: AtomicU64 = AtomicU64::new(0);
+
 #[cfg(test)]
 thread_local! {
     /// The offset a test reads, kept to its own thread for the same reason as the zone.
@@ -158,16 +162,21 @@ pub async fn refresh_offset(enabled: bool) {
 
 async fn refresh_offset_with(enabled: bool, query: fn() -> Result<i64>) {
     if !enabled {
+        SWITCHED_OFF.fetch_add(1, Ordering::Relaxed);
         store_offset(0);
         if let Ok(mut check) = CHECK.write() {
             *check = ClockCheck::default();
         }
         return;
     }
+    let switched_off = SWITCHED_OFF.load(Ordering::Relaxed);
     let measured = tokio::task::spawn_blocking(query)
         .await
         .map_err(anyhow::Error::from)
         .and_then(|result| result);
+    if SWITCHED_OFF.load(Ordering::Relaxed) != switched_off {
+        return;
+    }
     let checked_at = Timestamp::now().to_string();
     match measured {
         Ok(offset) => {
@@ -338,6 +347,20 @@ mod tests {
     async fn with_the_check_off_no_request_is_sent_and_the_offset_is_forgotten() {
         set_offset_for_test(90_000);
         refresh_offset_with(false, || panic!("no request may be sent with the check off")).await;
+        assert_eq!(offset_ms(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_measurement_finishing_after_the_check_is_switched_off_is_discarded() {
+        let slow_answer = || {
+            std::thread::sleep(Duration::from_millis(200));
+            Ok(90_000)
+        };
+        let switch_off = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            refresh_offset_with(false, || unreachable!()).await;
+        };
+        tokio::join!(refresh_offset_with(true, slow_answer), switch_off);
         assert_eq!(offset_ms(), 0);
     }
 }
