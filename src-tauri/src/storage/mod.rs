@@ -37,12 +37,6 @@ const AGGREGATE_SERVICE_TIER: &str = "mixed";
 /// could not read the settings file to find it.
 pub const LOCAL_DEVICE: &str = "local";
 
-/// How long quota readings are kept at the granularity they arrived at, before they become
-/// the daily summaries that replace them. This is the window an unexplained reset can still
-/// be diagnosed in, and ninety days of readings cost single-digit megabytes; a shorter
-/// window loses the samples behind a restart before anyone asks about it.
-const SAMPLE_HISTORY_DAYS: i64 = 90;
-
 /// What joins a session's model names in the one column that holds them. A model name
 /// never contains it, and nothing queries the column, so the list is stored as it reads.
 const MODEL_SEPARATOR: &str = ", ";
@@ -133,12 +127,6 @@ fn parse_kind(value: &str) -> Option<LimitKind> {
         _ => None,
     }
 }
-
-/// How long a session's two cost figures are kept. They are read again from the logs while
-/// those still exist, so the rows outlast the sessions behind them by exactly as long as a
-/// quota reading is kept, which is the span any question about a period can still be asked
-/// over.
-const SESSION_COST_HISTORY_DAYS: i64 = SAMPLE_HISTORY_DAYS;
 
 #[derive(Clone)]
 pub struct Storage {

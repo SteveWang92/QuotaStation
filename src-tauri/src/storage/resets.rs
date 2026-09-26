@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use crate::domain::{
     HOURLY_HISTORY_DAYS, LimitKind, LimitResetEvent, LiveSnapshot, QuotaHistoryPoint,
@@ -116,6 +116,11 @@ fn reset_event(row: sqlx::sqlite::SqliteRow) -> Option<(i64, LimitResetEvent)> {
     };
     Some((row.try_get("id").ok()?, event))
 }
+
+/// The version of the replay: how observations are read out of the logs and how a restart is
+/// detected among them. It moves whenever either changes, so a watermark an older replay
+/// reached is not trusted and the logs are replayed from the start.
+const RESET_BACKFILL_VERSION: i64 = 1;
 
 /// Each provider replays its own logs, so the scan watermarks cannot share a row.
 fn backfill_job_name(provider: ProviderKind) -> String {
@@ -391,7 +396,8 @@ impl Storage {
             .bind(reset_id)
             .execute(&mut **tx)
             .await?;
-        sqlx::query(&format!(
+        // `REPRESENTATIVE_ORDER` is a constant, and the row id is bound.
+        sqlx::query(AssertSqlSafe(format!(
             "UPDATE limit_resets SET (window_kind, anchored_at, new_resets_at, previous_resets_at, \
                used_percent_before, early_by_seconds, classification, source, detected_at) = ( \
                SELECT window_kind, anchored_at, new_resets_at, previous_resets_at, \
@@ -402,7 +408,7 @@ impl Storage {
                SELECT MAX(anchored_at) - MIN(anchored_at) FROM limit_reset_observations \
                WHERE reset_id = limit_resets.id) \
              WHERE id = ?"
-        ))
+        )))
         .bind(reset_id)
         .execute(&mut **tx)
         .await?;
@@ -420,14 +426,15 @@ impl Storage {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        // Row ids read back from the database, so writing them into the statement is safe.
+        // The ids are integers read back from the database and `REPRESENTATIVE_ORDER` is a
+        // constant, so only digits and fixed SQL reach the statement.
         let ids = events.iter().map(|(id, _)| id.to_string()).collect::<Vec<_>>().join(",");
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT reset_id, device, COALESCE(devices.display_name, device_name) AS name, \
              source, anchored_at, classification FROM limit_reset_observations \
              LEFT JOIN devices ON devices.id = limit_reset_observations.device \
              WHERE reset_id IN ({ids}) ORDER BY {REPRESENTATIVE_ORDER}"
-        ))
+        )))
         .fetch_all(&self.pool)
         .await?;
         let mut detections: BTreeMap<i64, Vec<ResetDetection>> = BTreeMap::new();
@@ -479,10 +486,11 @@ impl Storage {
         let oldest_hour = crate::clock::day_start(
             crate::clock::today().saturating_sub(jiff::Span::new().days(HOURLY_HISTORY_DAYS)),
         )?;
-        let windows = sqlx::query(&format!(
+        // `window_start` is built from constants alone, and every value is bound.
+        let windows = sqlx::query(AssertSqlSafe(format!(
             "SELECT id, {window_start} AS window_start, previous_resets_at, anchored_at \
              FROM limit_resets WHERE provider_instance_id = ? AND {window_start} >= ?"
-        ))
+        )))
         .bind(provider_id)
         .bind(oldest_hour)
         .fetch_all(&mut **tx)
@@ -514,22 +522,27 @@ impl Storage {
 
     /// The instant a rollout scan may start from, leaving enough overlap for a window
     /// that reset either side of the previous scan to still be paired with a reading.
+    /// `None`, a scan from the start, when no scan has finished at this replay version.
     pub async fn reset_backfill_start(&self, provider: ProviderKind) -> Result<Option<i64>> {
-        let last_completed: Option<String> =
-            sqlx::query_scalar("SELECT last_completed_at FROM retention_state WHERE job_name = ?")
-                .bind(backfill_job_name(provider))
-                .fetch_optional(&self.pool)
-                .await?
-                .flatten();
-        Ok(last_completed
+        let watermark: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT last_completed_at, reader_version FROM retention_state WHERE job_name = ?",
+        )
+        .bind(backfill_job_name(provider))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(watermark
+            .filter(|(_, version)| version.is_some_and(|version| version >= RESET_BACKFILL_VERSION))
+            .and_then(|(completed, _)| completed)
             .as_deref()
             .and_then(epoch_seconds)
             .map(|completed| completed - BACKFILL_OVERLAP_HOURS * 3_600))
     }
 
-    /// Replays observations Codex logged itself, merged with the samples this machine
-    /// already stored, so restarts that happened while QuotaStation was closed are still
-    /// recorded. Storing an event twice is prevented by the table, not by the caller.
+    /// Replays the readings a provider's client kept for itself — Codex's rollout logs,
+    /// Claude's status-line record — so restarts that happened while QuotaStation was closed
+    /// are still recorded. A restart another device already shared joins that restart as
+    /// this machine's own detection of it; storing a detection twice is prevented by the
+    /// table, not by the caller.
     pub async fn backfill_resets(
         &self,
         provider: ProviderKind,
@@ -538,7 +551,13 @@ impl Storage {
     ) -> Result<usize> {
         let provider_id = self.provider_id(provider).await?;
         let mut merged = observations.to_vec();
-        merged.extend(self.load_sample_observations(provider_id).await?);
+        // Codex's rollout logs lack the readings this machine took from the app server, so
+        // the stored samples fill them in. Claude's record already holds every reading the
+        // samples were copied from, and the samples carry no source that would keep a
+        // log-derived window apart from a published one.
+        if provider == ProviderKind::Codex {
+            merged.extend(self.load_sample_observations(provider_id).await?);
+        }
         merged.sort_by_key(|observation| observation.observed_at);
 
         let mut tracker = ResetTracker::default();
@@ -563,12 +582,15 @@ impl Storage {
         }
         Self::refresh_reset_tokens(&mut tx, provider_id).await?;
         sqlx::query(
-            "INSERT INTO retention_state (job_name, last_completed_at, last_status, last_error) \
-             VALUES (?, ?, 'succeeded', NULL) ON CONFLICT(job_name) DO UPDATE SET \
-             last_completed_at=excluded.last_completed_at, last_status=excluded.last_status, last_error=NULL",
+            "INSERT INTO retention_state \
+             (job_name, last_completed_at, last_status, last_error, reader_version) \
+             VALUES (?, ?, 'succeeded', NULL, ?) ON CONFLICT(job_name) DO UPDATE SET \
+             last_completed_at=excluded.last_completed_at, last_status=excluded.last_status, \
+             last_error=NULL, reader_version=excluded.reader_version",
         )
         .bind(backfill_job_name(provider))
         .bind(scanned_at)
+        .bind(RESET_BACKFILL_VERSION)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -607,10 +629,11 @@ impl Storage {
     /// [`load_recent_resets`](Self::load_recent_resets) instead.
     pub async fn load_reset_history(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
         let provider_id = self.provider_id(provider).await?;
-        let rows = sqlx::query(&format!(
+        // `RESET_COLUMNS` is a constant, and every value is bound.
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT {RESET_COLUMNS} FROM limit_resets \
              WHERE provider_instance_id = ? ORDER BY anchored_at DESC"
-        ))
+        )))
         .bind(provider_id)
         .fetch_all(&self.pool)
         .await?;
@@ -619,10 +642,11 @@ impl Storage {
 
     pub async fn load_recent_resets(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
         let provider_id = self.provider_id(provider).await?;
-        let rows = sqlx::query(&format!(
+        // `RESET_COLUMNS` is a constant, and every value is bound.
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT {RESET_COLUMNS} FROM limit_resets \
              WHERE provider_instance_id = ? ORDER BY anchored_at DESC LIMIT ?"
-        ))
+        )))
         .bind(provider_id)
         .bind(RECENT_RESET_LIMIT)
         .fetch_all(&self.pool)
@@ -632,9 +656,9 @@ impl Storage {
 
     /// What each quota window did across a date range, one point per local day.
     ///
-    /// Two stores answer this between them and they do not overlap: readings younger than
-    /// the retention cutoff are still in `limit_samples` at the granularity they arrived
-    /// at, and everything older survives only as the daily rollups. A day is reduced to
+    /// Two stores answer this between them and they do not overlap: `limit_samples` keeps
+    /// every reading at the granularity it arrived at, and `limit_rollups` holds daily
+    /// summaries only for days whose readings are no longer stored. A day is reduced to
     /// the highest share observed on it, so a window that filled and restarted the same
     /// day still reports how full it got.
     pub async fn load_quota_history(
@@ -664,13 +688,22 @@ impl Storage {
         // The rollups are day buckets already, keyed when they were rolled up; only the raw
         // samples have to be dated, and they are dated in the application zone so this chart
         // shares the usage chart's calendar.
+        // Readings are kept for good, so the range is also compared as text to let the index
+        // narrow it. Every reading is stored as a UTC RFC 3339 string, which sorts by time
+        // to the second; the text bounds sit a second outside the range and the exact
+        // comparison decides the edges.
+        let text_bound =
+            |epoch: i64| jiff::Timestamp::from_second(epoch).map(|instant| instant.to_string());
         let samples = sqlx::query(
             "SELECT unixepoch(observed_at) AS observed, window_kind, used_percent, \
              window_duration_mins FROM limit_samples WHERE provider_instance_id = ? \
+             AND observed_at > ? AND observed_at < ? \
              AND used_percent IS NOT NULL AND unixepoch(observed_at) >= ? \
              AND unixepoch(observed_at) < ?",
         )
         .bind(provider_id)
+        .bind(text_bound(from - 1)?)
+        .bind(text_bound(until + 1)?)
         .bind(from)
         .bind(until)
         .fetch_all(&self.pool)
@@ -721,10 +754,11 @@ impl Storage {
             window.1.push(QuotaHistoryPoint { date, peak_used_percent });
         }
 
-        let reset_rows = sqlx::query(&format!(
+        // `RESET_COLUMNS` is a constant, and every value is bound.
+        let reset_rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT {RESET_COLUMNS} FROM limit_resets WHERE provider_instance_id = ? \
              AND anchored_at >= ? AND anchored_at < ? ORDER BY anchored_at ASC"
-        ))
+        )))
         .bind(provider_id)
         .bind(from)
         .bind(until)

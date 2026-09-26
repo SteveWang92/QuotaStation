@@ -20,9 +20,8 @@ use std::{
     path::Path,
 };
 
-use anyhow::{Context, Result};
-use ccusage_adapter_claude::load_entries;
-use ccusage_core::cli::SharedArgs;
+use anyhow::Result;
+use ccusage_adapter_claude::SessionUsageEntry;
 use serde::Deserialize;
 
 use crate::{
@@ -30,18 +29,10 @@ use crate::{
     providers::ProviderKind,
 };
 
-/// Every session the parser read, oldest first.
-pub async fn read_session_costs() -> Result<Vec<SessionCost>> {
-    tokio::task::spawn_blocking(read_session_costs_blocking)
-        .await
-        .context("Claude cost reader stopped unexpectedly")?
-}
-
-fn read_session_costs_blocking() -> Result<Vec<SessionCost>> {
-    let entries = load_entries(&SharedArgs { json: true, ..SharedArgs::default() }, None)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+/// Every session in the entries the history parse loaded, oldest first.
+pub(super) fn sessions_from(entries: &[SessionUsageEntry]) -> Result<Vec<SessionCost>> {
     let reported = reported_costs(&crate::providers::usage_files(ProviderKind::Claude)?);
-    Ok(sessions(computed_costs(&entries), reported))
+    Ok(sessions(computed_costs(entries), reported))
 }
 
 /// What Claude Code recorded for each session it recorded anything for.
@@ -154,7 +145,7 @@ fn read_reported_costs(file: &Path, reported: &mut BTreeMap<String, Reported>) {
 /// The tokens are counted here rather than read from the client's own record, so a session
 /// carries the same deduplicated figures every other total in the application is built
 /// from.
-fn computed_costs(entries: &[ccusage_core::LoadedEntry]) -> BTreeMap<String, Computed> {
+fn computed_costs(entries: &[SessionUsageEntry]) -> BTreeMap<String, Computed> {
     let mut computed: BTreeMap<String, Computed> = BTreeMap::new();
     for entry in entries {
         let moment = entry.timestamp.as_millis();
@@ -164,16 +155,15 @@ fn computed_costs(entries: &[ccusage_core::LoadedEntry]) -> BTreeMap<String, Com
         session.first_entry_ms = session.first_entry_ms.min(moment);
         session.last_entry_ms = session.last_entry_ms.max(moment);
         session.cost_usd += entry.cost;
-        session.independent &= entry.data.cost_usd.is_none();
-        let usage = entry.data.message.usage;
+        session.independent &= !entry.has_own_cost;
+        let usage = entry.usage;
         // Claude reports cache creation as its own category and no reasoning at all, which
         // is the fold the daily history already applies to the same numbers.
         let input = usage.input_tokens + usage.cache_creation_token_count();
         session.usage.input += input;
         session.usage.cache_read += usage.cache_read_input_tokens;
         session.usage.output += usage.output_tokens;
-        session.usage.total +=
-            input + usage.cache_read_input_tokens + usage.output_tokens + entry.extra_total_tokens;
+        session.usage.total += input + usage.cache_read_input_tokens + usage.output_tokens;
         if let Some(model) = &entry.model {
             let model = ccusage_core::model_aliases::resolve_model_name(model);
             *session.model_costs.entry(model.into_owned()).or_default() += entry.cost;
@@ -316,7 +306,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires local Claude Code session history"]
     async fn claude_session_costs_pair_with_the_computed_estimate() {
-        let sessions = read_session_costs().await.expect("read session costs");
+        let system_timezone = jiff::tz::TimeZone::system();
+        let timezone = system_timezone.iana_name().unwrap_or("UTC");
+        let (_, sessions) =
+            super::super::history::read_history(timezone).await.expect("read session costs");
         println!(
             "{} session(s) read, {:.1}% apart, {} independent",
             sessions.len(),

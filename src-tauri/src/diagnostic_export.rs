@@ -207,6 +207,7 @@ mod tests {
             shared_folder: SharedFolderDiagnostics::default(),
             clock: crate::domain::ClockDiagnostics::default(),
             devices: vec![DeviceDiagnostics {
+                file_modified_at: None,
                 id: "secret-device-id".to_string(),
                 display_name: "Private computer".to_string(),
                 local: true,

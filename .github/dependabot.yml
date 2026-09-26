@@ -55,6 +55,10 @@ updates:
       interval: monthly
     target-branch: dev
     open-pull-requests-limit: 2
+    # Declared only by the vendored ccusage workspace, which no crate built here uses; the
+    # vendored tree changes with the audited upstream revision, not by version bumps.
+    ignore:
+      - dependency-name: schemars
     cooldown:
       default-days: 21
       semver-major-days: 30

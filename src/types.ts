@@ -294,9 +294,6 @@ export interface SessionCostSnapshot {
       with each other. */
   reportedCostUsd: number;
   computedCostUsd: number;
-  /** How far back sessions are kept, which is what makes an empty older range explainable
-      rather than a claim that nothing was done. */
-  retentionDays: number;
 }
 
 export interface AcquisitionDiagnostics {
@@ -334,6 +331,8 @@ export interface DeviceDiagnostics {
   displayName: string;
   local: boolean;
   lastImportAt: string | null;
+  /** When the other device last wrote the shared file its rows came from. */
+  fileModifiedAt: string | null;
   /** How many quota restarts this device detected, as far as this machine knows. */
   restartCount: number;
 }

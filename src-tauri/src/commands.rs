@@ -573,11 +573,17 @@ async fn collect_diagnostics(
         .await
         .map_err(|error| sanitize::sanitize_error(&error.to_string(), "Diagnostics unavailable"))?
         .into_iter()
+        // A forgotten device counts toward nothing, so it is not offered anywhere either.
+        .filter(|device| !device.forgotten)
         .map(|device| DeviceDiagnostics {
             local: device.id == storage::LOCAL_DEVICE,
             id: device.id,
             display_name: device.display_name,
             last_import_at: device.last_import_at,
+            file_modified_at: device
+                .source_modified_at
+                .and_then(|second| jiff::Timestamp::from_second(second).ok())
+                .map(|modified| modified.to_string()),
             restart_count: device.restart_count.unsigned_abs(),
         })
         .collect();
@@ -600,6 +606,24 @@ async fn collect_diagnostics(
         build_commit: env!("QUOTASTATION_BUILD_COMMIT").to_string(),
         build_kind: build_kind(),
     })
+}
+
+/// Forgets another device on the user's word, and shows every total without it at once.
+#[tauri::command]
+pub(crate) async fn forget_device(
+    app: tauri::AppHandle,
+    device_id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    crate::sync::forget(state.inner(), &device_id).await.map_err(|error| {
+        sanitize::sanitize_error(&error.to_string(), "The device could not be forgotten")
+    })?;
+    if let Err(error) = state.refresh_enabled_providers().await {
+        log::write(format!("usage providers could not be refreshed: {error:#}"));
+    }
+    refresh::republish(&app, state.inner()).await;
+    let _ = app.emit("history-updated", ());
+    Ok(())
 }
 
 /// Writes only the whitelisted diagnostic snapshot the user explicitly chose to export.

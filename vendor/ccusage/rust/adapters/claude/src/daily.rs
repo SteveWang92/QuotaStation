@@ -21,7 +21,7 @@ use crate::{
 use super::{
     advisor_usages_from_line, chunk_file_indexes_by_size, has_unsupported_null_field,
     is_semver_prefix,
-    paths::{claude_paths, extract_project, usage_files},
+    paths::{claude_paths, extract_project, extract_session_parts, usage_files},
     usage_dedupe_hash,
 };
 
@@ -34,13 +34,43 @@ pub(super) fn load_daily_summaries_inner(
     Ok(daily_summaries(&deduped, group_by_project))
 }
 
-pub(super) fn load_daily_and_hourly_summaries_inner(
+/// Every deduplicated entry, reduced to what a per-session total is built from.
+#[derive(Debug, Clone)]
+pub struct SessionUsageEntry {
+    /// Derived from the file path, so a subagent's file belongs to its parent session.
+    pub session_id: Arc<str>,
+    pub timestamp: TimestampMs,
+    pub usage: TokenUsageRaw,
+    pub cost: f64,
+    pub model: Option<String>,
+    /// Whether the line carried its own `costUSD` rather than being priced from the catalog.
+    pub has_own_cost: bool,
+}
+
+pub(super) fn load_daily_hourly_and_session_entries_inner(
     shared: &SharedArgs,
     project_filter: Option<&str>,
     group_by_project: bool,
-) -> Result<(Vec<UsageSummary>, Vec<(String, UsageSummary)>)> {
+) -> Result<(
+    Vec<UsageSummary>,
+    Vec<(String, UsageSummary)>,
+    Vec<SessionUsageEntry>,
+)> {
     let deduped = load_deduped_entries(shared, project_filter)?;
-    Ok((daily_summaries(&deduped, group_by_project), hourly_summaries(&deduped)))
+    let daily = daily_summaries(&deduped, group_by_project);
+    let hourly = hourly_summaries(&deduped);
+    let sessions = deduped
+        .into_iter()
+        .map(|entry| SessionUsageEntry {
+            session_id: entry.session_id,
+            timestamp: entry.timestamp,
+            usage: entry.usage,
+            cost: entry.cost,
+            model: entry.model,
+            has_own_cost: entry.has_own_cost,
+        })
+        .collect();
+    Ok((daily, hourly, sessions))
 }
 
 fn daily_summaries(
@@ -178,8 +208,11 @@ struct DailyLoadedEntry {
     /// daily report and an hourly one without reading the files twice.
     hour: String,
     project: Arc<str>,
+    session_id: Arc<str>,
+    timestamp: TimestampMs,
     usage: TokenUsageRaw,
     cost: f64,
+    has_own_cost: bool,
     model: Option<String>,
     missing_pricing_model: Option<String>,
     message_id: Option<String>,
@@ -308,6 +341,7 @@ fn read_daily_usage_file(
     pricing: Option<&PricingMap>,
 ) -> DailyLoadedFile {
     let project: Arc<str> = Arc::from(extract_project(path));
+    let session_id: Arc<str> = Arc::from(extract_session_parts(path).0);
     let mut loaded_file = DailyLoadedFile {
         timestamp: None,
         entries: Vec::new(),
@@ -371,8 +405,11 @@ fn read_daily_usage_file(
             date: date.clone(),
             hour: hour.clone(),
             project: Arc::clone(&project),
+            session_id: Arc::clone(&session_id),
+            timestamp,
             usage,
             cost,
+            has_own_cost: data.cost_usd.is_some(),
             model,
             missing_pricing_model,
             message_id: data.message.id,
@@ -391,6 +428,8 @@ fn read_daily_usage_file(
                 date: date.clone(),
                 hour: hour.clone(),
                 project: Arc::clone(&project),
+                session_id: Arc::clone(&session_id),
+                timestamp,
                 usage: advisor.usage,
                 cost: calculate_cost_for_usage(
                     Some(&advisor.model),
@@ -399,6 +438,7 @@ fn read_daily_usage_file(
                     mode,
                     pricing,
                 ),
+                has_own_cost: false,
                 model: Some(advisor.model),
                 missing_pricing_model,
                 message_id: message_id
@@ -688,6 +728,8 @@ mod tests {
             date: "2026-03-29".to_string(),
             hour: "2026-03-29T09:00".to_string(),
             project: Arc::from("project-a"),
+            session_id: Arc::from("session-a"),
+            timestamp: crate::parse_ts_timestamp("2026-03-29T09:00:00.000Z").unwrap(),
             usage: TokenUsageRaw {
                 input_tokens: 0,
                 output_tokens: fixture.output_tokens,
@@ -697,6 +739,7 @@ mod tests {
                 cache_creation: None,
             },
             cost: 0.0,
+            has_own_cost: false,
             model: Some("claude-sonnet-4-20250514".to_string()),
             missing_pricing_model: None,
             message_id: Some(fixture.message_id.to_string()),

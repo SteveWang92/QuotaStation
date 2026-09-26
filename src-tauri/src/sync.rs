@@ -30,9 +30,15 @@ use crate::{
     storage::DeviceImport,
 };
 
-/// The shape a reader expects. A file written by a newer build is left alone rather than
-/// read as though this one understood it.
-const FORMAT_VERSION: u32 = 1;
+/// The version of the file this build writes. It moves whenever a field is added whose
+/// absence an older file could not be told apart from, or whose meaning changes, so a
+/// reader knows what a file can be trusted to say. A reader accepts every version up to
+/// its own; a newer file is left alone, and reported, rather than read as though this build
+/// understood it.
+///
+/// It is also the version an import is stored at: a file read by a build whose version was
+/// lower is read again, since that build may have passed over content it did not know.
+pub(crate) const FORMAT_VERSION: u32 = 1;
 
 const FILE_PREFIX: &str = "usage-";
 const FILE_SUFFIX: &str = ".json";
@@ -150,7 +156,8 @@ async fn export(
     crate::fs_atomic::write(&path, &content).context("write the exported aggregates")
 }
 
-/// Reads every other machine's file that has moved since it was last read.
+/// Reads every other machine's file that has moved since it was last read, or that was last
+/// read at an older format version than this build reads.
 ///
 /// A file that cannot be read is skipped with a diagnostic and nothing more: a sync client
 /// halfway through replacing one is an ordinary event, and the next refresh finds it whole.
@@ -184,17 +191,11 @@ async fn import_others(state: &Arc<AppState>, folder: &Path, device_id: &str) ->
         if file_device == device_id {
             continue;
         }
-        let modified = entry
-            .metadata()
-            .ok()
-            .and_then(|metadata| metadata.modified().ok())
-            .and_then(|modified| jiff::Timestamp::try_from(modified).ok())
-            .map(|modified| modified.as_second());
-        let Some(modified) = modified else { continue };
-        if known
-            .iter()
-            .any(|device| device.id == file_device && device.source_modified_at == Some(modified))
-        {
+        let Some(modified) = entry.metadata().ok().and_then(|metadata| modified_second(&metadata))
+        else {
+            continue;
+        };
+        if known.iter().any(|device| device.id == file_device && device.read_current(modified)) {
             continue;
         }
         if let Err(error) = import_one(state, &entry.path(), file_device, device_id, modified).await
@@ -203,6 +204,34 @@ async fn import_others(state: &Arc<AppState>, folder: &Path, device_id: &str) ->
         }
     }
     failures
+}
+
+/// A file's modification time, in the whole seconds a device's marker stores.
+fn modified_second(metadata: &std::fs::Metadata) -> Option<i64> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| jiff::Timestamp::try_from(modified).ok())
+        .map(|modified| modified.as_second())
+}
+
+/// Forgets another device: its usage leaves every total, and its file is not read again
+/// until it changes. A computer that lost its settings publishes under a new identifier and
+/// leaves its old file behind, which would otherwise count its usage twice for good.
+pub async fn forget(state: &Arc<AppState>, device_id: &str) -> Result<()> {
+    anyhow::ensure!(valid_device_id(device_id), "That is not another device.");
+    // No folder, or no file in it, leaves nothing to hold back: whatever appears later is new.
+    let file_modified_at = state.settings().shared_usage_folder.and_then(|folder| {
+        std::fs::metadata(Path::new(&folder).join(file_name(device_id)))
+            .ok()
+            .and_then(|metadata| modified_second(&metadata))
+    });
+    anyhow::ensure!(
+        state.storage.forget_device(device_id, file_modified_at).await?,
+        "That device is not known here."
+    );
+    crate::log::write("a shared-folder device was forgotten");
+    Ok(())
 }
 
 /// The length of a local day key (`2026-08-24`) and of a local hour key (`2026-08-24T09:00`).
@@ -300,8 +329,8 @@ async fn import_one(
 ) -> Result<()> {
     let published: ExportFile = serde_json::from_slice(&std::fs::read(path)?)?;
     anyhow::ensure!(
-        published.format_version == FORMAT_VERSION,
-        "written by a different version of QuotaStation"
+        published.format_version <= FORMAT_VERSION,
+        "written by a newer QuotaStation; update this computer to read it"
     );
     anyhow::ensure!(published.device_id == file_device, "names a different device inside");
     anyhow::ensure!(valid_device_id(&published.device_id), "names an invalid device");
@@ -464,6 +493,170 @@ mod tests {
             .await
             .expect("load usage");
         assert_eq!(usage.usage.total, 0, "rows keyed in another zone are not added");
+    }
+
+    #[tokio::test]
+    async fn a_file_from_a_newer_build_asks_for_an_update_and_is_not_read() {
+        let (storage, _database) = crate::storage::test_support::open_storage().await;
+        let state = Arc::new(AppState::for_tests(storage));
+        let file = ExportFile {
+            format_version: FORMAT_VERSION + 1,
+            device_id: "cc03".into(),
+            device_name: "Laptop".into(),
+            timezone: crate::clock::zone_name(),
+            parser_revision: "test".into(),
+            daily: vec![row("2026-08-29")],
+            hourly: Vec::new(),
+            resets: Vec::new(),
+        };
+        let path = std::env::temp_dir().join(format!(
+            "quotastation-sync-{}-{}",
+            std::process::id(),
+            file_name("cc03")
+        ));
+        std::fs::write(&path, serde_json::to_vec(&file).expect("serialize")).expect("write file");
+
+        let result = import_one(&state, &path, "cc03", "0a0a", 1).await;
+        let _ = std::fs::remove_file(&path);
+
+        assert!(result.expect_err("a newer file is refused").to_string().contains("update"));
+        let usage = state
+            .storage
+            .load_usage_range(None, Some("cc03"), "2026-08-29", "2026-08-29")
+            .await
+            .expect("load usage");
+        assert_eq!(usage.usage.total, 0);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_file_an_older_build_read_is_read_again_after_an_upgrade() {
+        let (storage, database) = crate::storage::test_support::open_storage().await;
+        let state = Arc::new(AppState::for_tests(storage));
+        let folder =
+            std::env::temp_dir().join(format!("quotastation-sync-upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("create folder");
+        let file = ExportFile {
+            format_version: FORMAT_VERSION,
+            device_id: "dd04".into(),
+            device_name: "Laptop".into(),
+            timezone: crate::clock::zone_name(),
+            parser_revision: "test".into(),
+            daily: Vec::new(),
+            hourly: Vec::new(),
+            resets: vec![SharedResetEvent {
+                provider: "codex".into(),
+                window_kind: crate::domain::LimitKind::Primary,
+                window_duration_mins: 300,
+                anchored_at: 1_800_000_000,
+                new_resets_at: 1_800_018_000,
+                previous_resets_at: 1_800_003_600,
+                used_percent_before: 82.0,
+                early_by_seconds: 3_600,
+                classification: crate::domain::ResetClassification::Scheduled,
+                source: "live".into(),
+                detected_at: "2027-01-15T08:00:00Z".into(),
+                device_id: None,
+                device_name: None,
+                bracket_start: None,
+                bracket_end: None,
+            }],
+        };
+        let path = folder.join(file_name("dd04"));
+        std::fs::write(&path, serde_json::to_vec(&file).expect("serialize")).expect("write file");
+        let modified = jiff::Timestamp::try_from(
+            std::fs::metadata(&path).and_then(|metadata| metadata.modified()).expect("mtime"),
+        )
+        .expect("timestamp")
+        .as_second();
+
+        // What a build that stored no version leaves behind once it has read this exact
+        // file and passed over the restart it could not understand.
+        let raw = sqlx::SqlitePool::connect(&format!("sqlite:{}", database.path.display()))
+            .await
+            .expect("open the database");
+        sqlx::query(
+            "INSERT INTO devices (id, display_name, last_import_at, source_modified_at)              VALUES ('dd04', 'Laptop', '2026-09-01T00:00:00Z', ?)",
+        )
+        .bind(modified)
+        .execute(&raw)
+        .await
+        .expect("record the earlier read");
+        raw.close().await;
+
+        let failures = import_others(&state, &folder, "0a0a").await;
+        let _ = std::fs::remove_dir_all(&folder);
+
+        assert!(failures.is_empty(), "{failures:?}");
+        let resets = state
+            .storage
+            .load_reset_history(crate::providers::ProviderKind::Codex)
+            .await
+            .expect("load resets");
+        assert_eq!(resets.len(), 1, "the restart the earlier build passed over is imported");
+        let devices = state.storage.load_devices().await.expect("load devices");
+        let device = devices.iter().find(|device| device.id == "dd04").expect("the device");
+        assert!(device.read_current(modified), "the file is now read at this build's version");
+    }
+
+    #[tokio::test]
+    async fn a_forgotten_device_stays_out_of_the_totals_until_its_file_changes() {
+        let folder =
+            std::env::temp_dir().join(format!("quotastation-sync-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("create folder");
+        let (storage, _database) = crate::storage::test_support::open_storage().await;
+        let settings = crate::settings::AppSettings {
+            shared_usage_folder: Some(folder.display().to_string()),
+            ..Default::default()
+        };
+        let state = Arc::new(AppState::new(
+            storage,
+            settings,
+            std::path::PathBuf::new(),
+            Default::default(),
+            Vec::new(),
+        ));
+        let write = |day: &str| {
+            let file = ExportFile {
+                format_version: FORMAT_VERSION,
+                device_id: "ee05".into(),
+                device_name: "Old laptop".into(),
+                timezone: crate::clock::zone_name(),
+                parser_revision: "test".into(),
+                daily: vec![row(day)],
+                hourly: Vec::new(),
+                resets: Vec::new(),
+            };
+            std::fs::write(folder.join(file_name("ee05")), serde_json::to_vec(&file).unwrap())
+                .expect("write file");
+        };
+        let total = || async {
+            state
+                .storage
+                .load_usage_range(None, Some("ee05"), "2026-08-01", "2026-08-31")
+                .await
+                .expect("load usage")
+                .usage
+                .total
+        };
+
+        write("2026-08-29");
+        assert!(import_others(&state, &folder, "0a0a").await.is_empty());
+        assert_eq!(total().await, 10);
+
+        forget(&state, "ee05").await.expect("forget the device");
+        assert_eq!(total().await, 0, "its usage leaves the totals");
+        assert!(import_others(&state, &folder, "0a0a").await.is_empty());
+        assert_eq!(total().await, 0, "the unchanged file is not read back in");
+
+        // A later write is the device still in use, whatever it was forgotten for.
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        write("2026-08-30");
+        assert!(import_others(&state, &folder, "0a0a").await.is_empty());
+        let _ = std::fs::remove_dir_all(&folder);
+        assert_eq!(total().await, 10, "a changed file is read again");
+        assert!(forget(&state, "local").await.is_err(), "this machine cannot be forgotten");
     }
 
     #[test]

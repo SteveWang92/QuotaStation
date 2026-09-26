@@ -817,9 +817,6 @@ pub struct SessionCostSnapshot {
     /// rather than a partial one.
     pub reported_cost_usd: f64,
     pub computed_cost_usd: f64,
-    /// How far back sessions are kept, so a range reaching past that says why it is empty
-    /// rather than implying no work was done then.
-    pub retention_days: i64,
 }
 
 /// How far the catalog's pricing is from the client's own, over the sessions that carry
@@ -1060,6 +1057,9 @@ pub struct DeviceDiagnostics {
     /// When this device's aggregates were last read in. `None` for the local device, whose
     /// rows are written by the parser rather than imported.
     pub last_import_at: Option<String>,
+    /// When the other device last wrote the shared file its rows were read from. `None` for
+    /// the local device.
+    pub file_modified_at: Option<String>,
     /// How many quota restarts this device detected, as far as this machine knows.
     pub restart_count: u64,
 }
