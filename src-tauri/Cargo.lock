@@ -3104,7 +3104,7 @@ dependencies = [
 
 [[package]]
 name = "quotastation"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "ccusage-adapter-claude",
