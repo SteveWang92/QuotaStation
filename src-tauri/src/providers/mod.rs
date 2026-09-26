@@ -363,10 +363,10 @@ fn collect_usage_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// Historical rate-limit readings recovered from a provider's own logs. Only providers
-/// that write their server's rate-limit answers locally can offer this. Claude Code
-/// records a reset time only in the error it raises once a limit is already reached,
-/// with no usage percentage, which is not enough to recognise a restart.
+/// Historical rate-limit readings kept locally, for recognising restarts that happened while
+/// QuotaStation was closed. Codex writes its server's answers into its session logs; Claude
+/// Code's logs carry no usage percentage, so its readings come from the history the
+/// status-line bridge records.
 pub async fn read_observations(
     kind: ProviderKind,
     since: Option<i64>,

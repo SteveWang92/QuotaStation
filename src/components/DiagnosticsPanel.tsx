@@ -51,6 +51,7 @@ export function DiagnosticsPanel({
   const [exporting, setExporting] = useState(false);
   const [forgetting, setForgetting] = useState<DeviceDiagnostics | null>(null);
   const [forgetError, setForgetError] = useState<string | null>(null);
+  const [forgetBusy, setForgetBusy] = useState(false);
 
   useEffect(() => {
     void invoke<boolean>("get_log_available").then(setLogAvailable);
@@ -80,14 +81,18 @@ export function DiagnosticsPanel({
     }
   }, []);
 
-  // The new totals arrive as a snapshot, which rereads this list without the device.
+  // The new totals arrive as a snapshot, which rereads this list without the device. The
+  // dialog closes either way, because it covers the list where a failure is reported.
   const forgetDevice = useCallback(async (deviceId: string) => {
     setForgetError(null);
+    setForgetBusy(true);
     try {
       await invoke("forget_device", { deviceId });
-      setForgetting(null);
     } catch (cause) {
       setForgetError(errorMessage(cause));
+    } finally {
+      setForgetBusy(false);
+      setForgetting(null);
     }
   }, []);
 
@@ -222,6 +227,7 @@ export function DiagnosticsPanel({
           {forgetting ? (
             <ConfirmForget
               device={forgetting}
+              busy={forgetBusy}
               onCancel={() => setForgetting(null)}
               onConfirm={() => void forgetDevice(forgetting.id)}
             />
@@ -288,10 +294,12 @@ export function DiagnosticsPanel({
 
 function ConfirmForget({
   device,
+  busy,
   onCancel,
   onConfirm,
 }: {
   device: DeviceDiagnostics;
+  busy: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -317,8 +325,8 @@ function ConfirmForget({
           <button type="button" onClick={onCancel}>
             Cancel
           </button>
-          <button type="button" className="confirm-primary" onClick={onConfirm}>
-            Forget device
+          <button type="button" className="confirm-primary" disabled={busy} onClick={onConfirm}>
+            {busy ? "Forgetting…" : "Forget device"}
           </button>
         </div>
       </div>
