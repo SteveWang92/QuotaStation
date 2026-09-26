@@ -56,7 +56,10 @@ to answer the local request.
 Claude Code sends current five-hour and seven-day quota data to a configured status-line
 command. QuotaStation can register its own executable as that command after the user confirms
 the change in Settings. It reads the JSON supplied by Claude Code, saves the two quota windows,
-prints the configured status line, and exits.
+prints the configured status line, and exits. Claude Code runs it whether or not QuotaStation
+is open, so it also keeps a short record of the windows it was handed — the first and last
+reading of each window's run, for 35 days — which is what recovers restarts that happened
+while QuotaStation was closed.
 
 The status-line setting belongs to Claude Code, so QuotaStation changes it only after explicit
 confirmation. It will not replace a status line owned by another command, and removing the
@@ -172,9 +175,12 @@ Only a source that supplies both a percentage and an expiry can prove a reset. T
 Codex app-server readings and Claude Code status-line readings. A window inferred only from
 session timestamps cannot create a reset event.
 
-Codex also writes rate-limit snapshots to its rollout logs. QuotaStation can use those fields
-to recover resets that happened while it was closed without retaining conversation content.
-Claude Code has no equivalent source, so its reset history begins when monitoring is enabled.
+Codex also writes rate-limit snapshots to its rollout logs, and the Claude status-line bridge
+keeps its record of the windows it was handed. QuotaStation replays both at startup to recover
+resets that happened while it was closed, without retaining conversation content. Claude
+restarts are recovered only across stretches when a terminal Claude Code session was
+rendering its status line. A recovered restart that another computer already shared joins that
+restart as this computer's own detection rather than becoming a second one.
 
 Each reset event keeps an estimated token total for the window that ended. Hourly usage is
 credited to the window active at the start of that hour, so the estimate can be imprecise at

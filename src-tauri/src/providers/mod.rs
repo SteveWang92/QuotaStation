@@ -373,7 +373,7 @@ pub async fn read_observations(
 ) -> Result<Vec<WindowObservation>> {
     match kind {
         ProviderKind::Codex => codex::read_observations(since).await,
-        ProviderKind::Claude => Ok(Vec::new()),
+        ProviderKind::Claude => claude::read_observations(since),
     }
 }
 

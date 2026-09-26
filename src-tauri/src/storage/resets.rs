@@ -538,9 +538,11 @@ impl Storage {
             .map(|completed| completed - BACKFILL_OVERLAP_HOURS * 3_600))
     }
 
-    /// Replays observations Codex logged itself, merged with the samples this machine
-    /// already stored, so restarts that happened while QuotaStation was closed are still
-    /// recorded. Storing an event twice is prevented by the table, not by the caller.
+    /// Replays the readings a provider's client kept for itself — Codex's rollout logs,
+    /// Claude's status-line record — so restarts that happened while QuotaStation was closed
+    /// are still recorded. A restart another device already shared joins that restart as
+    /// this machine's own detection of it; storing a detection twice is prevented by the
+    /// table, not by the caller.
     pub async fn backfill_resets(
         &self,
         provider: ProviderKind,
@@ -549,7 +551,13 @@ impl Storage {
     ) -> Result<usize> {
         let provider_id = self.provider_id(provider).await?;
         let mut merged = observations.to_vec();
-        merged.extend(self.load_sample_observations(provider_id).await?);
+        // Codex's rollout logs lack the readings this machine took from the app server, so
+        // the stored samples fill them in. Claude's record already holds every reading the
+        // samples were copied from, and the samples carry no source that would keep a
+        // log-derived window apart from a published one.
+        if provider == ProviderKind::Codex {
+            merged.extend(self.load_sample_observations(provider_id).await?);
+        }
         merged.sort_by_key(|observation| observation.observed_at);
 
         let mut tracker = ResetTracker::default();

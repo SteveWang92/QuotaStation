@@ -2,6 +2,7 @@ mod cost;
 mod history;
 pub mod notifications;
 mod plan;
+mod reading_history;
 mod session;
 mod sessions;
 pub mod statusline;
@@ -16,6 +17,7 @@ use crate::domain::{LimitKind, LimitWindow, LiveSnapshot};
 use crate::domain::{Freshness, PaceLevel, QuotaLevel, WindowSource};
 
 pub use history::read_history;
+pub use reading_history::read_observations;
 
 /// Claude's rolling session window, in minutes.
 pub const FIVE_HOUR_WINDOW_MINS: i64 = 300;

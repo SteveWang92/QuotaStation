@@ -9,6 +9,7 @@ on `main`, with the matching section below as its notes.
 
 ### Added
 
+- Claude quota restarts that happened while QuotaStation was closed are recovered at startup, whenever a terminal Claude Code session was running at the time.
 - Settings lists when each other device's shared file was last written, with a Forget device action that stops a computer's abandoned file from counting its usage twice.
 
 ### Changed

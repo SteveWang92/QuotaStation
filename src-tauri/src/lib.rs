@@ -539,20 +539,30 @@ fn build_kind() -> String {
     if installed { "release, installed".to_string() } else { "release, portable".to_string() }
 }
 
-/// Codex logs the server's rate-limit answer alongside its own token counts, which
-/// reaches back further than this database and covers every stretch when QuotaStation was
-/// closed. Replaying it on startup is what makes the restart history complete rather than
-/// starting from whenever this feature was installed.
+/// Codex logs the server's rate-limit answer alongside its own token counts, and the
+/// Claude status-line bridge keeps a record of the windows it was handed, both of which
+/// cover the stretches when QuotaStation was closed. Replaying them on startup is what makes
+/// the restart history complete rather than starting from whenever QuotaStation last ran.
 async fn backfill_resets(state: &Arc<AppState>) -> anyhow::Result<()> {
+    let mut failures = Vec::new();
+    // Each provider replays its own record, so one that cannot be read leaves the other's.
     for provider in AppState::local_providers() {
-        let since = state.storage.reset_backfill_start(provider).await?;
-        let observations = providers::read_observations(provider, since).await?;
-        if observations.is_empty() {
-            continue;
+        if let Err(error) = backfill_provider(state, provider).await {
+            failures.push(format!("{}: {error:#}", provider.key()));
         }
-        let scanned_at = jiff::Timestamp::now().to_string();
-        state.storage.backfill_resets(provider, &observations, &scanned_at).await?;
     }
+    anyhow::ensure!(failures.is_empty(), "{}", failures.join(" · "));
+    Ok(())
+}
+
+async fn backfill_provider(state: &Arc<AppState>, provider: ProviderKind) -> anyhow::Result<()> {
+    let since = state.storage.reset_backfill_start(provider).await?;
+    let observations = providers::read_observations(provider, since).await?;
+    if observations.is_empty() {
+        return Ok(());
+    }
+    let scanned_at = jiff::Timestamp::now().to_string();
+    state.storage.backfill_resets(provider, &observations, &scanned_at).await?;
     Ok(())
 }
 
