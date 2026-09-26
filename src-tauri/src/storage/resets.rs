@@ -117,6 +117,11 @@ fn reset_event(row: sqlx::sqlite::SqliteRow) -> Option<(i64, LimitResetEvent)> {
     Some((row.try_get("id").ok()?, event))
 }
 
+/// The version of the replay: how observations are read out of the logs and how a restart is
+/// detected among them. It moves whenever either changes, so a watermark an older replay
+/// reached is not trusted and the logs are replayed from the start.
+const RESET_BACKFILL_VERSION: i64 = 1;
+
 /// Each provider replays its own logs, so the scan watermarks cannot share a row.
 fn backfill_job_name(provider: ProviderKind) -> String {
     format!("{}_reset_backfill", provider.key())
@@ -517,14 +522,17 @@ impl Storage {
 
     /// The instant a rollout scan may start from, leaving enough overlap for a window
     /// that reset either side of the previous scan to still be paired with a reading.
+    /// `None`, a scan from the start, when no scan has finished at this replay version.
     pub async fn reset_backfill_start(&self, provider: ProviderKind) -> Result<Option<i64>> {
-        let last_completed: Option<String> =
-            sqlx::query_scalar("SELECT last_completed_at FROM retention_state WHERE job_name = ?")
-                .bind(backfill_job_name(provider))
-                .fetch_optional(&self.pool)
-                .await?
-                .flatten();
-        Ok(last_completed
+        let watermark: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT last_completed_at, reader_version FROM retention_state WHERE job_name = ?",
+        )
+        .bind(backfill_job_name(provider))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(watermark
+            .filter(|(_, version)| version.is_some_and(|version| version >= RESET_BACKFILL_VERSION))
+            .and_then(|(completed, _)| completed)
             .as_deref()
             .and_then(epoch_seconds)
             .map(|completed| completed - BACKFILL_OVERLAP_HOURS * 3_600))
@@ -566,12 +574,15 @@ impl Storage {
         }
         Self::refresh_reset_tokens(&mut tx, provider_id).await?;
         sqlx::query(
-            "INSERT INTO retention_state (job_name, last_completed_at, last_status, last_error) \
-             VALUES (?, ?, 'succeeded', NULL) ON CONFLICT(job_name) DO UPDATE SET \
-             last_completed_at=excluded.last_completed_at, last_status=excluded.last_status, last_error=NULL",
+            "INSERT INTO retention_state \
+             (job_name, last_completed_at, last_status, last_error, reader_version) \
+             VALUES (?, ?, 'succeeded', NULL, ?) ON CONFLICT(job_name) DO UPDATE SET \
+             last_completed_at=excluded.last_completed_at, last_status=excluded.last_status, \
+             last_error=NULL, reader_version=excluded.reader_version",
         )
         .bind(backfill_job_name(provider))
         .bind(scanned_at)
+        .bind(RESET_BACKFILL_VERSION)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;

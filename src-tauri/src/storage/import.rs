@@ -10,6 +10,7 @@ use sqlx::{AssertSqlSafe, Row};
 
 use crate::domain::SharedResetEvent;
 use crate::domain::{DeviceUsageRow, LimitResetEvent};
+use crate::sync::FORMAT_VERSION;
 
 use super::resets::{ResetObservation, parse_classification};
 use super::{LOCAL_DEVICE, Storage, parse_kind};
@@ -24,6 +25,9 @@ pub struct DeviceRecord {
     /// The modification time of the file this device's rows were read from, which is what
     /// decides whether the next refresh has to read it again.
     pub source_modified_at: Option<i64>,
+    /// The shared-file format version the file was read at. `None` for a reading made
+    /// before the version was stored.
+    pub import_format_version: Option<u32>,
     /// How many restart detections are attributed to this device.
     pub restart_count: i64,
 }
@@ -45,6 +49,15 @@ pub struct DeviceImport<'a> {
     pub local_id: &'a str,
 }
 
+impl DeviceRecord {
+    /// Whether this device's file, as last modified at `modified`, has been read by a build
+    /// that reads everything this one does. An unchanged file an older build read is not.
+    pub fn read_current(&self, modified: i64) -> bool {
+        self.source_modified_at == Some(modified)
+            && self.import_format_version.is_some_and(|version| version >= FORMAT_VERSION)
+    }
+}
+
 impl Storage {
     /// Names this machine in the device list, so a split reads "Workshop" rather than an
     /// identifier. Called whenever the name could have changed, which is startup and a
@@ -64,7 +77,7 @@ impl Storage {
     /// Every device the totals are built from, this machine first.
     pub async fn load_devices(&self) -> Result<Vec<DeviceRecord>> {
         let rows = sqlx::query(
-            "SELECT id, display_name, last_import_at, source_modified_at, ( \
+            "SELECT id, display_name, last_import_at, source_modified_at, import_format_version, ( \
                SELECT COUNT(*) FROM limit_reset_observations \
                WHERE limit_reset_observations.device = devices.id) AS restart_count \
              FROM devices ORDER BY id = ? DESC, display_name ASC",
@@ -79,6 +92,7 @@ impl Storage {
                 display_name: row.get("display_name"),
                 last_import_at: row.get("last_import_at"),
                 source_modified_at: row.get("source_modified_at"),
+                import_format_version: row.get("import_format_version"),
                 restart_count: row.get("restart_count"),
             })
             .collect())
@@ -212,15 +226,18 @@ impl Storage {
         let mut written = 0;
         if let Some((daily, hourly)) = device.usage {
             sqlx::query(
-                "INSERT INTO devices (id, display_name, last_import_at, source_modified_at) \
-                 VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET \
+                "INSERT INTO devices \
+                 (id, display_name, last_import_at, source_modified_at, import_format_version) \
+                 VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET \
                    display_name = excluded.display_name, last_import_at = excluded.last_import_at, \
-                   source_modified_at = excluded.source_modified_at",
+                   source_modified_at = excluded.source_modified_at, \
+                   import_format_version = excluded.import_format_version",
             )
             .bind(device.id)
             .bind(device.display_name)
             .bind(imported_at)
             .bind(device.source_modified_at)
+            .bind(FORMAT_VERSION)
             .execute(&mut *tx)
             .await?;
             for table in ["daily_usage", "hourly_usage"] {

@@ -13,6 +13,10 @@ on `main`, with the matching section below as its notes.
 - A shared usage file written by a newer QuotaStation is reported as needing an update instead of as unreadable.
 - Claude usage refreshes read the session logs once instead of twice, so the dashboard updates sooner during an active Claude Code session.
 
+### Fixed
+
+- After an upgrade, unchanged shared files and Codex logs are read again, so restarts an older version passed over no longer stay missing.
+
 ## [1.3.0] - 2026-09-23
 
 ### Added

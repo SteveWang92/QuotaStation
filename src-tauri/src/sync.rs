@@ -35,7 +35,10 @@ use crate::{
 /// reader knows what a file can be trusted to say. A reader accepts every version up to
 /// its own; a newer file is left alone, and reported, rather than read as though this build
 /// understood it.
-const FORMAT_VERSION: u32 = 1;
+///
+/// It is also the version an import is stored at: a file read by a build whose version was
+/// lower is read again, since that build may have passed over content it did not know.
+pub(crate) const FORMAT_VERSION: u32 = 1;
 
 const FILE_PREFIX: &str = "usage-";
 const FILE_SUFFIX: &str = ".json";
@@ -153,7 +156,8 @@ async fn export(
     crate::fs_atomic::write(&path, &content).context("write the exported aggregates")
 }
 
-/// Reads every other machine's file that has moved since it was last read.
+/// Reads every other machine's file that has moved since it was last read, or that was last
+/// read at an older format version than this build reads.
 ///
 /// A file that cannot be read is skipped with a diagnostic and nothing more: a sync client
 /// halfway through replacing one is an ordinary event, and the next refresh finds it whole.
@@ -194,10 +198,7 @@ async fn import_others(state: &Arc<AppState>, folder: &Path, device_id: &str) ->
             .and_then(|modified| jiff::Timestamp::try_from(modified).ok())
             .map(|modified| modified.as_second());
         let Some(modified) = modified else { continue };
-        if known
-            .iter()
-            .any(|device| device.id == file_device && device.source_modified_at == Some(modified))
-        {
+        if known.iter().any(|device| device.id == file_device && device.read_current(modified)) {
             continue;
         }
         if let Err(error) = import_one(state, &entry.path(), file_device, device_id, modified).await
@@ -500,6 +501,77 @@ mod tests {
             .await
             .expect("load usage");
         assert_eq!(usage.usage.total, 0);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_file_an_older_build_read_is_read_again_after_an_upgrade() {
+        let (storage, database) = crate::storage::test_support::open_storage().await;
+        let state = Arc::new(AppState::for_tests(storage));
+        let folder =
+            std::env::temp_dir().join(format!("quotastation-sync-upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("create folder");
+        let file = ExportFile {
+            format_version: FORMAT_VERSION,
+            device_id: "dd04".into(),
+            device_name: "Laptop".into(),
+            timezone: crate::clock::zone_name(),
+            parser_revision: "test".into(),
+            daily: Vec::new(),
+            hourly: Vec::new(),
+            resets: vec![SharedResetEvent {
+                provider: "codex".into(),
+                window_kind: crate::domain::LimitKind::Primary,
+                window_duration_mins: 300,
+                anchored_at: 1_800_000_000,
+                new_resets_at: 1_800_018_000,
+                previous_resets_at: 1_800_003_600,
+                used_percent_before: 82.0,
+                early_by_seconds: 3_600,
+                classification: crate::domain::ResetClassification::Scheduled,
+                source: "live".into(),
+                detected_at: "2027-01-15T08:00:00Z".into(),
+                device_id: None,
+                device_name: None,
+                bracket_start: None,
+                bracket_end: None,
+            }],
+        };
+        let path = folder.join(file_name("dd04"));
+        std::fs::write(&path, serde_json::to_vec(&file).expect("serialize")).expect("write file");
+        let modified = jiff::Timestamp::try_from(
+            std::fs::metadata(&path).and_then(|metadata| metadata.modified()).expect("mtime"),
+        )
+        .expect("timestamp")
+        .as_second();
+
+        // What a build that stored no version leaves behind once it has read this exact
+        // file and passed over the restart it could not understand.
+        let raw = sqlx::SqlitePool::connect(&format!("sqlite:{}", database.path.display()))
+            .await
+            .expect("open the database");
+        sqlx::query(
+            "INSERT INTO devices (id, display_name, last_import_at, source_modified_at)              VALUES ('dd04', 'Laptop', '2026-09-01T00:00:00Z', ?)",
+        )
+        .bind(modified)
+        .execute(&raw)
+        .await
+        .expect("record the earlier read");
+        raw.close().await;
+
+        let failures = import_others(&state, &folder, "0a0a").await;
+        let _ = std::fs::remove_dir_all(&folder);
+
+        assert!(failures.is_empty(), "{failures:?}");
+        let resets = state
+            .storage
+            .load_reset_history(crate::providers::ProviderKind::Codex)
+            .await
+            .expect("load resets");
+        assert_eq!(resets.len(), 1, "the restart the earlier build passed over is imported");
+        let devices = state.storage.load_devices().await.expect("load devices");
+        let device = devices.iter().find(|device| device.id == "dd04").expect("the device");
+        assert!(device.read_current(modified), "the file is now read at this build's version");
     }
 
     #[test]
