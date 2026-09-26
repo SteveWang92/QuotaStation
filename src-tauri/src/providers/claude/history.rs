@@ -1,22 +1,26 @@
 use anyhow::{Context, Result};
-use ccusage_adapter_claude::load_daily_and_hourly_summaries;
+use ccusage_adapter_claude::load_daily_hourly_and_session_entries;
 use ccusage_core::{UsageSummary, cli::SharedArgs};
 
 use crate::{
-    domain::{HistoryDay, HistoryHour, HistorySnapshot, ModelUsage, ModelUsageRow, TokenUsage},
+    domain::{
+        HistoryDay, HistoryHour, HistorySnapshot, ModelUsage, ModelUsageRow, SessionCost,
+        TokenUsage,
+    },
     providers::hours,
 };
 
-pub async fn read_history(timezone: &str) -> Result<HistorySnapshot> {
+/// The daily and hourly history and the session list, from one parse of the session logs.
+pub async fn read_history(timezone: &str) -> Result<(HistorySnapshot, Vec<SessionCost>)> {
     let timezone = timezone.to_string();
     tokio::task::spawn_blocking(move || read_history_blocking(&timezone))
         .await
         .context("Claude history parser stopped unexpectedly")?
 }
 
-fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
+fn read_history_blocking(timezone: &str) -> Result<(HistorySnapshot, Vec<SessionCost>)> {
     // `breakdown` is what populates the per-model rows the dashboard shows.
-    let (summaries, hourly) = load_daily_and_hourly_summaries(
+    let (summaries, hourly, entries) = load_daily_hourly_and_session_entries(
         &SharedArgs {
             json: true,
             breakdown: true,
@@ -63,7 +67,8 @@ fn read_history_blocking(timezone: &str) -> Result<HistorySnapshot> {
         });
     }
     days.sort_by(|a, b| a.date.cmp(&b.date));
-    Ok(HistorySnapshot { days, hours: hourly_buckets(hourly, timezone) })
+    let sessions = super::cost::sessions_from(&entries)?;
+    Ok((HistorySnapshot { days, hours: hourly_buckets(hourly, timezone) }, sessions))
 }
 
 /// The same session files, summarised by local hour instead of by local day.
@@ -133,7 +138,7 @@ mod tests {
     async fn claude_history_parses_into_the_shared_daily_shape() {
         let system_timezone = jiff::tz::TimeZone::system();
         let timezone = system_timezone.iana_name().unwrap_or("UTC");
-        let history = read_history(timezone).await.expect("parse Claude history");
+        let (history, _) = read_history(timezone).await.expect("parse Claude history");
         assert!(!history.days.is_empty(), "no Claude usage days were parsed");
         let last = history.days.last().expect("a most recent day");
         println!(

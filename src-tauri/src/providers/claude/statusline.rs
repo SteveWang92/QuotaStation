@@ -313,7 +313,11 @@ pub fn run_bridge_if_requested() -> bool {
         match windows_from(&reading, now) {
             // The line above already says the reading arrived, so only a failure to keep it
             // adds anything to that.
-            Ok(_) if store_reading(&reading).is_ok() => {}
+            Ok(windows) if store_reading(&reading).is_ok() => {
+                if let Err(error) = super::reading_history::record(&windows, now) {
+                    crate::log::write(format!("status line history not kept: {error:#}"));
+                }
+            }
             Ok(_) => crate::log::write("status line reading not stored"),
             Err(_) => {
                 // Persist only the normalized quota subset, not the source payload. The

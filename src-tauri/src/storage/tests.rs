@@ -217,7 +217,7 @@ fn session(
 }
 
 #[tokio::test]
-async fn a_session_cost_is_corrected_in_place_and_stays_gone_once_it_leaves_the_window() {
+async fn a_session_cost_is_corrected_in_place_and_outlives_its_logs() {
     let (storage, _database) = open_storage().await;
     storage
         .save_session_costs(
@@ -226,20 +226,16 @@ async fn a_session_cost_is_corrected_in_place_and_stays_gone_once_it_leaves_the_
             "2026-05-01T15:00:00Z",
         )
         .await
-        .expect("store the session while it is recent");
-    storage.run_retention_at("2026-08-20T15:00:00Z").await.expect("run retention");
-    // The client's logs still hold the old session, so every later parse reads it again.
+        .expect("store the session while its log exists");
     storage
         .save_session_costs(
             CODEX,
-            &[
-                session("old", "2026-05-01T09:00:00Z", Some(1.0), 1.1),
-                session("running", "2026-08-20T09:00:00Z", Some(2.0), 2.2),
-            ],
+            &[session("running", "2026-08-20T09:00:00Z", Some(2.0), 2.2)],
             "2026-08-20T15:00:00Z",
         )
         .await
-        .expect("store the comparisons");
+        .expect("store the comparison");
+    // The client has deleted the old session's log, so this parse no longer names it.
     storage
         .save_session_costs(
             CODEX,
@@ -251,12 +247,13 @@ async fn a_session_cost_is_corrected_in_place_and_stays_gone_once_it_leaves_the_
 
     storage.run_retention_at("2026-08-20T16:00:00Z").await.expect("run retention");
 
-    let remaining: Vec<(String, f64)> =
-        sqlx::query_as("SELECT session_id, reported_cost_usd FROM session_costs")
-            .fetch_all(&storage.pool)
-            .await
-            .expect("read the surviving comparisons");
-    assert_eq!(remaining, [("running".to_string(), 3.0)]);
+    let remaining: Vec<(String, f64)> = sqlx::query_as(
+        "SELECT session_id, reported_cost_usd FROM session_costs ORDER BY session_started_at",
+    )
+    .fetch_all(&storage.pool)
+    .await
+    .expect("read the surviving comparisons");
+    assert_eq!(remaining, [("old".to_string(), 1.0), ("running".to_string(), 3.0)]);
 }
 
 #[tokio::test]
@@ -338,13 +335,12 @@ async fn a_sample_is_dated_by_the_reading_rather_than_the_refresh_that_carried_i
 }
 
 #[tokio::test]
-async fn retention_keeps_daily_quota_summaries_without_an_hourly_layer() {
+async fn retention_keeps_every_reading_and_folds_legacy_hourly_summaries_into_days() {
     let (storage, _database) = open_storage().await;
     let provider_id = storage.provider_id(CODEX).await.expect("read provider id");
     let observed_at = "2026-01-01T01:00:00Z";
     let observed = observed_at.parse::<jiff::Timestamp>().expect("an instant").as_second();
-    let expected_local_bucket =
-        format!("{}T00:00:00", crate::clock::day_key(observed).expect("the sample's local day"));
+    let expected_local_day = crate::clock::day_key(observed).expect("the sample's local day");
     sqlx::query(
         "INSERT INTO limit_samples \
          (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
@@ -383,19 +379,14 @@ async fn retention_keeps_daily_quota_summaries_without_an_hourly_layer() {
             .fetch_one(&storage.pool)
             .await
             .expect("count daily rollups");
-    assert_eq!(samples, 0);
+    assert_eq!(samples, 1, "a reading months old is kept as it arrived");
     assert_eq!(hourly, 0);
-    assert_eq!(daily, 2, "both old samples and legacy hourly rows become daily summaries");
-    let sample_bucket: String = sqlx::query_scalar(
-        "SELECT bucket_start FROM limit_rollups WHERE granularity = 'daily' AND resets_at = 1767301200",
-    )
-    .fetch_one(&storage.pool)
-    .await
-    .expect("read the retained sample's bucket");
-    assert_eq!(
-        sample_bucket, expected_local_bucket,
-        "retention keeps the sample on its local calendar day"
-    );
+    assert_eq!(daily, 1, "a legacy hourly summary becomes a daily one");
+    let history = storage
+        .load_quota_history(CODEX, &expected_local_day, &expected_local_day)
+        .await
+        .expect("read the old day");
+    assert_eq!(history.windows[0].points[0].peak_used_percent, 25.0);
 }
 
 #[tokio::test]
@@ -1416,4 +1407,53 @@ async fn an_earlier_restart_this_machine_has_the_readings_for_becomes_its_own() 
     .expect("read the bracket");
     assert_eq!(bracket, (Some(1_799_999_700), Some(1_800_000_300)));
     assert_eq!(second.detections[0].device_name, None, "the second is another device's");
+}
+
+#[tokio::test]
+async fn a_restart_this_machine_replays_after_another_device_shared_it_is_one_restart_seen_by_both()
+{
+    let (storage, _database) = open_storage().await;
+    let anchor = 1_800_000_000;
+    // The other computer was running and saw the restart live, two minutes apart.
+    let mut shared = shared_reset(Some("bb02"), anchor, Some((anchor - 60, anchor + 60)));
+    shared.provider = "claude".to_string();
+    import_resets(&storage, "bb02", &[shared]).await;
+
+    // This computer was closed; its status-line record replays the same restart later, from
+    // readings an hour either side of it.
+    let observations = [
+        WindowObservation {
+            observed_at: anchor - 3_600,
+            kind: LimitKind::Primary,
+            used_percent: 70.0,
+            window_duration_mins: 300,
+            resets_at: anchor + 3_600,
+        },
+        WindowObservation {
+            observed_at: anchor + 3_600,
+            kind: LimitKind::Primary,
+            used_percent: 3.0,
+            window_duration_mins: 300,
+            resets_at: anchor + 18_000,
+        },
+    ];
+    let claude = ProviderKind::Claude;
+    storage.backfill_resets(claude, &observations, "2027-01-15T10:00:00Z").await.expect("backfill");
+    // Replaying the same record again, and reading the other file again, change nothing.
+    storage.backfill_resets(claude, &observations, "2027-01-15T11:00:00Z").await.expect("rerun");
+    let mut shared = shared_reset(Some("bb02"), anchor, Some((anchor - 60, anchor + 60)));
+    shared.provider = "claude".to_string();
+    import_resets(&storage, "bb02", &[shared]).await;
+
+    let events = storage.load_reset_history(claude).await.expect("load resets");
+    assert_eq!(events.len(), 1, "one restart, however many devices saw it and how");
+    let event = &events[0];
+    assert_eq!(event.detections.len(), 2);
+    assert_eq!(
+        event.detections[0].device_name.as_deref(),
+        Some("Device bb02"),
+        "the live detection with the narrower readings speaks for the restart"
+    );
+    let exported = storage.load_reset_export("0a0a", "Desk").await.expect("export");
+    assert_eq!(exported.len(), 2, "both detections are relayed, each under its own device");
 }

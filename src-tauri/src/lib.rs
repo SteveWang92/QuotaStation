@@ -84,16 +84,38 @@ pub fn run_uninstall_cleanup() -> Option<i32> {
 /// Gives this machine an identity in a shared usage folder if it has not got one yet.
 ///
 /// Generated once and then kept for good: another machine stores this machine's aggregates
-/// under this identifier, so issuing a new one would orphan every row it has for us. The
-/// name beside it is only a label and defaults to what Windows calls the computer.
-fn ensure_device_identity(path: &std::path::Path, mut settings: AppSettings) -> AppSettings {
-    if settings.device_id.is_some() && settings.device_name.is_some() {
-        return settings;
+/// under this identifier, so issuing a new one would orphan every row it has for us and
+/// count this machine twice through the file left under the old one. The database keeps a
+/// copy, which a settings file lost or unreadable on its own is restored from. The name
+/// beside it is only a label and defaults to what Windows calls the computer.
+fn ensure_device_identity(
+    path: &std::path::Path,
+    mut settings: AppSettings,
+    storage: &Storage,
+) -> AppSettings {
+    let recorded =
+        tauri::async_runtime::block_on(storage.local_shared_id()).unwrap_or_else(|error| {
+            log::write(format!(
+                "this machine's recorded device identity could not be read: {error:#}"
+            ));
+            None
+        });
+    if settings.device_id.is_none() || settings.device_name.is_none() {
+        if let Some(recorded) = &recorded {
+            settings.device_id.get_or_insert_with(|| recorded.clone());
+        }
+        settings.device_id.get_or_insert_with(settings::new_device_id);
+        settings.device_name.get_or_insert_with(settings::default_device_name);
+        if let Err(error) = settings::save(path, &settings) {
+            log::write(format!("this machine's device identity could not be recorded: {error}"));
+        }
     }
-    settings.device_id.get_or_insert_with(settings::new_device_id);
-    settings.device_name.get_or_insert_with(settings::default_device_name);
-    if let Err(error) = settings::save(path, &settings) {
-        log::write(format!("this machine's device identity could not be recorded: {error}"));
+    if let Some(device_id) = settings.device_id.as_deref()
+        && recorded.as_deref() != Some(device_id)
+        && let Err(error) =
+            tauri::async_runtime::block_on(storage.record_local_shared_id(device_id))
+    {
+        log::write(format!("this machine's device identity could not be kept: {error:#}"));
     }
     settings
 }
@@ -517,20 +539,30 @@ fn build_kind() -> String {
     if installed { "release, installed".to_string() } else { "release, portable".to_string() }
 }
 
-/// Codex logs the server's rate-limit answer alongside its own token counts, which
-/// reaches back further than this database and covers every stretch when QuotaStation was
-/// closed. Replaying it on startup is what makes the restart history complete rather than
-/// starting from whenever this feature was installed.
+/// Codex logs the server's rate-limit answer alongside its own token counts, and the
+/// Claude status-line bridge keeps a record of the windows it was handed, both of which
+/// cover the stretches when QuotaStation was closed. Replaying them on startup is what makes
+/// the restart history complete rather than starting from whenever QuotaStation last ran.
 async fn backfill_resets(state: &Arc<AppState>) -> anyhow::Result<()> {
+    let mut failures = Vec::new();
+    // Each provider replays its own record, so one that cannot be read leaves the other's.
     for provider in AppState::local_providers() {
-        let since = state.storage.reset_backfill_start(provider).await?;
-        let observations = providers::read_observations(provider, since).await?;
-        if observations.is_empty() {
-            continue;
+        if let Err(error) = backfill_provider(state, provider).await {
+            failures.push(format!("{}: {error:#}", provider.key()));
         }
-        let scanned_at = jiff::Timestamp::now().to_string();
-        state.storage.backfill_resets(provider, &observations, &scanned_at).await?;
     }
+    anyhow::ensure!(failures.is_empty(), "{}", failures.join(" · "));
+    Ok(())
+}
+
+async fn backfill_provider(state: &Arc<AppState>, provider: ProviderKind) -> anyhow::Result<()> {
+    let since = state.storage.reset_backfill_start(provider).await?;
+    let observations = providers::read_observations(provider, since).await?;
+    if observations.is_empty() {
+        return Ok(());
+    }
+    let scanned_at = jiff::Timestamp::now().to_string();
+    state.storage.backfill_resets(provider, &observations, &scanned_at).await?;
     Ok(())
 }
 
@@ -577,15 +609,16 @@ pub fn run() {
                 app_data_dir.join(if demo { demo::DATABASE_FILE } else { "quotastation.db" });
             let settings_path =
                 app_data_dir.join(if demo { demo::SETTINGS_FILE } else { "settings.json" });
-            let settings = ensure_device_identity(&settings_path, settings::load(&settings_path));
+            let settings = settings::load(&settings_path);
             // `settings::load` has already dropped a name the zone database does not know.
             if let Err(error) = clock::choose(settings.time_zone.as_deref()) {
                 log::write(format!("the chosen time zone could not be applied: {error:#}"));
             }
-            let device_name =
-                settings.device_name.clone().unwrap_or_else(settings::default_device_name);
             let storage = tauri::async_runtime::block_on(Storage::open(&database_path))
                 .map_err(|error| error.to_string())?;
+            let settings = ensure_device_identity(&settings_path, settings, &storage);
+            let device_name =
+                settings.device_name.clone().unwrap_or_else(settings::default_device_name);
             if let Err(error) = tauri::async_runtime::block_on(storage.run_retention_if_due()) {
                 log::write(format!("normalized data retention failed: {error:#}"));
             }
@@ -732,6 +765,7 @@ pub fn run() {
             commands::get_usage_range,
             commands::get_usage_hours,
             commands::get_usage_window,
+            commands::forget_device,
             commands::get_quota_history,
             commands::get_session_costs,
             commands::get_reset_history,

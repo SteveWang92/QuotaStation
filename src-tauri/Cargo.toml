@@ -1,6 +1,6 @@
 [package]
 name = "quotastation"
-version = "1.3.0"
+version = "1.4.0"
 description = "Windows app for tracking AI coding quotas, usage, reset times, and estimated API costs"
 authors = ["Steve Wang <contact@stevewang.me>"]
 edition = "2024"
@@ -31,7 +31,7 @@ jiff = "0.2"
 notify = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"

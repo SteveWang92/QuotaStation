@@ -106,7 +106,7 @@ export function SessionTable({ snapshot, rangeLabel, notes, loading }: SessionTa
         <p className="empty-copy">
           {filter === "compared" && sessions.length > 0
             ? "No session in this range carries the client's own cost. Claude Code began recording it partway through its life, and Codex records none at all."
-            : `No sessions in this range. Sessions are kept for ${snapshot?.retentionDays ?? 90} days.`}
+            : "No sessions in this range. A session is listed once QuotaStation has read its log."}
         </p>
       ) : (
         <div

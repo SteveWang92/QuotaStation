@@ -4,7 +4,7 @@
 use std::{collections::BTreeMap, str::FromStr};
 
 use anyhow::{Context, Result};
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use crate::domain::{
     CCUSAGE_REVISION, DailyUsagePoint, DeviceUsage, HistorySnapshot, HourlyUsagePoint,
@@ -14,8 +14,8 @@ use crate::domain::{
 use crate::providers::ProviderKind;
 
 use super::{
-    AGGREGATE_SERVICE_TIER, Bucket, BucketTable, LOCAL_DEVICE, MODEL_SEPARATOR,
-    SESSION_COST_HISTORY_DAYS, Storage, add_usage, rank_models,
+    AGGREGATE_SERVICE_TIER, Bucket, BucketTable, LOCAL_DEVICE, MODEL_SEPARATOR, Storage, add_usage,
+    rank_models,
 };
 
 /// One stored session comparison, as the surfaces read it back.
@@ -70,15 +70,19 @@ impl Storage {
             // next refresh reads every one of them again and re-checks it against the zone now
             // in force.
             for table in ["daily_usage", "hourly_usage"] {
-                sqlx::query(&format!(
+                // The table name comes from the literal list above, and every value is bound.
+                sqlx::query(AssertSqlSafe(format!(
                     "DELETE FROM {table} WHERE provider_instance_id = ? AND device <> ?"
-                ))
+                )))
                 .bind(provider_id)
                 .bind(LOCAL_DEVICE)
                 .execute(&mut *tx)
                 .await?;
             }
-            sqlx::query("UPDATE devices SET source_modified_at = NULL").execute(&mut *tx).await?;
+            // A forgotten device keeps its marker: a new zone is not its file changing.
+            sqlx::query("UPDATE devices SET source_modified_at = NULL WHERE forgotten = 0")
+                .execute(&mut *tx)
+                .await?;
             // This machine's rows are rebuilt from its logs as far back as the logs still
             // reach, which is the earliest day this parse produced. The hourly window is far
             // shorter than any log is kept, so all of it is rebuilt. A day before the logs
@@ -212,23 +216,17 @@ impl Storage {
 
     /// Stores each session the parser read, priced from the catalog, with the client's own
     /// figures where it recorded any. A session is written once and then corrected, since
-    /// a session logged today is summarised again once more work goes through it.
-    ///
-    /// A session that started before the retention window is skipped: the client's logs
-    /// outlive the window, and writing it again would bring back the row retention removed.
+    /// a session logged today is summarised again once more work goes through it. A row
+    /// stays after the client deletes the log behind it, because nothing else records it.
     pub async fn save_session_costs(
         &self,
         provider: ProviderKind,
         sessions: &[SessionCost],
         observed_at: &str,
     ) -> Result<()> {
-        let cutoff = observed_at.parse::<jiff::Timestamp>()?
-            - jiff::SignedDuration::from_hours(24 * SESSION_COST_HISTORY_DAYS);
         let provider_id = self.provider_id(provider).await?;
         let mut tx = self.pool.begin().await?;
-        for session in sessions.iter().filter(|session| {
-            session.session_started_at.parse::<jiff::Timestamp>().is_ok_and(|at| at >= cutoff)
-        }) {
+        for session in sessions {
             sqlx::query(
                 "INSERT INTO session_costs \
                  (provider_instance_id, session_id, session_started_at, duration_ms, \
@@ -325,12 +323,7 @@ impl Storage {
         let reported_cost_usd =
             compared.clone().filter_map(|session| session.reported_cost_usd).sum();
         let computed_cost_usd = compared.map(|session| session.computed_cost_usd).sum();
-        Ok(SessionCostSnapshot {
-            sessions,
-            reported_cost_usd,
-            computed_cost_usd,
-            retention_days: SESSION_COST_HISTORY_DAYS,
-        })
+        Ok(SessionCostSnapshot { sessions, reported_cost_usd, computed_cost_usd })
     }
 
     /// Providers that have usage rows on any device. Imported rows count exactly like
@@ -497,10 +490,11 @@ impl Storage {
         end: &str,
     ) -> Result<u64> {
         let (table, column) = bucket.parts();
-        let total: i64 = sqlx::query_scalar(&format!(
+        // `BucketTable::parts` yields only fixed table and column names, and every value is bound.
+        let total: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT COALESCE(SUM(total_tokens), 0) FROM {table} \
              WHERE (? IS NULL OR provider_instance_id = ?) AND {column} BETWEEN ? AND ?"
-        ))
+        )))
         .bind(provider_id)
         .bind(provider_id)
         .bind(start)
@@ -521,13 +515,14 @@ impl Storage {
         total: u64,
     ) -> Result<Vec<DeviceUsage>> {
         let (table, column) = bucket.parts();
-        let rows = sqlx::query(&format!(
+        // `BucketTable::parts` yields only fixed table and column names, and every value is bound.
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT {table}.device AS device, devices.display_name AS display_name, \
              SUM(total_tokens) AS tokens FROM {table} \
              JOIN devices ON devices.id = {table}.device \
              WHERE (? IS NULL OR provider_instance_id = ?) AND {column} BETWEEN ? AND ? \
              GROUP BY {table}.device HAVING tokens > 0 ORDER BY tokens DESC"
-        ))
+        )))
         .bind(provider_id)
         .bind(provider_id)
         .bind(start)

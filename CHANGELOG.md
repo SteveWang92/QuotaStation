@@ -7,6 +7,24 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-27
+
+### Added
+
+- Claude quota restarts that happened while QuotaStation was closed are recovered at startup, whenever a terminal Claude Code session was running at the time.
+- Settings lists when each other device's shared file was last written, with a Forget device action that stops a computer's abandoned file from counting its usage twice.
+
+### Changed
+
+- Quota readings and per-session cost comparisons are kept indefinitely instead of for 90 days.
+- A shared usage file written by a newer QuotaStation is reported as needing an update instead of as unreadable.
+- Claude usage refreshes read the session logs once instead of twice, so the dashboard updates sooner during an active Claude Code session.
+
+### Fixed
+
+- A computer whose settings file alone is lost keeps its device ID instead of being counted twice under a new one.
+- After an upgrade, unchanged shared files and Codex logs are read again, so restarts an older version passed over no longer stay missing.
+
 ## [1.3.0] - 2026-09-23
 
 ### Added
@@ -246,7 +264,8 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.0.0...v1.1.0

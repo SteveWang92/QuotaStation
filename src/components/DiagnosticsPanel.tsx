@@ -4,7 +4,12 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import { errorMessage } from "../errors";
 import { formatResetTimestamp, formatRevision, formatTimestamp } from "../format";
-import type { DiagnosticsSnapshot, LimitWindow, ProviderSnapshot } from "../types";
+import type {
+  DeviceDiagnostics,
+  DiagnosticsSnapshot,
+  LimitWindow,
+  ProviderSnapshot,
+} from "../types";
 
 interface DiagnosticsPanelProps {
   diagnostics: DiagnosticsSnapshot;
@@ -44,6 +49,9 @@ export function DiagnosticsPanel({
   const [exportPath, setExportPath] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [forgetting, setForgetting] = useState<DeviceDiagnostics | null>(null);
+  const [forgetError, setForgetError] = useState<string | null>(null);
+  const [forgetBusy, setForgetBusy] = useState(false);
 
   useEffect(() => {
     void invoke<boolean>("get_log_available").then(setLogAvailable);
@@ -70,6 +78,21 @@ export function DiagnosticsPanel({
       setExportError(errorMessage(cause));
     } finally {
       setExporting(false);
+    }
+  }, []);
+
+  // The new totals arrive as a snapshot, which rereads this list without the device. The
+  // dialog closes either way, because it covers the list where a failure is reported.
+  const forgetDevice = useCallback(async (deviceId: string) => {
+    setForgetError(null);
+    setForgetBusy(true);
+    try {
+      await invoke("forget_device", { deviceId });
+    } catch (cause) {
+      setForgetError(errorMessage(cause));
+    } finally {
+      setForgetBusy(false);
+      setForgetting(null);
     }
   }, []);
 
@@ -178,13 +201,37 @@ export function DiagnosticsPanel({
               {device.local ? (
                 <strong>This machine</strong>
               ) : (
-                <small>Last imported {formatTimestamp(device.lastImportAt)}</small>
+                <small>
+                  File written {formatTimestamp(device.fileModifiedAt)} · imported{" "}
+                  {formatTimestamp(device.lastImportAt)}
+                </small>
               )}
               <small>
                 {device.restartCount} quota restart{device.restartCount === 1 ? "" : "s"} detected
               </small>
+              {device.local ? null : (
+                <button
+                  type="button"
+                  className="diagnostic-log"
+                  onClick={() => {
+                    setForgetError(null);
+                    setForgetting(device);
+                  }}
+                >
+                  Forget device
+                </button>
+              )}
             </div>
           ))}
+          {forgetError ? <small className="diagnostic-error">{forgetError}</small> : null}
+          {forgetting ? (
+            <ConfirmForget
+              device={forgetting}
+              busy={forgetBusy}
+              onCancel={() => setForgetting(null)}
+              onConfirm={() => void forgetDevice(forgetting.id)}
+            />
+          ) : null}
         </div>
       ) : null}
       {/* The quota rows themselves show the numbers and nothing about where they came
@@ -240,6 +287,48 @@ export function DiagnosticsPanel({
             <ExportSuccess path={exportPath} onClose={() => setExportPath(null)} />
           ) : null}
         </span>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmForget({
+  device,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  device: DeviceDiagnostics;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="confirm-overlay" onMouseDown={onCancel}>
+      <div
+        className="confirm-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={`Forget ${device.displayName}`}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <h3>Forget {device.displayName}?</h3>
+        <p>
+          Its usage is removed from every total on this machine, and its shared file is not read
+          again until that computer writes it again. Its quota restarts stay in the history.
+        </p>
+        <p>
+          Forget a device whose file was left behind — a computer that lost its settings publishes
+          under a new identity, and its old file would otherwise count its usage twice.
+        </p>
+        <div className="confirm-actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="button" className="confirm-primary" disabled={busy} onClick={onConfirm}>
+            {busy ? "Forgetting…" : "Forget device"}
+          </button>
+        </div>
       </div>
     </div>
   );

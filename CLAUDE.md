@@ -58,6 +58,23 @@ history, or account of how the code used to behave. Those belong in issues, comm
 - Keep file, process, provider protocol, credential, and database access in the Rust core;
   the renderer receives only normalized data through narrow commands and events.
 
+## Data versions
+
+A build reaches one computer days before the other, so a store and a file both outlive the
+build that wrote them. Every one of them states its own version, and no part of the code
+decides compatibility by inference — not from a modification time, not from the presence of
+a field, not from what the current build happens to expect.
+
+- The shared usage file states `formatVersion`; the database states its migration version.
+  Anything else that is written once and read by a later build states a version too, in the
+  data itself.
+- Store the version an input was read at beside whatever records that it was read. A build
+  that understands more than the stored version reads that input again, however unchanged it
+  looks, because the reading build is what changed.
+- Never close a compatibility gap by invalidating a marker by hand or from a one-off
+  migration. That repairs the computers that run the migration and leaves the next gap to be
+  found the same way, by someone noticing that data never arrived.
+
 ## Verification
 
 - Documentation-only work needs only a focused file review.
