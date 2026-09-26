@@ -11,6 +11,7 @@ on `main`, with the matching section below as its notes.
 
 - Quota readings and per-session cost comparisons are kept indefinitely instead of for 90 days.
 - A shared usage file written by a newer QuotaStation is reported as needing an update instead of as unreadable.
+- Claude usage refreshes read the session logs once instead of twice, so the dashboard updates sooner during an active Claude Code session.
 
 ## [1.3.0] - 2026-09-23
 

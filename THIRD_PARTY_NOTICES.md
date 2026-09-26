@@ -14,7 +14,9 @@ QuotaStation includes source code and data from the projects below.
   aggregation, service-tier interpretation, and cost calculation
 - Local modifications: the adapters expose read-only helpers for locating usage directories
   and checking whether they contain session records. The Claude adapter also groups its daily
-  results by local hour, allowing one parse to produce both hourly and daily history
+  results by local hour, and returns the same deduplicated entries with their session id,
+  timestamp, and whether each carried its own cost, allowing one parse to produce hourly and
+  daily history and per-session totals
 
 The vendored subset omits upstream tests and `insta` snapshot fixtures because they are not
 part of QuotaStation's dependency build. They remain available from the pinned upstream

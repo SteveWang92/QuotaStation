@@ -153,20 +153,15 @@ pub async fn read_live(kind: ProviderKind) -> Result<LiveSnapshot> {
     }
 }
 
-/// A provider's history, its timezone, and — where the same parse yields them, which only
-/// Codex's does — its sessions.
+/// A provider's history, its timezone, and its sessions, all from the same parse.
 pub async fn read_history(
     kind: ProviderKind,
-) -> Result<(HistorySnapshot, String, Option<Vec<SessionCost>>)> {
+) -> Result<(HistorySnapshot, String, Vec<SessionCost>)> {
     let before = usage_file_state(kind)?;
     let timezone = crate::clock::zone_name();
     let (history, sessions) = match kind {
-        ProviderKind::Codex => codex::read_history(&timezone)
-            .await
-            .map(|(history, sessions)| (history, Some(sessions))),
-        ProviderKind::Claude => {
-            claude::read_history(&timezone).await.map(|history| (history, None))
-        }
+        ProviderKind::Codex => codex::read_history(&timezone).await,
+        ProviderKind::Claude => claude::read_history(&timezone).await,
     }?;
     let quality = inspect_history_quality(kind, recent_quality_files(&before))?;
     let after = usage_file_state(kind)?;

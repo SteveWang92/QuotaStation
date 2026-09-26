@@ -30,7 +30,7 @@ chunking, and ordered parallel reads.
 - `load_entries`
 - `load_daily_summaries`
 - `load_hourly_summaries`
-- `load_daily_and_hourly_summaries`
+- `load_daily_hourly_and_session_entries` and its `SessionUsageEntry`
 - `usage_limit_reset_time_from_line`
 
 ## Depends on

@@ -86,12 +86,14 @@ async fn refresh_history_for(state: &Arc<AppState>, providers: &[ProviderKind]) 
             .await;
         let began = Instant::now();
         let (history, sessions) = match providers::read_history(provider).await {
-            Ok((history, timezone, sessions)) => (Ok((history, timezone)), sessions),
+            Ok((history, timezone, sessions)) => (Ok((history, timezone)), Some(sessions)),
             Err(error) => (Err(error), None),
         };
         crate::log::write(describe_history(provider, began, &history));
         apply_history(state, provider, &started_at, history).await;
-        record_sessions(state, provider, sessions).await;
+        if let Some(sessions) = sessions {
+            record_sessions(state, provider, sessions).await;
+        }
     }
     // The parse has just replaced this machine's rows. Publishing them and reading in what
     // the other machines published belongs to the same refresh, so the snapshot below
@@ -395,20 +397,8 @@ async fn apply_history(
 async fn record_sessions(
     state: &Arc<AppState>,
     provider: ProviderKind,
-    parsed_sessions: Option<Vec<crate::domain::SessionCost>>,
+    sessions: Vec<crate::domain::SessionCost>,
 ) {
-    let read = match (provider, parsed_sessions) {
-        (_, Some(sessions)) => Ok(sessions),
-        (ProviderKind::Claude, None) => providers::claude::read_session_costs().await,
-        (ProviderKind::Codex, None) => return,
-    };
-    let sessions = match read {
-        Ok(sessions) => sessions,
-        Err(error) => {
-            crate::log::write(format!("{} sessions unreadable: {error:#}", provider.key()));
-            return;
-        }
-    };
     if sessions.is_empty() {
         return;
     }

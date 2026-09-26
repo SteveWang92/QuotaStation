@@ -4,6 +4,8 @@ use ccusage_core::*;
 mod daily;
 mod paths;
 
+pub use daily::SessionUsageEntry;
+
 use std::{
     fs,
     hash::{Hash, Hasher},
@@ -48,14 +50,19 @@ pub fn load_daily_summaries(
     })
 }
 
-/// Daily and hourly summaries from the same file load and deduplication pass.
-pub fn load_daily_and_hourly_summaries(
+/// Daily and hourly summaries, and the entries per-session totals are built from, all from
+/// the same file load and deduplication pass.
+pub fn load_daily_hourly_and_session_entries(
     shared: &SharedArgs,
     project_filter: Option<&str>,
     group_by_project: bool,
-) -> Result<(Vec<UsageSummary>, Vec<(String, UsageSummary)>)> {
+) -> Result<(
+    Vec<UsageSummary>,
+    Vec<(String, UsageSummary)>,
+    Vec<SessionUsageEntry>,
+)> {
     progress::track_usage_load(progress::UsageLoadAgent("Claude"), shared.json, || {
-        daily::load_daily_and_hourly_summaries_inner(shared, project_filter, group_by_project)
+        daily::load_daily_hourly_and_session_entries_inner(shared, project_filter, group_by_project)
     })
 }
 
