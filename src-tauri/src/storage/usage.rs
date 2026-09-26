@@ -79,7 +79,10 @@ impl Storage {
                 .execute(&mut *tx)
                 .await?;
             }
-            sqlx::query("UPDATE devices SET source_modified_at = NULL").execute(&mut *tx).await?;
+            // A forgotten device keeps its marker: a new zone is not its file changing.
+            sqlx::query("UPDATE devices SET source_modified_at = NULL WHERE forgotten = 0")
+                .execute(&mut *tx)
+                .await?;
             // This machine's rows are rebuilt from its logs as far back as the logs still
             // reach, which is the earliest day this parse produced. The hourly window is far
             // shorter than any log is kept, so all of it is rebuilt. A day before the logs

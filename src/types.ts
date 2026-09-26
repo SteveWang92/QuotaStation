@@ -331,6 +331,8 @@ export interface DeviceDiagnostics {
   displayName: string;
   local: boolean;
   lastImportAt: string | null;
+  /** When the other device last wrote the shared file its rows came from. */
+  fileModifiedAt: string | null;
   /** How many quota restarts this device detected, as far as this machine knows. */
   restartCount: number;
 }

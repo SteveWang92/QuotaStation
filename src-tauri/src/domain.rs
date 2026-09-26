@@ -1057,6 +1057,9 @@ pub struct DeviceDiagnostics {
     /// When this device's aggregates were last read in. `None` for the local device, whose
     /// rows are written by the parser rather than imported.
     pub last_import_at: Option<String>,
+    /// When the other device last wrote the shared file its rows were read from. `None` for
+    /// the local device.
+    pub file_modified_at: Option<String>,
     /// How many quota restarts this device detected, as far as this machine knows.
     pub restart_count: u64,
 }

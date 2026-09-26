@@ -28,6 +28,9 @@ pub struct DeviceRecord {
     /// The shared-file format version the file was read at. `None` for a reading made
     /// before the version was stored.
     pub import_format_version: Option<u32>,
+    /// Whether the user forgot this device. Its file is then left unread until its
+    /// modification time moves away from `source_modified_at`.
+    pub forgotten: bool,
     /// How many restart detections are attributed to this device.
     pub restart_count: i64,
 }
@@ -50,11 +53,14 @@ pub struct DeviceImport<'a> {
 }
 
 impl DeviceRecord {
-    /// Whether this device's file, as last modified at `modified`, has been read by a build
-    /// that reads everything this one does. An unchanged file an older build read is not.
+    /// Whether this device's file, as last modified at `modified`, needs no reading: it was
+    /// read by a build that reads everything this one does, or it is the file the user
+    /// forgot. An unchanged file an older build read is read again; a forgotten one is not,
+    /// because a newer reader does not change what the user asked for.
     pub fn read_current(&self, modified: i64) -> bool {
         self.source_modified_at == Some(modified)
-            && self.import_format_version.is_some_and(|version| version >= FORMAT_VERSION)
+            && (self.forgotten
+                || self.import_format_version.is_some_and(|version| version >= FORMAT_VERSION))
     }
 }
 
@@ -74,10 +80,70 @@ impl Storage {
         Ok(())
     }
 
+    /// The identifier this machine publishes its shared file under, as last recorded here.
+    pub async fn local_shared_id(&self) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar("SELECT shared_id FROM devices WHERE id = ?")
+            .bind(LOCAL_DEVICE)
+            .fetch_optional(&self.pool)
+            .await?
+            .flatten())
+    }
+
+    /// Keeps a copy of this machine's shared identifier beside its rows, so a settings file
+    /// lost on its own does not give the machine a new identity — and every other machine a
+    /// second copy of its usage under the old one.
+    pub async fn record_local_shared_id(&self, shared_id: &str) -> Result<()> {
+        sqlx::query("UPDATE devices SET shared_id = ? WHERE id = ?")
+            .bind(shared_id)
+            .bind(LOCAL_DEVICE)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Removes another device's usage from every total, and leaves its file unread while it
+    /// is still modified at `file_modified_at` — the file as it stands when forgotten. A
+    /// device whose file changes afterwards is still being used, and is read again.
+    ///
+    /// Its restart detections stay: a restart is one account-wide event, and one more device
+    /// having seen it counts nothing twice. Returns whether there was such a device.
+    pub async fn forget_device(&self, id: &str, file_modified_at: Option<i64>) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let forgotten = sqlx::query(
+            "UPDATE devices SET forgotten = 1, source_modified_at = ? WHERE id = ? AND id <> ?",
+        )
+        .bind(file_modified_at)
+        .bind(id)
+        .bind(LOCAL_DEVICE)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            > 0;
+        if !forgotten {
+            return Ok(false);
+        }
+        for table in ["daily_usage", "hourly_usage"] {
+            // The table name comes from the literal list above, and every value is bound.
+            sqlx::query(AssertSqlSafe(format!("DELETE FROM {table} WHERE device = ?")))
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        // The hours a recorded window spans have just lost that device's work.
+        let providers: Vec<i64> =
+            sqlx::query_scalar("SELECT id FROM provider_instances").fetch_all(&mut *tx).await?;
+        for provider_id in providers {
+            Self::refresh_reset_tokens(&mut tx, provider_id).await?;
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+
     /// Every device the totals are built from, this machine first.
     pub async fn load_devices(&self) -> Result<Vec<DeviceRecord>> {
         let rows = sqlx::query(
-            "SELECT id, display_name, last_import_at, source_modified_at, import_format_version, ( \
+            "SELECT id, display_name, last_import_at, source_modified_at, import_format_version, \
+             forgotten, ( \
                SELECT COUNT(*) FROM limit_reset_observations \
                WHERE limit_reset_observations.device = devices.id) AS restart_count \
              FROM devices ORDER BY id = ? DESC, display_name ASC",
@@ -93,6 +159,7 @@ impl Storage {
                 last_import_at: row.get("last_import_at"),
                 source_modified_at: row.get("source_modified_at"),
                 import_format_version: row.get("import_format_version"),
+                forgotten: row.get("forgotten"),
                 restart_count: row.get("restart_count"),
             })
             .collect())
@@ -231,7 +298,7 @@ impl Storage {
                  VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET \
                    display_name = excluded.display_name, last_import_at = excluded.last_import_at, \
                    source_modified_at = excluded.source_modified_at, \
-                   import_format_version = excluded.import_format_version",
+                   import_format_version = excluded.import_format_version, forgotten = 0",
             )
             .bind(device.id)
             .bind(device.display_name)
