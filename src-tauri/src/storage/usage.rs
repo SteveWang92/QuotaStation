@@ -4,7 +4,7 @@
 use std::{collections::BTreeMap, str::FromStr};
 
 use anyhow::{Context, Result};
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use crate::domain::{
     CCUSAGE_REVISION, DailyUsagePoint, DeviceUsage, HistorySnapshot, HourlyUsagePoint,
@@ -70,9 +70,10 @@ impl Storage {
             // next refresh reads every one of them again and re-checks it against the zone now
             // in force.
             for table in ["daily_usage", "hourly_usage"] {
-                sqlx::query(&format!(
+                // The table name comes from the literal list above, and every value is bound.
+                sqlx::query(AssertSqlSafe(format!(
                     "DELETE FROM {table} WHERE provider_instance_id = ? AND device <> ?"
-                ))
+                )))
                 .bind(provider_id)
                 .bind(LOCAL_DEVICE)
                 .execute(&mut *tx)
@@ -486,10 +487,11 @@ impl Storage {
         end: &str,
     ) -> Result<u64> {
         let (table, column) = bucket.parts();
-        let total: i64 = sqlx::query_scalar(&format!(
+        // `BucketTable::parts` yields only fixed table and column names, and every value is bound.
+        let total: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT COALESCE(SUM(total_tokens), 0) FROM {table} \
              WHERE (? IS NULL OR provider_instance_id = ?) AND {column} BETWEEN ? AND ?"
-        ))
+        )))
         .bind(provider_id)
         .bind(provider_id)
         .bind(start)
@@ -510,13 +512,14 @@ impl Storage {
         total: u64,
     ) -> Result<Vec<DeviceUsage>> {
         let (table, column) = bucket.parts();
-        let rows = sqlx::query(&format!(
+        // `BucketTable::parts` yields only fixed table and column names, and every value is bound.
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT {table}.device AS device, devices.display_name AS display_name, \
              SUM(total_tokens) AS tokens FROM {table} \
              JOIN devices ON devices.id = {table}.device \
              WHERE (? IS NULL OR provider_instance_id = ?) AND {column} BETWEEN ? AND ? \
              GROUP BY {table}.device HAVING tokens > 0 ORDER BY tokens DESC"
-        ))
+        )))
         .bind(provider_id)
         .bind(provider_id)
         .bind(start)

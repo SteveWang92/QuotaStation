@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use crate::domain::{
     HOURLY_HISTORY_DAYS, LimitKind, LimitResetEvent, LiveSnapshot, QuotaHistoryPoint,
@@ -391,7 +391,8 @@ impl Storage {
             .bind(reset_id)
             .execute(&mut **tx)
             .await?;
-        sqlx::query(&format!(
+        // `REPRESENTATIVE_ORDER` is a constant, and the row id is bound.
+        sqlx::query(AssertSqlSafe(format!(
             "UPDATE limit_resets SET (window_kind, anchored_at, new_resets_at, previous_resets_at, \
                used_percent_before, early_by_seconds, classification, source, detected_at) = ( \
                SELECT window_kind, anchored_at, new_resets_at, previous_resets_at, \
@@ -402,7 +403,7 @@ impl Storage {
                SELECT MAX(anchored_at) - MIN(anchored_at) FROM limit_reset_observations \
                WHERE reset_id = limit_resets.id) \
              WHERE id = ?"
-        ))
+        )))
         .bind(reset_id)
         .execute(&mut **tx)
         .await?;
@@ -420,14 +421,15 @@ impl Storage {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        // Row ids read back from the database, so writing them into the statement is safe.
+        // The ids are integers read back from the database and `REPRESENTATIVE_ORDER` is a
+        // constant, so only digits and fixed SQL reach the statement.
         let ids = events.iter().map(|(id, _)| id.to_string()).collect::<Vec<_>>().join(",");
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT reset_id, device, COALESCE(devices.display_name, device_name) AS name, \
              source, anchored_at, classification FROM limit_reset_observations \
              LEFT JOIN devices ON devices.id = limit_reset_observations.device \
              WHERE reset_id IN ({ids}) ORDER BY {REPRESENTATIVE_ORDER}"
-        ))
+        )))
         .fetch_all(&self.pool)
         .await?;
         let mut detections: BTreeMap<i64, Vec<ResetDetection>> = BTreeMap::new();
@@ -479,10 +481,11 @@ impl Storage {
         let oldest_hour = crate::clock::day_start(
             crate::clock::today().saturating_sub(jiff::Span::new().days(HOURLY_HISTORY_DAYS)),
         )?;
-        let windows = sqlx::query(&format!(
+        // `window_start` is built from constants alone, and every value is bound.
+        let windows = sqlx::query(AssertSqlSafe(format!(
             "SELECT id, {window_start} AS window_start, previous_resets_at, anchored_at \
              FROM limit_resets WHERE provider_instance_id = ? AND {window_start} >= ?"
-        ))
+        )))
         .bind(provider_id)
         .bind(oldest_hour)
         .fetch_all(&mut **tx)
@@ -607,10 +610,11 @@ impl Storage {
     /// [`load_recent_resets`](Self::load_recent_resets) instead.
     pub async fn load_reset_history(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
         let provider_id = self.provider_id(provider).await?;
-        let rows = sqlx::query(&format!(
+        // `RESET_COLUMNS` is a constant, and every value is bound.
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT {RESET_COLUMNS} FROM limit_resets \
              WHERE provider_instance_id = ? ORDER BY anchored_at DESC"
-        ))
+        )))
         .bind(provider_id)
         .fetch_all(&self.pool)
         .await?;
@@ -619,10 +623,11 @@ impl Storage {
 
     pub async fn load_recent_resets(&self, provider: ProviderKind) -> Result<Vec<LimitResetEvent>> {
         let provider_id = self.provider_id(provider).await?;
-        let rows = sqlx::query(&format!(
+        // `RESET_COLUMNS` is a constant, and every value is bound.
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT {RESET_COLUMNS} FROM limit_resets \
              WHERE provider_instance_id = ? ORDER BY anchored_at DESC LIMIT ?"
-        ))
+        )))
         .bind(provider_id)
         .bind(RECENT_RESET_LIMIT)
         .fetch_all(&self.pool)
@@ -730,10 +735,11 @@ impl Storage {
             window.1.push(QuotaHistoryPoint { date, peak_used_percent });
         }
 
-        let reset_rows = sqlx::query(&format!(
+        // `RESET_COLUMNS` is a constant, and every value is bound.
+        let reset_rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT {RESET_COLUMNS} FROM limit_resets WHERE provider_instance_id = ? \
              AND anchored_at >= ? AND anchored_at < ? ORDER BY anchored_at ASC"
-        ))
+        )))
         .bind(provider_id)
         .bind(from)
         .bind(until)

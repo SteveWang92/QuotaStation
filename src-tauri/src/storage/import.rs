@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use crate::domain::SharedResetEvent;
 use crate::domain::{DeviceUsageRow, LimitResetEvent};
@@ -152,14 +152,19 @@ impl Storage {
             .collect())
     }
 
-    async fn load_export_rows(&self, table: &str, bucket: &str) -> Result<Vec<DeviceUsageRow>> {
-        let rows = sqlx::query(&format!(
+    async fn load_export_rows(
+        &self,
+        table: &'static str,
+        bucket: &'static str,
+    ) -> Result<Vec<DeviceUsageRow>> {
+        // `table` and `bucket` are `&'static str` names, and every value is bound.
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "SELECT provider_instances.provider AS provider, {table}.{bucket} AS bucket, model, \
              service_tier, input_tokens, cache_read_tokens, output_tokens, reasoning_tokens, \
              total_tokens, estimated_cost_usd FROM {table} \
              JOIN provider_instances ON provider_instances.id = {table}.provider_instance_id \
              WHERE device = ? ORDER BY bucket ASC, model ASC"
-        ))
+        )))
         .bind(LOCAL_DEVICE)
         .fetch_all(&self.pool)
         .await?;
@@ -219,7 +224,8 @@ impl Storage {
             .execute(&mut *tx)
             .await?;
             for table in ["daily_usage", "hourly_usage"] {
-                sqlx::query(&format!("DELETE FROM {table} WHERE device = ?"))
+                // The table name comes from the literal list above, and every value is bound.
+                sqlx::query(AssertSqlSafe(format!("DELETE FROM {table} WHERE device = ?")))
                     .bind(device.id)
                     .execute(&mut *tx)
                     .await?;
@@ -303,18 +309,19 @@ impl Storage {
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         provider_id: i64,
         device: &DeviceImport<'_>,
-        table: &str,
-        bucket: &str,
+        table: &'static str,
+        bucket: &'static str,
         row: &DeviceUsageRow,
         imported_at: &str,
     ) -> Result<()> {
-        sqlx::query(&format!(
+        // `table` and `bucket` are `&'static str` names, and every value is bound.
+        sqlx::query(AssertSqlSafe(format!(
             "INSERT INTO {table} \
              (provider_instance_id, device, {bucket}, model, service_tier, input_tokens, \
               cache_read_tokens, output_tokens, reasoning_tokens, total_tokens, \
               estimated_cost_usd, parser_revision, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        ))
+        )))
         .bind(provider_id)
         .bind(device.id)
         .bind(&row.bucket)
