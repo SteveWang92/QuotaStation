@@ -46,7 +46,7 @@ mslnk = "0.1.8"
 # The notification plugin shows a toast and nothing more; a toast that answers a click has
 # to be raised through the WinRT API directly.
 tauri-winrt-notification = "0.7"
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Security",
