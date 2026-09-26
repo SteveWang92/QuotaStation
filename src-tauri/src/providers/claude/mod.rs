@@ -48,6 +48,16 @@ pub fn claude_home() -> Option<PathBuf> {
 pub async fn read_live() -> Result<LiveSnapshot> {
     let plan_type = plan::plan_type();
     let reported = statusline::read_windows()?;
+    // The session logs give the five-hour window alone, and a window the status line
+    // reported wins the merge below, so the logs are parsed only when it did not.
+    if reported.iter().any(|window| window.kind == LimitKind::Primary) {
+        return Ok(logged(LiveSnapshot {
+            plan_type,
+            limits: merge_windows(reported, Vec::new()),
+            earned_reset_count: None,
+            earned_reset_expires_at: None,
+        }));
+    }
     let mut snapshot = match session::read_live(plan_type.clone()).await {
         Ok(snapshot) => snapshot,
         // The session logs are the fallback, so their absence only ends the read when
@@ -64,13 +74,17 @@ pub async fn read_live() -> Result<LiveSnapshot> {
         }
     };
     snapshot.limits = merge_windows(reported, snapshot.limits);
+    Ok(logged(snapshot))
+}
+
+fn logged(snapshot: LiveSnapshot) -> LiveSnapshot {
     for limit in &snapshot.limits {
         crate::log::write(format!(
             "claude window {}: used {:?}% resets_at {:?}",
             limit.label, limit.used_percent, limit.resets_at
         ));
     }
-    Ok(snapshot)
+    snapshot
 }
 
 /// Combines two readings of the same windows, where `preferred` is the better-informed
