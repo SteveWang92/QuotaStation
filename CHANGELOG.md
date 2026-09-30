@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Changed
+
+- Updated bundled dependencies, including the Tauri dialog, notification and single-instance plugins and the interface icon set.
+
 ## [1.4.0] - 2026-09-27
 
 ### Added
