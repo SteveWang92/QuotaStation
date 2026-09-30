@@ -7,6 +7,8 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-09-30
+
 ### Changed
 
 - Updated bundled dependencies, including the Tauri dialog, notification and single-instance plugins and the interface icon set.
@@ -268,7 +270,8 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/SteveWang92/QuotaStation/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.1.0...v1.2.0
