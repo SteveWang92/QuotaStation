@@ -1,6 +1,13 @@
 # QuotaStation
 
-[![CI](https://github.com/SteveWang92/QuotaStation/actions/workflows/ci.yml/badge.svg)](https://github.com/SteveWang92/QuotaStation/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/SteveWang92/QuotaStation/ci.yml?branch=main&label=CI&style=flat)](https://github.com/SteveWang92/QuotaStation/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/SteveWang92/QuotaStation?style=flat)](https://github.com/SteveWang92/QuotaStation/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/SteveWang92/QuotaStation/total?style=flat)](https://github.com/SteveWang92/QuotaStation/releases)
+[![License](https://img.shields.io/github/license/SteveWang92/QuotaStation?style=flat)](LICENSE)
+![Windows](https://img.shields.io/badge/Windows-0078D4?style=flat)
+![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8D8?style=flat&logo=tauri&logoColor=white)
+![Rust](https://img.shields.io/badge/Rust-000000?style=flat&logo=rust&logoColor=white)
+![React](https://img.shields.io/badge/React-20232A?style=flat&logo=react&logoColor=61DAFB)
 
 A Windows app for tracking AI coding quotas, reset times, token usage, and estimated API
 costs. All usage history stays on your computer.
