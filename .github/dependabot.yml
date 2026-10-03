@@ -28,6 +28,11 @@ updates:
     cooldown:
       default-days: 21
       semver-major-days: 30
+    # Tracks the Node line pinned in .nvmrc, so a major moves only with Node itself.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
     groups:
       npm-production:
         dependency-type: production
