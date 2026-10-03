@@ -34,6 +34,12 @@ updates:
         update-types:
           - version-update:semver-major
     groups:
+      # The runner and its coverage provider pin each other as exact peers, so every update,
+      # a major included, has to land in one pull request.
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
       npm-production:
         dependency-type: production
         patterns:
