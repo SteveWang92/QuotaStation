@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the Tauri runtime to 2.12, along with its plugins and the interface icon set.
+
 ## [1.4.1] - 2026-09-30
 
 ### Changed
