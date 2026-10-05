@@ -16,7 +16,8 @@ QuotaStation includes source code and data from the projects below.
   and checking whether they contain session records. The Claude adapter also groups its daily
   results by local hour, and returns the same deduplicated entries with their session id,
   timestamp, and whether each carried its own cost, allowing one parse to produce hourly and
-  daily history and per-session totals
+  daily history and per-session totals. `flake.lock` pins the LiteLLM revision a later
+  ccusage revision pins, so the pricing catalog can move without moving the parsers
 
 The vendored subset omits upstream tests and `insta` snapshot fixtures because they are not
 part of QuotaStation's dependency build. They remain available from the pinned upstream
@@ -34,7 +35,7 @@ QuotaStation does not include ccusage telemetry, credential handling, or upload 
 ## LiteLLM model prices
 
 - Repository: <https://github.com/BerriAI/litellm>
-- Revision: `ba917681461b1ad04d30f91da26e75b3521996f3`, the revision pinned by
+- Revision: `be4481779ee8a73579af82a3b5394f62f4e4b057`, the revision pinned by
   `vendor/ccusage/flake.lock`
 - Included component: `model_prices_and_context_window.json`
 - License: MIT

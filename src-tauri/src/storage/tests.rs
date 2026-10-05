@@ -2,7 +2,7 @@ use super::test_support::{TempDatabase, open_storage};
 use super::*;
 use crate::domain::{
     DeviceUsageRow, HistoryDay, HistoryHour, HistorySnapshot, LimitWindow, LiveSnapshot,
-    ModelUsageRow, ResetClassification, SessionCost,
+    ModelUsageRow, ResetClassification, SessionCost, SessionModelCost,
 };
 use crate::resets::WindowObservation;
 
@@ -213,7 +213,113 @@ fn session(
             total: 3_400,
         },
         models: vec!["claude-opus-5".to_string(), "claude-haiku-4-5".to_string()],
+        model_costs: Vec::new(),
     }
+}
+
+/// A session whose models are priced as given, and nothing else about it worth asserting.
+fn priced_session(session_id: &str, models: &[(&str, u64, f64)]) -> SessionCost {
+    let model_costs: Vec<SessionModelCost> = models
+        .iter()
+        .map(|&(model, tokens, cost_usd)| SessionModelCost {
+            model: model.to_string(),
+            tokens,
+            cost_usd,
+        })
+        .collect();
+    SessionCost {
+        computed_cost_usd: model_costs.iter().map(|model| model.cost_usd).sum(),
+        usage: TokenUsage {
+            total: model_costs.iter().map(|model| model.tokens).sum(),
+            ..TokenUsage::default()
+        },
+        models: model_costs.iter().map(|model| model.model.clone()).collect(),
+        model_costs,
+        ..session(session_id, "2026-09-23T05:00:00Z", None, 0.0)
+    }
+}
+
+async fn stored_session_cost(storage: &Storage, session_id: &str) -> f64 {
+    sqlx::query_scalar("SELECT computed_cost_usd FROM session_costs WHERE session_id = ?")
+        .bind(session_id)
+        .fetch_one(&storage.pool)
+        .await
+        .expect("read the stored session cost")
+}
+
+#[tokio::test]
+async fn a_new_catalog_prices_only_what_the_old_one_could_not() {
+    let (storage, _database) = open_storage().await;
+    let priced_day = |costs: [f64; 2]| HistorySnapshot {
+        days: vec![HistoryDay {
+            model_rows: vec![
+                ModelUsageRow {
+                    cost_usd: costs[0],
+                    ..day("2026-09-23", "gpt-5.6-sol", 400).model_rows[0].clone()
+                },
+                ModelUsageRow {
+                    cost_usd: costs[1],
+                    ..day("2026-09-23", "claude-opus-5-5", 600).model_rows[0].clone()
+                },
+            ],
+            ..day("2026-09-23", "gpt-5.6-sol", 1_000)
+        }],
+        hours: Vec::new(),
+    };
+    // The first catalog knows one model and not the other; the next one repriced the first.
+    storage
+        .save_history(CODEX, &priced_day([5.0, 0.0]), "Australia/Sydney", "2026-09-23T15:00:00Z")
+        .await
+        .expect("save the first parse");
+    storage
+        .save_history(CODEX, &priced_day([4.0, 3.0]), "Australia/Sydney", "2026-09-24T15:00:00Z")
+        .await
+        .expect("save the parse under a new catalog");
+    let range = storage
+        .load_usage_range(Some(CODEX), None, "2026-09-23", "2026-09-23")
+        .await
+        .expect("read the day back");
+    assert_eq!(range.days[0].api_equivalent_cost_usd, Some(8.0));
+
+    storage
+        .save_session_costs(
+            CODEX,
+            &[priced_session(
+                "mixed",
+                &[("claude-opus-5", 100, 2.0), ("claude-opus-5-5", 50, 0.0)],
+            )],
+            "2026-09-23T15:00:00Z",
+        )
+        .await
+        .expect("store the session under the first catalog");
+    storage
+        .save_session_costs(
+            CODEX,
+            &[priced_session(
+                "mixed",
+                &[("claude-opus-5", 100, 1.5), ("claude-opus-5-5", 50, 1.0)],
+            )],
+            "2026-09-24T15:00:00Z",
+        )
+        .await
+        .expect("store the session under a new catalog");
+    assert_eq!(stored_session_cost(&storage, "mixed").await, 3.0);
+}
+
+#[tokio::test]
+async fn a_row_whose_tokens_grew_is_priced_again() {
+    let (storage, _database) = open_storage().await;
+    for (tokens, cost) in [(100, 2.0), (150, 2.5)] {
+        storage
+            .save_session_costs(
+                CODEX,
+                &[priced_session("running", &[("claude-opus-5-5", tokens, cost)])],
+                "2026-09-23T15:00:00Z",
+            )
+            .await
+            .expect("store the session");
+    }
+    assert_eq!(stored_session_cost(&storage, "running").await, 2.5);
 }
 
 #[tokio::test]

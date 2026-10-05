@@ -7,6 +7,17 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-10-05
+
+### Changed
+
+- A stored cost keeps its original price when a later pricing catalog changes that model.
+- Updated the Tauri runtime to 2.12, along with its plugins and the interface icon set.
+
+### Fixed
+
+- Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 sessions now show an estimated API cost.
+
 ## [1.4.1] - 2026-09-30
 
 ### Changed
@@ -270,7 +281,8 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.4.2...HEAD
+[1.4.2]: https://github.com/SteveWang92/QuotaStation/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/SteveWang92/QuotaStation/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.2.0...v1.3.0

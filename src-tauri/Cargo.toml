@@ -1,6 +1,6 @@
 [package]
 name = "quotastation"
-version = "1.4.1"
+version = "1.4.2"
 description = "Windows app for tracking AI coding quotas, usage, reset times, and estimated API costs"
 authors = ["Steve Wang <contact@stevewang.me>"]
 edition = "2024"
@@ -45,8 +45,8 @@ which = "8"
 mslnk = "0.1.8"
 # The notification plugin shows a toast and nothing more; a toast that answers a click has
 # to be raised through the WinRT API directly.
-tauri-winrt-notification = "0.7"
-windows = { version = "0.61", features = [
+tauri-winrt-notification = "0.8"
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Security",

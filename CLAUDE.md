@@ -8,7 +8,7 @@ repository; where they and the rules below differ, the rules below win.
 
 - QuotaStation is released and under active development. Codex and Claude are both covered.
   Which version is current is a question for the tags and `CHANGELOG.md`, not for this file.
-- Read `docs/PROJECT_PLAN.local.md` when it exists before changing implementation scope.
+- Read `docs/product.md` before changing implementation scope.
 - Keep public documentation free of machine-specific paths, account details, credentials,
   and private usage data.
 
@@ -27,7 +27,8 @@ history, or account of how the code used to behave. Those belong in issues, comm
 | `README.md` | What QuotaStation is and what it does today, for someone who has never seen it. No version numbers, no design rationale. |
 | `docs/architecture.md` | Why the boundaries are where they are: the stack, the provider/renderer split, data retention, privacy rules, what each source may and may not do. |
 | `docs/development.md` | How to run, build, verify, and where local data lives. Commands and paths. |
-| `docs/PROJECT_PLAN.local.md` | Product direction, guardrails, and the accepted decisions and dead ends behind the current design. Never progress. |
+| `docs/product.md` | Product direction, guardrails, and the accepted decisions and dead ends behind the current design. Never progress. |
+| `docs/multi-machine.md` | How to set up and read usage combined from several computers. |
 | `CHANGELOG.md` | What changed for a user, per version. |
 | `CLAUDE.md` | How to work in this repository. |
 | `CLAUDE.local.md` | Facts true of one machine only: where its working copy and its running instance live. Never rules. |

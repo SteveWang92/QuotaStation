@@ -334,6 +334,13 @@ price list.
 - Updating the reviewed ccusage revision updates the catalog pin. Refresh the snapshot from
   the revision the new `flake.lock` names, keeping the same model-identifier filter, and
   review the upstream changes, licenses, notices, and the minimal vendored source together.
+- A new model can be priced without moving the parsers: copy only the `litellm` node from
+  the latest upstream ccusage `flake.lock` and refresh the snapshot from that revision. The
+  snapshot is the upstream file filtered by ccusage's `is_embedded_model` prefixes and
+  written with one-space indentation and sorted keys.
+- A new catalog fills in what the previous one could not price on the first history
+  refresh, and leaves every cost already stored as it was; `docs/architecture.md` owns that
+  rule.
 
 Cargo reuses its build output during normal incremental builds. Cleaning `target/`, changing
 the relevant ccusage build inputs, or moving to a new pinned revision causes the catalog to
