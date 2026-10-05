@@ -41,7 +41,8 @@ QuotaStation does not include ccusage telemetry, credential handling, or upload 
 - License: MIT
 - Copyright: Copyright (c) 2023 Berri AI
 - Local use: the API-equivalent cost estimate, embedded at build time by ccusage's build
-  script through `CCUSAGE_PRICING_JSON_PATH`
+  script through `CCUSAGE_PRICING_JSON_PATH`, or downloaded unmodified from the same
+  repository when the user asks for a newer catalog in Settings
 - Local modifications: entries are restricted to the model identifiers ccusage's build script
   already embeds, so the catalog compiled into the application is unchanged; every retained
   entry keeps its upstream values verbatim

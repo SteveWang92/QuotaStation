@@ -172,12 +172,15 @@ export function TrendChart({
     TOP_PADDING + PLOT_HEIGHT - (Math.min(value, axisMax) / axisMax) * PLOT_HEIGHT;
 
   const hasData = highest > 0;
-  const activeIndex = hovered ?? (selectedBucket ? buckets.indexOf(selectedBucket) : -1);
+  // The pointer can rest on a column while the range changes underneath it, and the index it
+  // left behind can then name a column the new range does not have.
+  const hoveredIndex = hovered !== null && hovered < buckets.length ? hovered : null;
+  const activeIndex = hoveredIndex ?? (selectedBucket ? buckets.indexOf(selectedBucket) : -1);
   const tooltipIndex = activeIndex >= 0 ? activeIndex : null;
 
   function moveHover(step: number) {
     if (buckets.length === 0) return;
-    const from = hovered ?? (selectedBucket ? buckets.indexOf(selectedBucket) : -1);
+    const from = hoveredIndex ?? (selectedBucket ? buckets.indexOf(selectedBucket) : -1);
     const next = Math.min(buckets.length - 1, Math.max(0, (from < 0 ? 0 : from) + step));
     setHovered(next);
   }
@@ -186,8 +189,8 @@ export function TrendChart({
     if (event.key === "ArrowRight") moveHover(1);
     else if (event.key === "ArrowLeft") moveHover(-1);
     else if (event.key === "Escape") setHovered(null);
-    else if ((event.key === "Enter" || event.key === " ") && hovered !== null) {
-      onSelectBucket?.(buckets[hovered] === selectedBucket ? null : buckets[hovered]);
+    else if ((event.key === "Enter" || event.key === " ") && hoveredIndex !== null) {
+      onSelectBucket?.(buckets[hoveredIndex] === selectedBucket ? null : buckets[hoveredIndex]);
     } else return;
     event.preventDefault();
   }

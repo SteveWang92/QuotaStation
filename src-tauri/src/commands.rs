@@ -225,6 +225,32 @@ pub(crate) async fn refresh_now(
     Ok(refresh::refresh_all(&app, state.inner()).await)
 }
 
+#[tauri::command]
+pub(crate) fn get_pricing_catalog() -> crate::pricing::PricingCatalog {
+    crate::pricing::catalog()
+}
+
+/// Downloads the latest pricing catalog. When it is newer than the one in use, history is
+/// parsed again at once, which prices what the previous catalog could not and leaves every
+/// settled cost as it was.
+#[tauri::command]
+pub(crate) async fn update_pricing(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::pricing::PricingCatalog, String> {
+    log::write("pricing update requested by hand");
+    let updated = crate::pricing::update().await.map_err(|error| {
+        log::write(format!("the pricing catalog could not be updated: {error:#}"));
+        format!("{error:#}")
+    })?;
+    if updated {
+        refresh::refresh_history(&app, state.inner()).await;
+    } else {
+        log::write("the pricing catalog in use is already the latest");
+    }
+    Ok(crate::pricing::catalog())
+}
+
 /// The displays the status can be shown on. Read live rather than stored: a monitor is
 /// attached and detached while the application runs.
 #[tauri::command]
@@ -601,7 +627,7 @@ async fn collect_diagnostics(
         },
         devices,
         parser_revision: domain::CCUSAGE_REVISION.to_string(),
-        pricing_catalog_revision: domain::PRICING_CATALOG_REVISION.to_string(),
+        pricing_catalog_revision: crate::pricing::revision(),
         app_version: app.package_info().version.to_string(),
         build_commit: env!("QUOTASTATION_BUILD_COMMIT").to_string(),
         build_kind: build_kind(),

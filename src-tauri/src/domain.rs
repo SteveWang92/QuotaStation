@@ -414,7 +414,7 @@ impl ProviderSnapshot {
             quota_disabled: false,
             history_error: None,
             parser_revision: CCUSAGE_REVISION.to_string(),
-            pricing_catalog_revision: PRICING_CATALOG_REVISION.to_string(),
+            pricing_catalog_revision: crate::pricing::revision(),
         }
     }
 

@@ -9,7 +9,7 @@
 //! A wrong clock is a different fault, and no zone repairs it: countdowns run against it and
 //! a reading dated by it no longer lines up with the server's reset times. Providers publish
 //! no server time, so when the user opts in, the offset is measured against internet time
-//! with one SNTP request — QuotaStation's only outbound request of its own, carrying no user
+//! with one SNTP request — the only request QuotaStation sends on its own, carrying no user
 //! data — and [`now`] applies it.
 
 use std::{

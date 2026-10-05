@@ -4,6 +4,7 @@ import { AboutPanel } from "./AboutPanel";
 import { ClaudeFinishedNotifications, ClaudeStatusLine } from "./ClaudeStatusLine";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { GeneralSettings } from "./GeneralSettings";
+import { PricingCatalogSettings } from "./PricingCatalogSettings";
 import { QuotaNotifications } from "./QuotaNotifications";
 import { ResetHistoryPanel } from "./ResetHistoryPanel";
 
@@ -91,6 +92,7 @@ export function SettingsPage({
         <section id="application" aria-label="Application">
           <h3 className="settings-section-heading">Application</h3>
           <GeneralSettings />
+          <PricingCatalogSettings />
         </section>
         <section id="notifications" aria-label="Notifications">
           <h3 className="settings-section-heading">Notifications</h3>
