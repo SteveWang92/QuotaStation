@@ -256,7 +256,8 @@ export function GeneralSettings() {
           <h2>Application</h2>
           <p>
             Where QuotaStation shows up on this machine. Nothing here reads a provider, and only the
-            clock check, when switched on, sends a request off this machine.
+            clock check, when switched on, sends a request off this machine; the pricing update
+            below sends one only when pressed.
           </p>
           {settingsError ? (
             <p className="provider-consent-error">Settings: {settingsError}</p>

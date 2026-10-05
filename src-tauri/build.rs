@@ -49,5 +49,10 @@ fn main() {
         .and_then(serde_json::Value::as_str)
         .expect("ccusage flake.lock must pin LiteLLM");
     println!("cargo:rustc-env=QUOTASTATION_PRICING_REVISION={revision}");
+    let committed = lock
+        .pointer("/nodes/litellm/locked/lastModified")
+        .and_then(serde_json::Value::as_i64)
+        .expect("ccusage flake.lock must date its LiteLLM pin");
+    println!("cargo:rustc-env=QUOTASTATION_PRICING_COMMITTED={committed}");
     tauri_build::build()
 }

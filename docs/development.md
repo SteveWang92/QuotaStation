@@ -334,6 +334,10 @@ price list.
 - Updating the reviewed ccusage revision updates the catalog pin. Refresh the snapshot from
   the revision the new `flake.lock` names, keeping the same model-identifier filter, and
   review the upstream changes, licenses, notices, and the minimal vendored source together.
+- Between releases, **Settings → Application → Update pricing** downloads the latest
+  catalog to `%APPDATA%\me.stevewang.quotastation\pricing-catalog.json`; it is used while
+  its LiteLLM commit is newer than the embedded one. Deleting the file returns to the
+  embedded catalog on the next start.
 - A new model can be priced without moving the parsers: copy only the `litellm` node from
   the latest upstream ccusage `flake.lock` and refresh the snapshot from that revision. The
   snapshot is the upstream file filtered by ccusage's `is_embedded_model` prefixes and

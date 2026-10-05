@@ -148,6 +148,14 @@ export interface ProviderSnapshot {
   pricingCatalogRevision: string;
 }
 
+/** The catalog costs are estimated from now. `downloadedAt` is null for the built-in one. */
+export interface PricingCatalog {
+  revision: string;
+  /** When the LiteLLM commit was made, in Unix seconds. */
+  committedAt: number;
+  downloadedAt: string | null;
+}
+
 /**
  * Every provider in one payload. The surfaces show them together, so they are fetched
  * together and never drawn from two different moments.

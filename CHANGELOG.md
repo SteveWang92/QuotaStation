@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Added
+
+- Settings can download the latest pricing catalog to price newly released models.
+
 ## [1.4.2] - 2026-10-05
 
 ### Changed

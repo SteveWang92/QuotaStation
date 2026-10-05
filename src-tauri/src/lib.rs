@@ -6,6 +6,7 @@ mod diagnostic_export;
 mod fs_atomic;
 mod git;
 mod log;
+mod pricing;
 mod quick_panel;
 mod refresh;
 mod reinstall;
@@ -605,6 +606,7 @@ pub fn run() {
             if demo {
                 log::write("started as a demonstration; no provider will be read");
             }
+            pricing::start();
             let database_path =
                 app_data_dir.join(if demo { demo::DATABASE_FILE } else { "quotastation.db" });
             let settings_path =
@@ -772,6 +774,8 @@ pub fn run() {
             commands::refresh_now,
             commands::get_diagnostics,
             commands::export_diagnostics,
+            commands::get_pricing_catalog,
+            commands::update_pricing,
             shell::reveal_export_file,
             shell::get_log_available,
             shell::reveal_log_file,

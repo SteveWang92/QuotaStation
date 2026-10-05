@@ -8,8 +8,8 @@ use sqlx::{AssertSqlSafe, Row};
 
 use crate::domain::{
     CCUSAGE_REVISION, DailyUsagePoint, DeviceUsage, HistorySnapshot, HourlyUsagePoint,
-    ModelUsageRow, PRICING_CATALOG_REVISION, SessionCost, SessionCostSnapshot, SessionModelCost,
-    TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot, UsageWindowSnapshot,
+    ModelUsageRow, SessionCost, SessionCostSnapshot, SessionModelCost, TokenUsage,
+    UsageHoursSnapshot, UsageRangeSnapshot, UsageWindowSnapshot,
 };
 use crate::providers::ProviderKind;
 
@@ -357,12 +357,13 @@ impl Storage {
                 },
             );
         }
+        let current_revision = crate::pricing::revision();
         for session in sessions {
             let previous = stored.get(&session.session_id);
             let (computed_cost_usd, model_costs, kept) = settle_session(session, previous);
             let revision = match previous {
                 Some(previous) if kept => previous.pricing_catalog_revision.as_str(),
-                _ => PRICING_CATALOG_REVISION,
+                _ => current_revision.as_str(),
             };
             sqlx::query(
                 "INSERT INTO session_costs \

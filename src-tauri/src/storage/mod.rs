@@ -14,8 +14,8 @@ use sqlx::{
 };
 
 use crate::domain::{
-    AcquisitionDiagnostics, Freshness, LimitKind, LimitWindow, ModelUsage,
-    PRICING_CATALOG_REVISION, PaceLevel, ProviderSnapshot, QuotaLevel, TokenUsage, WindowSource,
+    AcquisitionDiagnostics, Freshness, LimitKind, LimitWindow, ModelUsage, PaceLevel,
+    ProviderSnapshot, QuotaLevel, TokenUsage, WindowSource,
 };
 use crate::providers::ProviderKind;
 
@@ -229,7 +229,7 @@ impl Storage {
         snapshot.models = today.models;
         snapshot.api_equivalent_cost_usd = today.api_equivalent_cost_usd;
         snapshot.resolve_derived_state();
-        snapshot.pricing_catalog_revision = PRICING_CATALOG_REVISION.to_string();
+        snapshot.pricing_catalog_revision = crate::pricing::revision();
         Ok(snapshot)
     }
 

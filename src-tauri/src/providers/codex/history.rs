@@ -32,7 +32,7 @@ fn read_history_blocking(timezone: &str) -> Result<(HistorySnapshot, Vec<Session
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let groups = aggregate_events(&events, AgentReportKind::Daily, Some(timezone))
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let pricing = PricingMap::load_embedded();
+    let pricing = crate::pricing::pricing_map();
     let speed = CodexSpeedPolicy::Auto(CodexServiceTier::Standard);
     let mut days = Vec::with_capacity(groups.len());
     for (date, group) in groups {

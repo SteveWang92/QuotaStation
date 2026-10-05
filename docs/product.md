@@ -104,12 +104,26 @@ tools pricing the same tokens because each prices from its own catalogue; ours i
 embedded in the pinned ccusage revision. A Claude week is almost entirely cache reads, so the
 total says how much work went through the model, not how full the quota window is.
 
+### Pricing catalog updates
+
+A model released after a build has no price in its embedded catalog, and waiting for a
+release to estimate its cost leaves weeks of sessions at zero. **Settings → Application →
+Update pricing** downloads the latest LiteLLM catalog on request: one GitHub API call names
+the latest commit of `model_prices_and_context_window.json`, and the file is fetched at that
+commit so the revision recorded beside each cost is traceable. Nothing is downloaded on a
+schedule or at startup — a background check would be a standing outbound request, which the
+guardrails rule out. The download is filtered to the model prefixes ccusage embeds, kept in
+the application data directory with its own format version, and used only while its commit is
+newer than the embedded one, so updating the application never prices from an older download.
+ccusage reads it through its own catalog-refresh hook (`set_json_fetcher`), which answers from
+that file and never from the network. HTTP goes through `ureq` with the Windows TLS stack.
+
 ### Clock offset
 
 A wrong system clock is out of reach of the zone setting, and providers publish no server
 time. An opt-in `clock_check` setting, off by default, sends one SNTP request to
-`time.windows.com` at startup and every two hours — QuotaStation's first and only outbound
-request of its own, carrying no user data. It uses `std::net::UdpSocket` (a 48-byte packet,
+`time.windows.com` at startup and every two hours, carrying no user data — the only request
+QuotaStation sends on a schedule. It uses `std::net::UdpSocket` (a 48-byte packet,
 no new dependency) rather than parsing `w32tm`, whose output is localized, with a five-second
 read timeout because UDP gives no other failure signal. `clock.rs` owns the offset and a
 corrected `now()`, used by the Codex live read, the status-line windows, `Storage::save_live`
@@ -367,7 +381,8 @@ ccusage subset is copied into the project.
 - Windows-first, local-first, read-only provider access.
 - Tauri 2, Rust core, React/TypeScript renderer, and Rust-owned SQLite.
 - No cloud sync, telemetry, prompt upload, raw-session retention, or account mutation. The
-  opt-in SNTP clock check is the only outbound request QuotaStation sends of its own.
+  opt-in SNTP clock check is the only request QuotaStation sends on its own; the pricing
+  update sends requests only when pressed.
 - Cost is an API-equivalent estimate, never a bill.
 - Provider capability absence and stale data remain explicit.
 - Packaging and release are explicit user actions.
