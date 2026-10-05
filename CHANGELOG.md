@@ -11,6 +11,10 @@ on `main`, with the matching section below as its notes.
 
 - Settings can download the latest pricing catalog to price newly released models.
 
+### Fixed
+
+- The dashboard no longer goes blank when the range changes under the pointer on a chart.
+
 ## [1.4.2] - 2026-10-05
 
 ### Changed
