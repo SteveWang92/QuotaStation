@@ -9,7 +9,12 @@ on `main`, with the matching section below as its notes.
 
 ### Changed
 
+- A stored cost keeps its original price when a later pricing catalog changes that model.
 - Updated the Tauri runtime to 2.12, along with its plugins and the interface icon set.
+
+### Fixed
+
+- Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 sessions now show an estimated API cost.
 
 ## [1.4.1] - 2026-09-30
 

@@ -8,8 +8,8 @@ use sqlx::{AssertSqlSafe, Row};
 
 use crate::domain::{
     CCUSAGE_REVISION, DailyUsagePoint, DeviceUsage, HistorySnapshot, HourlyUsagePoint,
-    ModelUsageRow, PRICING_CATALOG_REVISION, SessionCost, SessionCostSnapshot, TokenUsage,
-    UsageHoursSnapshot, UsageRangeSnapshot, UsageWindowSnapshot,
+    ModelUsageRow, PRICING_CATALOG_REVISION, SessionCost, SessionCostSnapshot, SessionModelCost,
+    TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot, UsageWindowSnapshot,
 };
 use crate::providers::ProviderKind;
 
@@ -17,6 +17,73 @@ use super::{
     AGGREGATE_SERVICE_TIER, Bucket, BucketTable, LOCAL_DEVICE, MODEL_SEPARATOR, Storage, add_usage,
     rank_models,
 };
+
+/// The cost a parsed row is stored at. A price is settled once a row has one: a row whose
+/// tokens are unchanged keeps the cost it was first priced at, whatever the catalog now
+/// says, and only a row that was never priced, or whose tokens changed, takes the new one.
+fn kept_cost(kept: &BTreeMap<String, (u64, f64)>, row: &ModelUsageRow) -> f64 {
+    match kept.get(&row.model) {
+        Some(&(total, cost)) if total == row.total && cost > 0.0 => cost,
+        _ => row.cost_usd,
+    }
+}
+
+/// The part of a stored session the next parse needs in order to keep its settled prices.
+struct StoredSession {
+    total_tokens: u64,
+    computed_cost_usd: f64,
+    /// `None` on a row written before sessions recorded what each of their models cost.
+    model_costs: Option<Vec<SessionModelCost>>,
+    pricing_catalog_revision: String,
+}
+
+/// What a session is stored at, by the rule `kept_cost` applies to a day, applied to each
+/// of its models. A row that recorded only its total keeps that total whole while the
+/// session's tokens are unchanged, its models' shares scaled to match.
+///
+/// The flag says the stored total was kept whole, which is when it keeps the revision of
+/// the catalog that priced it too. That total is returned as stored rather than summed
+/// again, so an unchanged session reads back the same figure on every refresh.
+fn settle_session(
+    session: &SessionCost,
+    stored: Option<&StoredSession>,
+) -> (f64, Vec<SessionModelCost>, bool) {
+    let mut cost = session.computed_cost_usd;
+    let mut models = session.model_costs.clone();
+    let Some(stored) = stored else { return (cost, models, false) };
+    let unchanged = stored.total_tokens == session.usage.total;
+    match &stored.model_costs {
+        Some(stored_models) => {
+            let mut every_model_settled = true;
+            for model in &mut models {
+                let settled = stored_models.iter().find(|kept| {
+                    kept.model == model.model && kept.tokens == model.tokens && kept.cost_usd > 0.0
+                });
+                match settled {
+                    Some(settled) => {
+                        cost += settled.cost_usd - model.cost_usd;
+                        model.cost_usd = settled.cost_usd;
+                    }
+                    None => every_model_settled = false,
+                }
+            }
+            if every_model_settled && unchanged {
+                return (stored.computed_cost_usd, models, true);
+            }
+        }
+        None if unchanged && stored.computed_cost_usd > 0.0 => {
+            if cost > 0.0 {
+                let scale = stored.computed_cost_usd / cost;
+                for model in &mut models {
+                    model.cost_usd *= scale;
+                }
+            }
+            return (stored.computed_cost_usd, models, true);
+        }
+        None => {}
+    }
+    (cost, models, false)
+}
 
 /// One stored session comparison, as the surfaces read it back.
 fn session_cost_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionCost {
@@ -45,6 +112,7 @@ fn session_cost_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionCost {
             .filter(|model| !model.is_empty())
             .map(str::to_string)
             .collect(),
+        model_costs: Vec::new(),
     }
 }
 
@@ -122,6 +190,9 @@ impl Storage {
         // Sessions Codex has already rotated away are absent from a parse, and their stored
         // days must survive.
         for day in &history.days {
+            let kept =
+                Self::kept_costs(&mut tx, provider_id, "daily_usage", "usage_date", &day.date)
+                    .await?;
             sqlx::query(
                 "DELETE FROM daily_usage WHERE provider_instance_id = ? AND device = ? \
                  AND usage_date = ?",
@@ -138,6 +209,7 @@ impl Storage {
                     LOCAL_DEVICE,
                     &day.date,
                     row,
+                    kept_cost(&kept, row),
                     observed_at,
                 )
                 .await?;
@@ -146,6 +218,14 @@ impl Storage {
         // The hourly rows are replaced the same way, and only ever cover the recent window
         // the parser produces them for; retention removes the ones that fall out of it.
         for hour in &history.hours {
+            let kept = Self::kept_costs(
+                &mut tx,
+                provider_id,
+                "hourly_usage",
+                "hour_start",
+                &hour.hour_start,
+            )
+            .await?;
             sqlx::query(
                 "DELETE FROM hourly_usage WHERE provider_instance_id = ? AND device = ? \
                  AND hour_start = ?",
@@ -162,6 +242,7 @@ impl Storage {
                     LOCAL_DEVICE,
                     &hour.hour_start,
                     row,
+                    kept_cost(&kept, row),
                     observed_at,
                 )
                 .await?;
@@ -174,12 +255,38 @@ impl Storage {
         Ok(())
     }
 
+    /// What this machine's stored rows for one day or hour cost, by model, with the tokens
+    /// each was priced for. Read before the rows are replaced, so a price already settled
+    /// survives the parse that rewrites them.
+    async fn kept_costs(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        provider_id: i64,
+        table: &str,
+        key_column: &str,
+        key: &str,
+    ) -> Result<BTreeMap<String, (u64, f64)>> {
+        // Both names come from the literals at the call sites, and every value is bound.
+        let rows: Vec<(String, i64, Option<f64>)> = sqlx::query_as(AssertSqlSafe(format!(
+            "SELECT model, total_tokens, estimated_cost_usd FROM {table}              WHERE provider_instance_id = ? AND device = ? AND {key_column} = ?"
+        )))
+        .bind(provider_id)
+        .bind(LOCAL_DEVICE)
+        .bind(key)
+        .fetch_all(&mut **tx)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(model, total, cost)| Some((model, (total.max(0) as u64, cost?))))
+            .collect())
+    }
+
     async fn insert_daily_model(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         provider_id: i64,
         device: &str,
         date: &str,
         row: &ModelUsageRow,
+        cost_usd: f64,
         observed_at: &str,
     ) -> Result<()> {
         sqlx::query(
@@ -190,7 +297,7 @@ impl Storage {
         )
         .bind(provider_id).bind(device).bind(date).bind(&row.model).bind(AGGREGATE_SERVICE_TIER).bind(row.input as i64)
         .bind(row.cache_read as i64).bind(row.output as i64).bind(row.reasoning as i64)
-        .bind(row.total as i64).bind(row.cost_usd).bind(CCUSAGE_REVISION).bind(observed_at)
+        .bind(row.total as i64).bind(cost_usd).bind(CCUSAGE_REVISION).bind(observed_at)
         .execute(&mut **tx).await?;
         Ok(())
     }
@@ -201,6 +308,7 @@ impl Storage {
         device: &str,
         hour_start: &str,
         row: &ModelUsageRow,
+        cost_usd: f64,
         observed_at: &str,
     ) -> Result<()> {
         sqlx::query(
@@ -208,7 +316,7 @@ impl Storage {
         )
         .bind(provider_id).bind(device).bind(hour_start).bind(&row.model).bind(AGGREGATE_SERVICE_TIER)
         .bind(row.input as i64).bind(row.cache_read as i64).bind(row.output as i64)
-        .bind(row.reasoning as i64).bind(row.total as i64).bind(row.cost_usd)
+        .bind(row.reasoning as i64).bind(row.total as i64).bind(cost_usd)
         .bind(CCUSAGE_REVISION).bind(observed_at)
         .execute(&mut **tx).await?;
         Ok(())
@@ -226,15 +334,44 @@ impl Storage {
     ) -> Result<()> {
         let provider_id = self.provider_id(provider).await?;
         let mut tx = self.pool.begin().await?;
+        let rows: Vec<(String, i64, f64, Option<String>, String)> = sqlx::query_as(
+            "SELECT session_id, total_tokens, computed_cost_usd, model_costs, \
+             pricing_catalog_revision FROM session_costs WHERE provider_instance_id = ?",
+        )
+        .bind(provider_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut stored = BTreeMap::new();
+        for (session_id, total_tokens, computed_cost_usd, model_costs, revision) in rows {
+            let model_costs = model_costs
+                .map(|json| serde_json::from_str(&json))
+                .transpose()
+                .context("a stored session's model costs could not be read")?;
+            stored.insert(
+                session_id,
+                StoredSession {
+                    total_tokens: total_tokens.max(0) as u64,
+                    computed_cost_usd,
+                    model_costs,
+                    pricing_catalog_revision: revision,
+                },
+            );
+        }
         for session in sessions {
+            let previous = stored.get(&session.session_id);
+            let (computed_cost_usd, model_costs, kept) = settle_session(session, previous);
+            let revision = match previous {
+                Some(previous) if kept => previous.pricing_catalog_revision.as_str(),
+                _ => PRICING_CATALOG_REVISION,
+            };
             sqlx::query(
                 "INSERT INTO session_costs \
                  (provider_instance_id, session_id, session_started_at, duration_ms, \
                   computed_cost_usd, independent, reported_cost_usd, reported_complete, \
                   api_duration_ms, lines_added, lines_removed, input_tokens, cache_read_tokens, \
-                  output_tokens, reasoning_tokens, total_tokens, models, parser_revision, \
-                  pricing_catalog_revision, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                  output_tokens, reasoning_tokens, total_tokens, models, model_costs, \
+                  parser_revision, pricing_catalog_revision, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(provider_instance_id, session_id) DO UPDATE SET \
                  session_started_at=excluded.session_started_at, \
                  duration_ms=excluded.duration_ms, \
@@ -251,6 +388,7 @@ impl Storage {
                  reasoning_tokens=excluded.reasoning_tokens, \
                  total_tokens=excluded.total_tokens, \
                  models=excluded.models, \
+                 model_costs=excluded.model_costs, \
                  parser_revision=excluded.parser_revision, \
                  pricing_catalog_revision=excluded.pricing_catalog_revision, \
                  updated_at=excluded.updated_at",
@@ -259,7 +397,7 @@ impl Storage {
             .bind(&session.session_id)
             .bind(&session.session_started_at)
             .bind(session.duration_ms)
-            .bind(session.computed_cost_usd)
+            .bind(computed_cost_usd)
             .bind(session.independent)
             .bind(session.reported_cost_usd)
             .bind(session.reported_complete)
@@ -272,8 +410,9 @@ impl Storage {
             .bind(session.usage.reasoning as i64)
             .bind(session.usage.total as i64)
             .bind(session.models.join(MODEL_SEPARATOR))
+            .bind(serde_json::to_string(&model_costs)?)
             .bind(CCUSAGE_REVISION)
-            .bind(PRICING_CATALOG_REVISION)
+            .bind(revision)
             .bind(observed_at)
             .execute(&mut *tx)
             .await?;

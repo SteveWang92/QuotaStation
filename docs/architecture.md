@@ -87,6 +87,15 @@ Estimated API costs use the LiteLLM pricing data embedded at build time by `ccus
 comparisons, not provider bills. The application displays the pricing revision so a result can
 be traced to the catalog used to calculate it.
 
+A price, once stored, is settled. Every history refresh parses the logs again, but a day,
+hour or session model whose tokens are unchanged keeps the cost it was first priced at, so a
+catalog that later reprices a model leaves history alone and one that adds a model fills in
+only the rows that had no price. Each session therefore stores what each of its models cost
+and the tokens that cost was for. A row whose tokens change — a session still running, or a
+day rebuilt by a time-zone change — is priced again in full at the current catalog. A
+session row stored before it recorded its models keeps its total while its tokens are
+unchanged, so a model it could not price at the time stays unpriced in it.
+
 Every session the parsers read is stored on its own as well as in the day it belongs to:
 its cost from the catalog, its tokens, its models, and the span from its first entry to its
 last. Recent Claude Code sessions also carry the client's own cost accounting in their logs,

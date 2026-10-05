@@ -25,7 +25,7 @@ use ccusage_adapter_claude::SessionUsageEntry;
 use serde::Deserialize;
 
 use crate::{
-    domain::{SessionCost, TokenUsage},
+    domain::{SessionCost, SessionModelCost, TokenUsage},
     providers::ProviderKind,
 };
 
@@ -57,8 +57,9 @@ struct Computed {
     /// than one that measures every session the same way.
     first_entry_ms: i64,
     last_entry_ms: i64,
-    /// What each model cost, so the session can name them most expensive first.
-    model_costs: BTreeMap<String, f64>,
+    /// What each model cost and the tokens it was priced for, so the session can name them
+    /// most expensive first and storage can keep a price already settled.
+    model_costs: BTreeMap<String, (u64, f64)>,
 }
 
 impl Computed {
@@ -163,10 +164,13 @@ fn computed_costs(entries: &[SessionUsageEntry]) -> BTreeMap<String, Computed> {
         session.usage.input += input;
         session.usage.cache_read += usage.cache_read_input_tokens;
         session.usage.output += usage.output_tokens;
-        session.usage.total += input + usage.cache_read_input_tokens + usage.output_tokens;
+        let tokens = input + usage.cache_read_input_tokens + usage.output_tokens;
+        session.usage.total += tokens;
         if let Some(model) = &entry.model {
             let model = ccusage_core::model_aliases::resolve_model_name(model);
-            *session.model_costs.entry(model.into_owned()).or_default() += entry.cost;
+            let share = session.model_costs.entry(model.into_owned()).or_default();
+            share.0 += tokens;
+            share.1 += entry.cost;
         }
     }
     computed
@@ -174,9 +178,21 @@ fn computed_costs(entries: &[SessionUsageEntry]) -> BTreeMap<String, Computed> {
 
 /// One session's models, most expensive first.
 fn models_of(computed: &Computed) -> Vec<String> {
-    let mut models: Vec<(&String, &f64)> = computed.model_costs.iter().collect();
-    models.sort_by(|left, right| right.1.total_cmp(left.1));
+    let mut models: Vec<(&String, &(u64, f64))> = computed.model_costs.iter().collect();
+    models.sort_by(|left, right| right.1.1.total_cmp(&left.1.1));
     models.into_iter().map(|(model, _)| model.clone()).collect()
+}
+
+fn model_costs_of(computed: &Computed) -> Vec<SessionModelCost> {
+    computed
+        .model_costs
+        .iter()
+        .map(|(model, &(tokens, cost_usd))| SessionModelCost {
+            model: model.clone(),
+            tokens,
+            cost_usd,
+        })
+        .collect()
 }
 
 /// Every session the parser read, with the client's own figures attached where it
@@ -204,6 +220,7 @@ fn sessions(
                 lines_removed: reported.map(|reported| reported.lines_removed),
                 usage: computed.usage.clone(),
                 models: models_of(&computed),
+                model_costs: model_costs_of(&computed),
             })
         })
         .collect();

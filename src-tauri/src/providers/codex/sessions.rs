@@ -14,7 +14,7 @@ use ccusage_adapter_codex::{
 };
 use ccusage_core::{PricingMap, cli::AgentReportKind, parse_ts_timestamp};
 
-use crate::domain::{SessionCost, TokenUsage};
+use crate::domain::{SessionCost, SessionModelCost, TokenUsage};
 
 /// Every session in the events the history parse loaded, oldest first. It takes the same
 /// events rather than loading its own, so a refresh reads the rollout logs once.
@@ -88,7 +88,7 @@ fn session_of(
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let mut usage = TokenUsage::default();
     let mut cost_usd = 0.0;
-    let mut model_costs: BTreeMap<String, f64> = BTreeMap::new();
+    let mut model_costs: BTreeMap<String, (u64, f64)> = BTreeMap::new();
     for group in groups.values() {
         usage.input += group.input_tokens;
         usage.cache_read += group.cached_input_tokens;
@@ -97,13 +97,14 @@ fn session_of(
         usage.total += group.total_tokens;
         cost_usd += calculate_group_cost(group, pricing, speed);
         for (model, model_usage) in &group.models {
-            *model_costs.entry(model.clone()).or_default() +=
-                calculate_codex_model_cost(model, model_usage, pricing, speed);
+            let share = model_costs.entry(model.clone()).or_default();
+            share.0 += model_usage.total_tokens;
+            share.1 += calculate_codex_model_cost(model, model_usage, pricing, speed);
         }
     }
 
-    let mut models: Vec<(&String, &f64)> = model_costs.iter().collect();
-    models.sort_by(|left, right| right.1.total_cmp(left.1));
+    let mut models: Vec<(&String, &(u64, f64))> = model_costs.iter().collect();
+    models.sort_by(|left, right| right.1.1.total_cmp(&left.1.1));
 
     Ok(Some(SessionCost {
         session_id: session_id_of(&session_id),
@@ -119,6 +120,10 @@ fn session_of(
         lines_removed: None,
         usage,
         models: models.into_iter().map(|(model, _)| model.clone()).collect(),
+        model_costs: model_costs
+            .into_iter()
+            .map(|(model, (tokens, cost_usd))| SessionModelCost { model, tokens, cost_usd })
+            .collect(),
     }))
 }
 

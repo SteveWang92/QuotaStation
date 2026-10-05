@@ -805,6 +805,18 @@ pub struct SessionCost {
     pub usage: TokenUsage,
     /// The models the session used, most expensive first.
     pub models: Vec<String>,
+    /// What each model cost and the tokens it was priced for, which is what lets a later
+    /// parse keep a settled price. Only storage reads it.
+    #[serde(skip)]
+    pub model_costs: Vec<SessionModelCost>,
+}
+
+/// One model's share of a session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionModelCost {
+    pub model: String,
+    pub tokens: u64,
+    pub cost_usd: f64,
 }
 
 /// Every session in a range, with the costs summed.
