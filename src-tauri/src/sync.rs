@@ -149,11 +149,17 @@ async fn export(
     })?;
 
     let path = folder.join(file_name(device_id));
-    if std::fs::read(&path).is_ok_and(|published| published == content) {
-        return Ok(());
-    }
-    // A sync client watching the folder must never pick up half a document.
-    crate::fs_atomic::write(&path, &content).context("write the exported aggregates")
+    // A sync client can keep a file online-only, and reading it then waits on a download, so
+    // the file work runs off the async workers.
+    tokio::task::spawn_blocking(move || {
+        if std::fs::read(&path).is_ok_and(|published| published == content) {
+            return Ok(());
+        }
+        // A sync client watching the folder must never pick up half a document.
+        crate::fs_atomic::write(&path, &content).context("write the exported aggregates")
+    })
+    .await
+    .context("the export stopped unexpectedly")?
 }
 
 /// Reads every other machine's file that has moved since it was last read, or that was last
@@ -327,7 +333,13 @@ async fn import_one(
     local_id: &str,
     modified: i64,
 ) -> Result<()> {
-    let published: ExportFile = serde_json::from_slice(&std::fs::read(path)?)?;
+    let content = tokio::task::spawn_blocking({
+        let path = path.to_owned();
+        move || std::fs::read(path)
+    })
+    .await
+    .context("the import stopped unexpectedly")??;
+    let published: ExportFile = serde_json::from_slice(&content)?;
     anyhow::ensure!(
         published.format_version <= FORMAT_VERSION,
         "written by a newer QuotaStation; update this computer to read it"

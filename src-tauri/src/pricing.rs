@@ -101,6 +101,11 @@ fn parse_file(text: &str) -> Result<Option<Downloaded>> {
     if file.format_version > FORMAT_VERSION {
         bail!("written by a newer QuotaStation (format {})", file.format_version);
     }
+    // The revision is a commit hash everywhere it is shown or shortened; anything else in
+    // the file is an edit, not a download.
+    if file.revision.len() != 40 || !file.revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("names no commit");
+    }
     if file.committed_at <= embedded_committed_at() {
         return Ok(None);
     }
@@ -257,10 +262,16 @@ fn download(in_use: i64) -> Result<Option<DownloadedFile>> {
 mod tests {
     use super::*;
 
+    const REVISION: &str = "02f61c9c420b9aa9de10ff673098ad7132b78f5b";
+
     fn file(format_version: u32, committed_at: i64) -> String {
+        file_at(format_version, committed_at, REVISION)
+    }
+
+    fn file_at(format_version: u32, committed_at: i64, revision: &str) -> String {
         serde_json::json!({
             "formatVersion": format_version,
-            "revision": "abc",
+            "revision": revision,
             "committedAt": committed_at,
             "downloadedAt": "2026-10-05T00:00:00Z",
             "catalog": {},
@@ -284,6 +295,12 @@ mod tests {
         map.load_json(&serde_json::to_string(&file.catalog).expect("serialize"));
         assert!(map.find("claude-opus-5-5").is_some());
         assert!(map.find("gpt-5.5").is_some());
+    }
+
+    #[test]
+    fn a_file_naming_no_commit_is_left_unused() {
+        let newer = embedded_committed_at() + 1;
+        assert!(parse_file(&file_at(FORMAT_VERSION, newer, "ééééééé")).is_err());
     }
 
     #[test]

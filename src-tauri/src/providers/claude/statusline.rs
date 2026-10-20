@@ -55,29 +55,58 @@ const MAX_READING_AGE_SECS: i64 = 14 * 24 * 60 * 60;
 
 /// The subset of Claude Code's status-line payload QuotaStation reads. Every field is
 /// optional: the payload grows between releases, and a field that is missing means the
-/// window is unknown, never that the reading failed.
+/// window is unknown, never that the reading failed. A field whose shape changed reads as
+/// missing too ([`lenient`]), so a change to something the line only displays cannot cost
+/// the quota windows beside it.
 #[derive(Deserialize)]
 struct StatusLineInput {
+    #[serde(default, deserialize_with = "lenient")]
     rate_limits: Option<RateLimits>,
+    #[serde(default, deserialize_with = "lenient")]
     model: Option<Model>,
+    #[serde(default, deserialize_with = "lenient")]
     cwd: Option<String>,
     /// Which session is rendering, and what Claude Code calls it. The Stop hook is told the
     /// former and not the latter, so this is the only place the pair can be seen together.
+    #[serde(default, deserialize_with = "lenient")]
     session_id: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     session_name: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     workspace: Option<Workspace>,
+    #[serde(default, deserialize_with = "lenient")]
     worktree: Option<Worktree>,
+    #[serde(default, deserialize_with = "lenient")]
     context_window: Option<ContextWindow>,
+    #[serde(default, deserialize_with = "lenient")]
     cost: Option<Cost>,
+    #[serde(default, deserialize_with = "lenient")]
     effort: Option<Effort>,
+    #[serde(default, deserialize_with = "lenient")]
     thinking: Option<Thinking>,
+    #[serde(default, deserialize_with = "lenient")]
     fast_mode: Option<bool>,
+    #[serde(default, deserialize_with = "lenient")]
     pr: Option<PullRequest>,
+    #[serde(default, deserialize_with = "lenient")]
     version: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     output_style: Option<Named>,
+    #[serde(default, deserialize_with = "lenient")]
     vim: Option<Vim>,
+    #[serde(default, deserialize_with = "lenient")]
     agent: Option<Named>,
+    #[serde(default, deserialize_with = "lenient")]
     exceeds_200k_tokens: Option<bool>,
+}
+
+/// Reads a payload field as absent when it no longer has the shape this build expects.
+fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    Ok(serde_json::from_value(serde_json::Value::deserialize(deserializer)?).ok())
 }
 
 #[derive(Deserialize)]
@@ -152,6 +181,9 @@ struct Cost {
     total_lines_removed: Option<u64>,
 }
 
+/// Read strictly, unlike the fields around it: a bucket in a shape this build does not know
+/// leaves `rate_limits` absent as a whole, and an absent `rate_limits` keeps the stored
+/// reading rather than replacing it with half of one.
 #[derive(Deserialize)]
 struct RateLimits {
     five_hour: Option<Bucket>,
@@ -167,10 +199,16 @@ struct Bucket {
     resets_at: Option<i64>,
 }
 
+/// The version of the stored reading's layout. A reading that states none is read as
+/// version 1.
+const READING_FORMAT_VERSION: u32 = 1;
+
 /// What the bridge stored, and when. The observation time is kept so a reading left behind
 /// by a Claude Code session that ended days ago can be recognised as such.
 #[derive(Debug, Default, Deserialize, Serialize, PartialEq)]
 struct Reading {
+    #[serde(rename = "formatVersion", default)]
+    format_version: u32,
     observed_at: i64,
     five_hour: Option<Bucket>,
     seven_day: Option<Bucket>,
@@ -199,44 +237,61 @@ fn windows_from(reading: &Reading, now: i64) -> Result<Vec<LimitWindow>> {
     if reading.observed_at <= 0 || reading.observed_at > now + 300 {
         bail!("schema_incompatible: invalid status-line observation time");
     }
+    if reading.five_hour.is_none() && reading.seven_day.is_none() {
+        bail!("schema_incompatible: status-line rate limits contained no known buckets");
+    }
+    // A malformed bucket fails the reading whole, so the last good windows stay on every
+    // surface marked stale rather than one of them vanishing without a word.
     let mut windows = Vec::new();
     for (bucket, kind, minutes) in [
         (reading.five_hour, LimitKind::Primary, FIVE_HOUR_WINDOW_MINS),
         (reading.seven_day, LimitKind::Secondary, SEVEN_DAY_WINDOW_MINS),
     ] {
         let Some(bucket) = bucket else { continue };
-        let Some(used_percent) = bucket.used_percentage else {
-            bail!("schema_incompatible: status-line bucket omitted used percentage");
-        };
-        let Some(resets_at) = bucket.resets_at else {
-            bail!("schema_incompatible: status-line bucket omitted reset time");
-        };
-        if !used_percent.is_finite() || !(0.0..=MAX_USED_PERCENT).contains(&used_percent) {
-            bail!("schema_incompatible: invalid status-line percentage");
-        }
-        if resets_at <= now {
-            continue;
-        }
-        if resets_at > now + minutes * 60 * 2 {
-            bail!("schema_incompatible: invalid status-line reset time");
-        }
-        windows.push(LimitWindow {
-            kind,
-            label: kind.window_label(Some(minutes)),
-            used_percent: Some(used_percent),
-            window_duration_mins: Some(minutes),
-            resets_at: Some(resets_at),
-            source: WindowSource::StatusLine,
-            observed_at: reading.observed_at,
-            freshness: Freshness::Fresh,
-            status_level: QuotaLevel::Healthy,
-            pace: PaceLevel::OnTrack,
-        });
+        windows.extend(window_from(bucket, kind, minutes, reading.observed_at, now)?);
     }
-    if reading.five_hour.is_some() || reading.seven_day.is_some() {
-        return Ok(windows);
+    Ok(windows)
+}
+
+/// One bucket as a window, or `None` once its restart has passed.
+///
+/// Claude Code publishes the five-hour window with its restart but no percentage while one
+/// closes. That is a window whose allowance is unknown, not a malformed one, so it is kept
+/// without a percentage; `Storage::save_live` keeps it from replacing a measured reading.
+fn window_from(
+    bucket: Bucket,
+    kind: LimitKind,
+    minutes: i64,
+    observed_at: i64,
+    now: i64,
+) -> Result<Option<LimitWindow>> {
+    let Some(resets_at) = bucket.resets_at else {
+        bail!("schema_incompatible: status-line bucket omitted reset time");
+    };
+    if bucket
+        .used_percentage
+        .is_some_and(|used| !used.is_finite() || !(0.0..=MAX_USED_PERCENT).contains(&used))
+    {
+        bail!("schema_incompatible: invalid status-line percentage");
     }
-    bail!("schema_incompatible: status-line rate limits contained no known buckets")
+    if resets_at <= now {
+        return Ok(None);
+    }
+    if resets_at > now + minutes * 60 * 2 {
+        bail!("schema_incompatible: invalid status-line reset time");
+    }
+    Ok(Some(LimitWindow {
+        kind,
+        label: kind.window_label(Some(minutes)),
+        used_percent: bucket.used_percentage,
+        window_duration_mins: Some(minutes),
+        resets_at: Some(resets_at),
+        source: WindowSource::StatusLine,
+        observed_at,
+        freshness: Freshness::Fresh,
+        status_level: QuotaLevel::Healthy,
+        pace: PaceLevel::OnTrack,
+    }))
 }
 
 fn load_reading() -> Result<Option<Reading>> {
@@ -246,9 +301,12 @@ fn load_reading() -> Result<Option<Reading>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context("read status-line cache"),
     };
-    serde_json::from_str(&content)
-        .map(Some)
-        .context("schema_incompatible: decode status-line cache")
+    let reading: Reading =
+        serde_json::from_str(&content).context("schema_incompatible: decode status-line cache")?;
+    if reading.format_version > READING_FORMAT_VERSION {
+        bail!("schema_incompatible: status-line cache written by a newer QuotaStation");
+    }
+    Ok(Some(reading))
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -308,8 +366,12 @@ pub fn run_bridge_if_requested() -> bool {
     ));
     if let Some(limits) = limits {
         let now = jiff::Timestamp::now().as_second();
-        let reading =
-            Reading { observed_at: now, five_hour: limits.five_hour, seven_day: limits.seven_day };
+        let reading = Reading {
+            format_version: READING_FORMAT_VERSION,
+            observed_at: now,
+            five_hour: limits.five_hour,
+            seven_day: limits.seven_day,
+        };
         match windows_from(&reading, now) {
             // The line above already says the reading arrived, so only a failure to keep it
             // adds anything to that.
@@ -1267,6 +1329,7 @@ mod tests {
 
     fn reading(now: i64) -> Reading {
         Reading {
+            format_version: READING_FORMAT_VERSION,
             observed_at: now,
             five_hour: Some(Bucket { used_percentage: Some(23.5), resets_at: Some(now + 3_600) }),
             seven_day: Some(Bucket { used_percentage: Some(41.2), resets_at: Some(now + 86_400) }),
@@ -1312,14 +1375,22 @@ mod tests {
     }
 
     #[test]
-    fn malformed_known_bucket_is_schema_incompatible() {
+    fn a_closing_window_without_a_percentage_is_kept_with_its_restart() {
         let now = 1_800_000_000;
-        let malformed = Reading {
-            observed_at: now,
-            five_hour: Some(Bucket { used_percentage: None, resets_at: Some(now + 3_600) }),
-            seven_day: None,
-        };
-        let error = windows_from(&malformed, now).expect_err("missing percentage must fail");
+        let mut closing = reading(now);
+        closing.five_hour = Some(Bucket { used_percentage: None, resets_at: Some(now + 3_600) });
+        let windows = windows_from(&closing, now).expect("an unknown allowance is not malformed");
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].used_percent, None);
+        assert_eq!(windows[0].resets_at, Some(now + 3_600));
+    }
+
+    #[test]
+    fn a_malformed_bucket_is_schema_incompatible() {
+        let now = 1_800_000_000;
+        let mut malformed = reading(now);
+        malformed.five_hour = Some(Bucket { used_percentage: Some(40.0), resets_at: None });
+        let error = windows_from(&malformed, now).expect_err("a bucket without a restart");
         assert!(error.to_string().contains("schema_incompatible"));
     }
 
@@ -1751,6 +1822,35 @@ cache 78.4%"
         let context = input.context_window.expect("the payload carries a context window");
         assert_eq!(context.total_input_tokens, Some(15_500));
         assert_eq!(context.context_window_size, Some(200_000));
+    }
+
+    #[test]
+    fn a_reshaped_display_field_leaves_the_quota_windows_readable() {
+        let payload = r#"{
+            "effort": "high",
+            "pr": { "number": "57" },
+            "rate_limits": {
+                "five_hour": { "used_percentage": 30, "resets_at": 1800003600 },
+                "seven_day": { "used_percentage": 12, "resets_at": 1800500000 }
+            }
+        }"#;
+        let input: StatusLineInput = serde_json::from_str(payload).expect("read the payload");
+        assert!(input.effort.is_none() && input.pr.is_none(), "the reshaped fields read as absent");
+        let limits = input.rate_limits.expect("the quota survives");
+        assert_eq!(limits.five_hour.and_then(|bucket| bucket.used_percentage), Some(30.0));
+        assert_eq!(limits.seven_day.and_then(|bucket| bucket.used_percentage), Some(12.0));
+    }
+
+    #[test]
+    fn a_reshaped_quota_bucket_leaves_the_stored_reading_standing() {
+        let payload = r#"{
+            "rate_limits": {
+                "five_hour": { "used_percentage": 30, "resets_at": 1800003600 },
+                "seven_day": "unlimited"
+            }
+        }"#;
+        let input: StatusLineInput = serde_json::from_str(payload).expect("read the payload");
+        assert!(input.rate_limits.is_none(), "no half reading replaces the stored one");
     }
 
     #[test]

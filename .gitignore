@@ -22,7 +22,6 @@
 !/.gitattributes
 !/.gitignore
 !/.nvmrc
-!/AGENTS.md
 !/biome.jsonc
 !/changedeck.json
 !/CHANGELOG.md

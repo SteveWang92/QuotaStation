@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 
 const SETTINGS_FILE: &str = "settings.json";
 
+/// The version of the settings file's layout, written beside the preferences. Only a file
+/// that states no version is read for the status-line switches the layout replaces.
+const FORMAT_VERSION: u64 = 1;
+
 /// How a provider is named where the name sits beside a reading rather than above one.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -316,37 +320,73 @@ impl Default for AppSettings {
 }
 
 /// Anything unreadable is answered with the defaults: a preference that cannot be read is
-/// a preference not yet expressed, never a reason to stop.
+/// a preference not yet expressed, never a reason to stop. The next save writes those
+/// defaults over the file, so an unreadable one is logged and copied aside first, where the
+/// choices it held can still be read back by hand.
 pub fn load(path: &Path) -> AppSettings {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|content| {
-            let stored: serde_json::Value = serde_json::from_str(&content).ok()?;
-            let mut settings: AppSettings = serde_json::from_value(stored.clone()).ok()?;
-            // A file without a layout may still carry the switches that came before it —
-            // `statusLineFullDetails`, or the pair that replaced it — and a choice expressed
-            // there is kept.
-            if stored.get("statusLineLayout").is_none() {
-                let switch = |key: &str| stored.get(key).and_then(serde_json::Value::as_bool);
-                let full = switch("statusLineFullDetails").unwrap_or(true);
-                settings.status_line_layout = StatusLineLayout::legacy(
-                    switch("statusLineExtraDetails").unwrap_or(full),
-                    switch("statusLineOtherProviders").unwrap_or(full),
-                );
-            }
-            settings.status_line_layout = settings.status_line_layout.normalized();
-            // A zone name this build does not know — edited by hand, or dropped from the
-            // zone database — cannot be honoured, and is read as no choice made.
-            if settings
-                .time_zone
-                .as_deref()
-                .is_some_and(|name| crate::clock::resolve(name).is_err())
-            {
-                settings.time_zone = None;
-            }
-            Some(settings)
-        })
-        .unwrap_or_default()
+    let content = match std::fs::read(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return AppSettings::default();
+        }
+        Err(error) => {
+            crate::log::write(format!("settings could not be read; using defaults: {error}"));
+            return AppSettings::default();
+        }
+    };
+    match parse(&content) {
+        Ok(settings) => settings,
+        Err(error) => {
+            // The status-line bridge loads the settings on every render, so a copy already
+            // holding these bytes is left as it is.
+            let kept = path.with_extension("unreadable.json");
+            let outcome = if std::fs::read(&kept).is_ok_and(|copy| copy == content) {
+                "already copied aside".to_string()
+            } else {
+                match std::fs::write(&kept, &content) {
+                    Ok(()) => "copied aside".to_string(),
+                    Err(copy_error) => format!("not copied: {copy_error}"),
+                }
+            };
+            // The kind and position only: serde's message quotes the offending value, which
+            // can be the shared folder's path. A value of the wrong type has no position.
+            let position = if error.line() == 0 {
+                String::new()
+            } else {
+                format!(" at line {} column {}", error.line(), error.column())
+            };
+            crate::log::write(format!(
+                "settings unreadable ({:?} error{position}), using defaults ({outcome})",
+                error.classify()
+            ));
+            AppSettings::default()
+        }
+    }
+}
+
+fn parse(content: &[u8]) -> serde_json::Result<AppSettings> {
+    let stored: serde_json::Value = serde_json::from_slice(content)?;
+    let mut settings: AppSettings = serde_json::from_value(stored.clone())?;
+    // A file that states no version may carry the switches the layout replaces —
+    // `statusLineFullDetails`, or the pair after it — and a choice expressed there is kept.
+    // Any version is otherwise read the same way: a field this build does not know is
+    // ignored, and a value it does not know makes the file unreadable, as above.
+    let version = stored.get("formatVersion").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    if version == 0 && stored.get("statusLineLayout").is_none() {
+        let switch = |key: &str| stored.get(key).and_then(serde_json::Value::as_bool);
+        let full = switch("statusLineFullDetails").unwrap_or(true);
+        settings.status_line_layout = StatusLineLayout::legacy(
+            switch("statusLineExtraDetails").unwrap_or(full),
+            switch("statusLineOtherProviders").unwrap_or(full),
+        );
+    }
+    settings.status_line_layout = settings.status_line_layout.normalized();
+    // A zone name this build does not know — edited by hand, or dropped from the zone
+    // database — cannot be honoured, and is read as no choice made.
+    if settings.time_zone.as_deref().is_some_and(|name| crate::clock::resolve(name).is_err()) {
+        settings.time_zone = None;
+    }
+    Ok(settings)
 }
 
 /// The settings as a process with no Tauri handle can find them.
@@ -359,7 +399,15 @@ fn default_path() -> Option<PathBuf> {
 }
 
 pub fn save(path: &Path, settings: &AppSettings) -> Result<(), String> {
-    let content = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SettingsFile<'a> {
+        format_version: u64,
+        #[serde(flatten)]
+        settings: &'a AppSettings,
+    }
+    let file = SettingsFile { format_version: FORMAT_VERSION, settings };
+    let content = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
     // The status-line process reads this file while the application is running. Publish a
     // complete replacement so it never sees a truncated JSON document, and a failed write
     // leaves the last saved preferences intact.
@@ -450,6 +498,21 @@ mod tests {
     }
 
     #[test]
+    fn only_a_file_from_before_the_version_is_read_as_the_old_switches() {
+        let path = scratch("versioned");
+        save(&path, &AppSettings::default()).expect("write the settings");
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read back"))
+                .expect("a JSON object");
+        assert_eq!(written["formatVersion"], FORMAT_VERSION);
+
+        std::fs::write(&path, r#"{"formatVersion":1,"statusLineFullDetails":false}"#)
+            .expect("write versioned settings");
+        assert_eq!(load(&path).status_line_layout, StatusLineLayout::default().normalized());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn a_hand_edited_layout_is_reconciled_with_what_this_build_can_draw() {
         let path = scratch("edited-layout");
         std::fs::write(
@@ -508,6 +571,30 @@ mod tests {
         assert_eq!(settings.time_zone, None);
         assert!(!settings.taskbar_widget_enabled, "every other preference is kept");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_kept_aside_before_the_defaults_replace_it() {
+        let folder = std::env::temp_dir().join("quotastation-unreadable-settings");
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("create folder");
+        let path = folder.join(SETTINGS_FILE);
+        let broken = r#"{"sharedUsageFolder":"D:\\Sync","theme":"neon"}"#;
+        std::fs::write(&path, broken).expect("write broken settings");
+        assert_eq!(load(&path), AppSettings::default());
+        assert_eq!(
+            std::fs::read_to_string(folder.join("settings.unreadable.json")).expect("kept aside"),
+            broken
+        );
+
+        let not_text = b"{\"theme\":\"\xff\"}";
+        std::fs::write(&path, not_text).expect("write settings that are not UTF-8");
+        assert_eq!(load(&path), AppSettings::default());
+        assert_eq!(
+            std::fs::read(folder.join("settings.unreadable.json")).expect("kept aside"),
+            not_text
+        );
+        let _ = std::fs::remove_dir_all(folder);
     }
 
     #[test]
