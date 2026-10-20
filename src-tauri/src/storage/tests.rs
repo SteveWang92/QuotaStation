@@ -435,8 +435,8 @@ async fn a_sample_is_dated_by_the_reading_rather_than_the_refresh_that_carried_i
         .to_string();
     assert_eq!(
         dates,
-        vec![reading.clone(), reading],
-        "a reading republished by a later refresh keeps the day it was taken on"
+        vec![reading],
+        "a reading republished by a later refresh keeps the day it was taken on, once"
     );
 }
 

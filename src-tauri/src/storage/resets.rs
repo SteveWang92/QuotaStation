@@ -218,12 +218,14 @@ impl Storage {
             sqlx::query(
                 "INSERT INTO limit_samples \
                  (provider_instance_id, window_kind, used_percent, window_duration_mins, resets_at, observed_at) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(provider_instance_id, window_kind, observed_at) DO NOTHING",
             )
             // The sample is dated by the reading, not by the refresh that carried it. A
             // cached status-line reading is republished every couple of minutes for as long
             // as it stays usable, and dating those by the refresh would draw one afternoon's
-            // share as every following day's peak.
+            // share as every following day's peak. Each republication is the same reading,
+            // so only the first one is kept.
             .bind(provider_id).bind(kind).bind(limit.used_percent).bind(limit.window_duration_mins)
             .bind(limit.resets_at)
             .bind(
