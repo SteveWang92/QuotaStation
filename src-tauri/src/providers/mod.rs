@@ -134,22 +134,6 @@ impl std::fmt::Display for SignInRequired {
 
 impl std::error::Error for SignInRequired {}
 
-/// The session files moved while they were being parsed, so the parse describes no single
-/// moment and is thrown away.
-///
-/// This is a client still writing, not a failure. Every write that landed during the parse
-/// also queued a watcher event, and that event reads the files again once they settle.
-#[derive(Debug)]
-pub struct FilesChangedDuringParse;
-
-impl std::fmt::Display for FilesChangedDuringParse {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("session files changed during parsing")
-    }
-}
-
-impl std::error::Error for FilesChangedDuringParse {}
-
 /// Whether a failed live read was the provider reporting an expired sign-in.
 pub fn is_sign_in_required(error: &anyhow::Error) -> bool {
     error.downcast_ref::<SignInRequired>().is_some()
@@ -181,9 +165,10 @@ pub async fn read_history(
     }?;
     let quality = inspect_history_quality(kind, recent_quality_files(&before))?;
     let after = usage_file_state(kind)?;
-    if before != after {
-        return Err(anyhow::Error::new(FilesChangedDuringParse));
-    }
+    anyhow::ensure!(
+        before == after,
+        "Provider session files changed during parsing; retrying after they settle"
+    );
     ensure_history_quality(quality)?;
     anyhow::ensure!(
         before.is_empty() || !history.days.is_empty(),

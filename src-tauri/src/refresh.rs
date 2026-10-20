@@ -87,12 +87,6 @@ async fn refresh_history_for(state: &Arc<AppState>, providers: &[ProviderKind]) 
         let began = Instant::now();
         let (history, sessions) = match providers::read_history(provider).await {
             Ok((history, timezone, sessions)) => (Ok((history, timezone)), Some(sessions)),
-            // Neither a result nor a failure: what was shown stays, and the watcher event
-            // the moving files queued reads them again.
-            Err(error) if error.is::<providers::FilesChangedDuringParse>() => {
-                crate::log::write(format!("{} history: {error}; read again", provider.key()));
-                continue;
-            }
             Err(error) => (Err(error), None),
         };
         crate::log::write(describe_history(provider, began, &history));

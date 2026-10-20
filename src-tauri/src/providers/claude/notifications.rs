@@ -137,9 +137,9 @@ pub struct FinishedEvent {
     pub terminal: Option<crate::terminal::TerminalTarget>,
 }
 
-/// The version of the register's layout. A register in another shape — a newer build's, or
-/// the bare list kept before the version was recorded — is read as empty: it describes only
-/// the sessions rendering now, and the next render fills it again.
+/// The version of the register's layout. A register that does not state this version is
+/// read as empty: it describes only the sessions rendering now, and the next render fills it
+/// again.
 const REGISTER_FORMAT_VERSION: u32 = 1;
 
 #[derive(Deserialize, Serialize)]

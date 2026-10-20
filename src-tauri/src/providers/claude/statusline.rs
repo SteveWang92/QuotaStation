@@ -181,11 +181,12 @@ struct Cost {
     total_lines_removed: Option<u64>,
 }
 
+/// Read strictly, unlike the fields around it: a bucket in a shape this build does not know
+/// leaves `rate_limits` absent as a whole, and an absent `rate_limits` keeps the stored
+/// reading rather than replacing it with half of one.
 #[derive(Deserialize)]
 struct RateLimits {
-    #[serde(default, deserialize_with = "lenient")]
     five_hour: Option<Bucket>,
-    #[serde(default, deserialize_with = "lenient")]
     seven_day: Option<Bucket>,
 }
 
@@ -198,8 +199,8 @@ struct Bucket {
     resets_at: Option<i64>,
 }
 
-/// The version of the stored reading's layout. A reading without one was stored before it
-/// was recorded and has the same layout as version 1.
+/// The version of the stored reading's layout. A reading that states none is read as
+/// version 1.
 const READING_FORMAT_VERSION: u32 = 1;
 
 /// What the bridge stored, and when. The observation time is kept so a reading left behind
@@ -239,30 +240,17 @@ fn windows_from(reading: &Reading, now: i64) -> Result<Vec<LimitWindow>> {
     if reading.five_hour.is_none() && reading.seven_day.is_none() {
         bail!("schema_incompatible: status-line rate limits contained no known buckets");
     }
-    // Each window is judged on its own: one malformed bucket says nothing about the other,
-    // and failing the whole reading over it would hide a window that is really there. Only
-    // a reading with nothing usable left is an error.
+    // A malformed bucket fails the reading whole, so the last good windows stay on every
+    // surface marked stale rather than one of them vanishing without a word.
     let mut windows = Vec::new();
-    let mut rejected = None;
     for (bucket, kind, minutes) in [
         (reading.five_hour, LimitKind::Primary, FIVE_HOUR_WINDOW_MINS),
         (reading.seven_day, LimitKind::Secondary, SEVEN_DAY_WINDOW_MINS),
     ] {
         let Some(bucket) = bucket else { continue };
-        match window_from(bucket, kind, minutes, reading.observed_at, now) {
-            Ok(Some(window)) => windows.push(window),
-            Ok(None) => {}
-            Err(error) => {
-                let label = kind.window_label(Some(minutes));
-                crate::log::write(format!("status line {label} window ignored: {error}"));
-                rejected = Some(error);
-            }
-        }
+        windows.extend(window_from(bucket, kind, minutes, reading.observed_at, now)?);
     }
-    match rejected {
-        Some(error) if windows.is_empty() => Err(error),
-        _ => Ok(windows),
-    }
+    Ok(windows)
 }
 
 /// One bucket as a window, or `None` once its restart has passed.
@@ -395,7 +383,7 @@ pub fn run_bridge_if_requested() -> bool {
             Ok(_) => crate::log::write("status line reading not stored"),
             Err(_) => {
                 // Persist only the normalized quota subset, not the source payload. The
-                // running app then reads the session logs instead and logs why.
+                // running app can then report schema_incompatible and preserve its LKG.
                 let _ = store_reading(&reading);
                 crate::log::write("status line schema incompatible");
             }
@@ -1398,24 +1386,11 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_bucket_leaves_the_other_window_standing() {
+    fn a_malformed_bucket_is_schema_incompatible() {
         let now = 1_800_000_000;
         let mut malformed = reading(now);
         malformed.five_hour = Some(Bucket { used_percentage: Some(40.0), resets_at: None });
-        let windows = windows_from(&malformed, now).expect("the weekly window is still valid");
-        assert_eq!(windows.len(), 1);
-        assert_eq!(windows[0].kind, LimitKind::Secondary);
-    }
-
-    #[test]
-    fn a_reading_with_nothing_usable_is_schema_incompatible() {
-        let now = 1_800_000_000;
-        let malformed = Reading {
-            five_hour: Some(Bucket { used_percentage: Some(40.0), resets_at: None }),
-            seven_day: None,
-            ..reading(now)
-        };
-        let error = windows_from(&malformed, now).expect_err("no window survives");
+        let error = windows_from(&malformed, now).expect_err("a bucket without a restart");
         assert!(error.to_string().contains("schema_incompatible"));
     }
 
@@ -1856,14 +1831,26 @@ cache 78.4%"
             "pr": { "number": "57" },
             "rate_limits": {
                 "five_hour": { "used_percentage": 30, "resets_at": 1800003600 },
-                "seven_day": "unlimited"
+                "seven_day": { "used_percentage": 12, "resets_at": 1800500000 }
             }
         }"#;
         let input: StatusLineInput = serde_json::from_str(payload).expect("read the payload");
         assert!(input.effort.is_none() && input.pr.is_none(), "the reshaped fields read as absent");
         let limits = input.rate_limits.expect("the quota survives");
         assert_eq!(limits.five_hour.and_then(|bucket| bucket.used_percentage), Some(30.0));
-        assert!(limits.seven_day.is_none());
+        assert_eq!(limits.seven_day.and_then(|bucket| bucket.used_percentage), Some(12.0));
+    }
+
+    #[test]
+    fn a_reshaped_quota_bucket_leaves_the_stored_reading_standing() {
+        let payload = r#"{
+            "rate_limits": {
+                "five_hour": { "used_percentage": 30, "resets_at": 1800003600 },
+                "seven_day": "unlimited"
+            }
+        }"#;
+        let input: StatusLineInput = serde_json::from_str(payload).expect("read the payload");
+        assert!(input.rate_limits.is_none(), "no half reading replaces the stored one");
     }
 
     #[test]

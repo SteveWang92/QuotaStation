@@ -49,12 +49,7 @@ pub fn claude_home() -> Option<PathBuf> {
 /// they give the five-hour window's timing, though never an allowance.
 pub async fn read_live() -> Result<LiveSnapshot> {
     let plan_type = plan::plan_type();
-    // A reading the bridge could not make sense of leaves the logs to answer, and its error
-    // stands only when they cannot.
-    let (reported, rejected) = match statusline::read_windows() {
-        Ok(windows) => (windows, None),
-        Err(error) => (Vec::new(), Some(error)),
-    };
+    let reported = statusline::read_windows()?;
     // The session logs give the five-hour window alone, and a window the status line
     // reported wins the merge below, so the logs are parsed only when it did not.
     if reported.iter().any(|window| window.kind == LimitKind::Primary) {
@@ -69,7 +64,7 @@ pub async fn read_live() -> Result<LiveSnapshot> {
         Ok(snapshot) => snapshot,
         // The session logs are the fallback, so their absence only ends the read when
         // nothing else answered either.
-        Err(error) if reported.is_empty() => return Err(rejected.unwrap_or(error)),
+        Err(error) if reported.is_empty() => return Err(error),
         Err(_) => {
             crate::log::write("claude session logs unreadable");
             LiveSnapshot {
@@ -80,9 +75,6 @@ pub async fn read_live() -> Result<LiveSnapshot> {
             }
         }
     };
-    if let Some(error) = rejected {
-        crate::log::write(format!("claude status-line reading unusable; using the logs: {error}"));
-    }
     snapshot.limits = merge_windows(reported, snapshot.limits);
     Ok(logged(snapshot))
 }

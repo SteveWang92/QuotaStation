@@ -12,9 +12,8 @@ on `main`, with the matching section below as its notes.
 ### Fixed
 
 - An unreadable settings file is copied to `settings.unreadable.json` before the defaults replace it.
-- A malformed Claude status-line window no longer hides the other window or the session-log fallback.
+- A Claude five-hour window published without a percentage no longer marks Claude quota unreadable.
 - Claude quota keeps updating when Claude Code reshapes a status-line field QuotaStation only displays.
-- The dashboard no longer reports a history error while session files are still being written.
 
 ### Security
 

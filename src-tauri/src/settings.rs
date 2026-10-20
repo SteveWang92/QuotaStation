@@ -10,9 +10,8 @@ use serde::{Deserialize, Serialize};
 
 const SETTINGS_FILE: &str = "settings.json";
 
-/// The version of the settings file's layout, written beside the preferences. A file
-/// without one predates it: written by a build whose status line was set by switches
-/// rather than a layout, which is the one change of meaning the file has had.
+/// The version of the settings file's layout, written beside the preferences. Only a file
+/// that states no version is read for the status-line switches the layout replaces.
 const FORMAT_VERSION: u64 = 1;
 
 /// How a provider is named where the name sits beside a reading rather than above one.
@@ -325,7 +324,7 @@ impl Default for AppSettings {
 /// defaults over the file, so an unreadable one is logged and copied aside first, where the
 /// choices it held can still be read back by hand.
 pub fn load(path: &Path) -> AppSettings {
-    let content = match std::fs::read_to_string(path) {
+    let content = match std::fs::read(path) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return AppSettings::default();
@@ -338,30 +337,40 @@ pub fn load(path: &Path) -> AppSettings {
     match parse(&content) {
         Ok(settings) => settings,
         Err(error) => {
+            // The status-line bridge loads the settings on every render, so a copy already
+            // holding these bytes is left as it is.
             let kept = path.with_extension("unreadable.json");
-            let outcome = match std::fs::write(&kept, &content) {
-                Ok(()) => "copied aside".to_string(),
-                Err(copy_error) => format!("not copied: {copy_error}"),
+            let outcome = if std::fs::read(&kept).is_ok_and(|copy| copy == content) {
+                "already copied aside".to_string()
+            } else {
+                match std::fs::write(&kept, &content) {
+                    Ok(()) => "copied aside".to_string(),
+                    Err(copy_error) => format!("not copied: {copy_error}"),
+                }
             };
-            // The position only: serde's message quotes the offending value, which can be
-            // the shared folder's path.
+            // The kind and position only: serde's message quotes the offending value, which
+            // can be the shared folder's path. A value of the wrong type has no position.
+            let position = if error.line() == 0 {
+                String::new()
+            } else {
+                format!(" at line {} column {}", error.line(), error.column())
+            };
             crate::log::write(format!(
-                "settings unreadable at line {} column {}, using defaults ({outcome})",
-                error.line(),
-                error.column()
+                "settings unreadable ({:?} error{position}), using defaults ({outcome})",
+                error.classify()
             ));
             AppSettings::default()
         }
     }
 }
 
-fn parse(content: &str) -> serde_json::Result<AppSettings> {
-    let stored: serde_json::Value = serde_json::from_str(content)?;
+fn parse(content: &[u8]) -> serde_json::Result<AppSettings> {
+    let stored: serde_json::Value = serde_json::from_slice(content)?;
     let mut settings: AppSettings = serde_json::from_value(stored.clone())?;
-    // A file from before the version may carry the switches that came before the layout —
-    // `statusLineFullDetails`, or the pair that replaced it — and a choice expressed there
-    // is kept. A later version is read as it stands: every field in it has a default, so a
-    // preference this build does not know is all that is lost.
+    // A file that states no version may carry the switches the layout replaces —
+    // `statusLineFullDetails`, or the pair after it — and a choice expressed there is kept.
+    // Any version is otherwise read the same way: a field this build does not know is
+    // ignored, and a value it does not know makes the file unreadable, as above.
     let version = stored.get("formatVersion").and_then(serde_json::Value::as_u64).unwrap_or(0);
     if version == 0 && stored.get("statusLineLayout").is_none() {
         let switch = |key: &str| stored.get(key).and_then(serde_json::Value::as_bool);
@@ -576,6 +585,14 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(folder.join("settings.unreadable.json")).expect("kept aside"),
             broken
+        );
+
+        let not_text = b"{\"theme\":\"\xff\"}";
+        std::fs::write(&path, not_text).expect("write settings that are not UTF-8");
+        assert_eq!(load(&path), AppSettings::default());
+        assert_eq!(
+            std::fs::read(folder.join("settings.unreadable.json")).expect("kept aside"),
+            not_text
         );
         let _ = std::fs::remove_dir_all(folder);
     }
