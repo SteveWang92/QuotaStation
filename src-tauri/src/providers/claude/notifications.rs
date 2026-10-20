@@ -137,6 +137,18 @@ pub struct FinishedEvent {
     pub terminal: Option<crate::terminal::TerminalTarget>,
 }
 
+/// The version of the register's layout. A register in another shape — a newer build's, or
+/// the bare list kept before the version was recorded — is read as empty: it describes only
+/// the sessions rendering now, and the next render fills it again.
+const REGISTER_FORMAT_VERSION: u32 = 1;
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Register {
+    format_version: u32,
+    sessions: Vec<SessionRecord>,
+}
+
 /// What the status-line bridge knows about a session, for the hook to read back.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 struct SessionRecord {
@@ -183,6 +195,7 @@ pub fn record_session(id: &str, name: Option<&str>, project: Option<&str>, now: 
         },
     );
     register.truncate(REGISTER_LIMIT);
+    let register = Register { format_version: REGISTER_FORMAT_VERSION, sessions: register };
     if let Some(path) = register_path()
         && let Ok(encoded) = serde_json::to_string(&register)
     {
@@ -194,7 +207,9 @@ fn load_register() -> Vec<SessionRecord> {
     let Some(path) = register_path() else { return Vec::new() };
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|content| serde_json::from_str(&content).ok())
+        .and_then(|content| serde_json::from_str::<Register>(&content).ok())
+        .filter(|register| register.format_version == REGISTER_FORMAT_VERSION)
+        .map(|register| register.sessions)
         .unwrap_or_default()
 }
 

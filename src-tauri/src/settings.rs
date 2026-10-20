@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 
 const SETTINGS_FILE: &str = "settings.json";
 
+/// The version of the settings file's layout, written beside the preferences. A file
+/// without one predates it: written by a build whose status line was set by switches
+/// rather than a layout, which is the one change of meaning the file has had.
+const FORMAT_VERSION: u64 = 1;
+
 /// How a provider is named where the name sits beside a reading rather than above one.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -353,10 +358,12 @@ pub fn load(path: &Path) -> AppSettings {
 fn parse(content: &str) -> serde_json::Result<AppSettings> {
     let stored: serde_json::Value = serde_json::from_str(content)?;
     let mut settings: AppSettings = serde_json::from_value(stored.clone())?;
-    // A file without a layout may still carry the switches that came before it —
+    // A file from before the version may carry the switches that came before the layout —
     // `statusLineFullDetails`, or the pair that replaced it — and a choice expressed there
-    // is kept.
-    if stored.get("statusLineLayout").is_none() {
+    // is kept. A later version is read as it stands: every field in it has a default, so a
+    // preference this build does not know is all that is lost.
+    let version = stored.get("formatVersion").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    if version == 0 && stored.get("statusLineLayout").is_none() {
         let switch = |key: &str| stored.get(key).and_then(serde_json::Value::as_bool);
         let full = switch("statusLineFullDetails").unwrap_or(true);
         settings.status_line_layout = StatusLineLayout::legacy(
@@ -383,7 +390,15 @@ fn default_path() -> Option<PathBuf> {
 }
 
 pub fn save(path: &Path, settings: &AppSettings) -> Result<(), String> {
-    let content = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SettingsFile<'a> {
+        format_version: u64,
+        #[serde(flatten)]
+        settings: &'a AppSettings,
+    }
+    let file = SettingsFile { format_version: FORMAT_VERSION, settings };
+    let content = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
     // The status-line process reads this file while the application is running. Publish a
     // complete replacement so it never sees a truncated JSON document, and a failed write
     // leaves the last saved preferences intact.
@@ -470,6 +485,21 @@ mod tests {
             enabled_ids(&load(&path).status_line_layout),
             [("model", 1), ("quota:claude", 1), ("quota:codex", 1)]
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn only_a_file_from_before_the_version_is_read_as_the_old_switches() {
+        let path = scratch("versioned");
+        save(&path, &AppSettings::default()).expect("write the settings");
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read back"))
+                .expect("a JSON object");
+        assert_eq!(written["formatVersion"], FORMAT_VERSION);
+
+        std::fs::write(&path, r#"{"formatVersion":1,"statusLineFullDetails":false}"#)
+            .expect("write versioned settings");
+        assert_eq!(load(&path).status_line_layout, StatusLineLayout::default().normalized());
         let _ = std::fs::remove_file(path);
     }
 
