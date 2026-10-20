@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "dialog",
-  "description": "Allow the main window to choose a shared folder or save a diagnostic export",
+  "description": "Allow the main window to choose a shared folder or save a diagnostic export, starting from a known folder",
   "windows": ["main"],
-  "permissions": ["dialog:allow-open", "dialog:allow-save"]
+  "permissions": [
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "core:path:allow-resolve-directory",
+    "core:path:allow-join"
+  ]
 }

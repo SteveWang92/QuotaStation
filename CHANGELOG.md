@@ -14,6 +14,10 @@ on `main`, with the matching section below as its notes.
 - Claude quota keeps updating when Claude Code reshapes a status-line field QuotaStation only displays.
 - The dashboard no longer reports a history error while session files are still being written.
 
+### Security
+
+- Each window is granted only the system permissions its interface uses.
+
 ## [1.5.0] - 2026-10-05
 
 ### Added
