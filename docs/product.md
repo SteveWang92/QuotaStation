@@ -319,8 +319,8 @@ records on this machine or imported usage names it.
 Claude has no local read interface for quota. Its quota comes from two sources merged per
 window: the session logs as the always-on base and the status-line bridge above them (see
 `docs/architecture.md`). Anthropic's OAuth usage endpoint is not used: its rate limit is shared
-per account with Claude Code's own usage display, so it answers `429`. QuotaStation has no HTTP
-client and reads Claude Code's sign-in file only for the plan name.
+per account with Claude Code's own usage display, so it answers `429`. QuotaStation sends nothing to
+Anthropic and reads Claude Code's sign-in file only for the plan name.
 
 Deliberate Claude limits:
 

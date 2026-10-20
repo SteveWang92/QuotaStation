@@ -47,7 +47,7 @@ Codex settings, sign the user out, or consume reset credits.
 Codex usage history comes from local rollout files. The parser reads token counts, model
 names, service tiers, and rate-limit snapshots without retaining conversation content.
 
-QuotaStation contains no HTTP client and does not call OpenAI directly. The installed Codex
+QuotaStation does not call OpenAI directly. The installed Codex
 client remains responsible for its own authentication and any provider communication needed
 to answer the local request.
 
@@ -209,8 +209,8 @@ details. See [Multi-machine usage](multi-machine.md) for the file contents and s
   process.
 - Claude quota refreshes when Claude Code supplies a status-line reading or its session files
   change.
-- Session-file watchers are reconciled every fifteen minutes so a missed Windows notification
-  does not leave history stale indefinitely.
+- Session-file watchers are reconciled every minute, and history is read again every fifteen
+  minutes, so a missed Windows notification does not leave history stale indefinitely.
 - Each provider data source fails independently. A failed source keeps its last successful
   result visible but marks it stale.
 - A provider that reports an expired sign-in is shown as signed out rather than failed, and

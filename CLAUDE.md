@@ -45,7 +45,6 @@ history, or account of how the code used to behave. Those belong in issues, comm
 - Never expose provider credentials, prompts, source code, file paths, or raw session data
   outside the local machine.
 - Reuse one normalized provider and usage model across tray, widget, and dashboard surfaces.
-- Deliver Codex first; Claude, Gemini, and other providers must not block the first release.
 - Use Tauri 2 with a Rust core and a React/TypeScript renderer unless the maintainer
   explicitly approves an architecture change.
 - For AI client logs and provider behavior, inspect established open-source implementations
