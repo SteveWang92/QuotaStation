@@ -321,7 +321,7 @@ async fn apply_live(
     }
     let error =
         state.read_snapshot(provider, |snapshot| snapshot.live_error.clone()).await.or(signed_out);
-    let _ = state
+    if let Err(error) = state
         .storage
         .record_refresh(
             provider,
@@ -330,7 +330,10 @@ async fn apply_live(
             &completed_at,
             error.as_deref(),
         )
-        .await;
+        .await
+    {
+        crate::log::write(format!("{} live refresh not recorded: {error:#}", provider.key()));
+    }
 }
 
 async fn apply_history(
@@ -375,7 +378,7 @@ async fn apply_history(
         }
     }
     let error = state.read_snapshot(provider, |snapshot| snapshot.history_error.clone()).await;
-    let _ = state
+    if let Err(error) = state
         .storage
         .record_refresh(
             provider,
@@ -384,7 +387,10 @@ async fn apply_history(
             &completed_at,
             error.as_deref(),
         )
-        .await;
+        .await
+    {
+        crate::log::write(format!("{} history refresh not recorded: {error:#}", provider.key()));
+    }
 }
 
 /// Stores each of a provider's sessions, priced from the catalog and — where the client

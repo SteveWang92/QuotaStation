@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- An unreadable settings file is copied to `settings.unreadable.json` before the defaults replace it.
+
 ## [1.5.0] - 2026-10-05
 
 ### Added

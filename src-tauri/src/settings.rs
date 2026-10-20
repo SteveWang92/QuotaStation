@@ -316,37 +316,61 @@ impl Default for AppSettings {
 }
 
 /// Anything unreadable is answered with the defaults: a preference that cannot be read is
-/// a preference not yet expressed, never a reason to stop.
+/// a preference not yet expressed, never a reason to stop. The next save writes those
+/// defaults over the file, so an unreadable one is logged and copied aside first, where the
+/// choices it held can still be read back by hand.
 pub fn load(path: &Path) -> AppSettings {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|content| {
-            let stored: serde_json::Value = serde_json::from_str(&content).ok()?;
-            let mut settings: AppSettings = serde_json::from_value(stored.clone()).ok()?;
-            // A file without a layout may still carry the switches that came before it —
-            // `statusLineFullDetails`, or the pair that replaced it — and a choice expressed
-            // there is kept.
-            if stored.get("statusLineLayout").is_none() {
-                let switch = |key: &str| stored.get(key).and_then(serde_json::Value::as_bool);
-                let full = switch("statusLineFullDetails").unwrap_or(true);
-                settings.status_line_layout = StatusLineLayout::legacy(
-                    switch("statusLineExtraDetails").unwrap_or(full),
-                    switch("statusLineOtherProviders").unwrap_or(full),
-                );
-            }
-            settings.status_line_layout = settings.status_line_layout.normalized();
-            // A zone name this build does not know — edited by hand, or dropped from the
-            // zone database — cannot be honoured, and is read as no choice made.
-            if settings
-                .time_zone
-                .as_deref()
-                .is_some_and(|name| crate::clock::resolve(name).is_err())
-            {
-                settings.time_zone = None;
-            }
-            Some(settings)
-        })
-        .unwrap_or_default()
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return AppSettings::default();
+        }
+        Err(error) => {
+            crate::log::write(format!("settings could not be read; using defaults: {error}"));
+            return AppSettings::default();
+        }
+    };
+    match parse(&content) {
+        Ok(settings) => settings,
+        Err(error) => {
+            let kept = path.with_extension("unreadable.json");
+            let outcome = match std::fs::write(&kept, &content) {
+                Ok(()) => "copied aside".to_string(),
+                Err(copy_error) => format!("not copied: {copy_error}"),
+            };
+            // The position only: serde's message quotes the offending value, which can be
+            // the shared folder's path.
+            crate::log::write(format!(
+                "settings unreadable at line {} column {}, using defaults ({outcome})",
+                error.line(),
+                error.column()
+            ));
+            AppSettings::default()
+        }
+    }
+}
+
+fn parse(content: &str) -> serde_json::Result<AppSettings> {
+    let stored: serde_json::Value = serde_json::from_str(content)?;
+    let mut settings: AppSettings = serde_json::from_value(stored.clone())?;
+    // A file without a layout may still carry the switches that came before it —
+    // `statusLineFullDetails`, or the pair that replaced it — and a choice expressed there
+    // is kept.
+    if stored.get("statusLineLayout").is_none() {
+        let switch = |key: &str| stored.get(key).and_then(serde_json::Value::as_bool);
+        let full = switch("statusLineFullDetails").unwrap_or(true);
+        settings.status_line_layout = StatusLineLayout::legacy(
+            switch("statusLineExtraDetails").unwrap_or(full),
+            switch("statusLineOtherProviders").unwrap_or(full),
+        );
+    }
+    settings.status_line_layout = settings.status_line_layout.normalized();
+    // A zone name this build does not know — edited by hand, or dropped from the zone
+    // database — cannot be honoured, and is read as no choice made.
+    if settings.time_zone.as_deref().is_some_and(|name| crate::clock::resolve(name).is_err()) {
+        settings.time_zone = None;
+    }
+    Ok(settings)
 }
 
 /// The settings as a process with no Tauri handle can find them.
@@ -508,6 +532,22 @@ mod tests {
         assert_eq!(settings.time_zone, None);
         assert!(!settings.taskbar_widget_enabled, "every other preference is kept");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_kept_aside_before_the_defaults_replace_it() {
+        let folder = std::env::temp_dir().join("quotastation-unreadable-settings");
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("create folder");
+        let path = folder.join(SETTINGS_FILE);
+        let broken = r#"{"sharedUsageFolder":"D:\\Sync","theme":"neon"}"#;
+        std::fs::write(&path, broken).expect("write broken settings");
+        assert_eq!(load(&path), AppSettings::default());
+        assert_eq!(
+            std::fs::read_to_string(folder.join("settings.unreadable.json")).expect("kept aside"),
+            broken
+        );
+        let _ = std::fs::remove_dir_all(folder);
     }
 
     #[test]

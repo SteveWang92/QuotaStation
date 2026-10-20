@@ -292,7 +292,9 @@ and nothing else from the status-line input.
 read: `timeZone`, an IANA zone name every bucket and displayed time follows (unset follows
 Windows, and an unknown name is refused), and `clockCheck`, off by default, which checks the
 clock against internet time every two hours — see
-[Architecture — Clock check](architecture.md#clock-check).
+[Architecture — Clock check](architecture.md#clock-check). A `settings.json` that cannot be
+read is copied to `settings.unreadable.json` before the defaults replace it, so the choices it
+held can be copied back by hand.
 
 ## Refresh and diagnostics
 
