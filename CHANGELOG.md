@@ -7,6 +7,8 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-20
+
 ### Fixed
 
 - An unreadable settings file is copied to `settings.unreadable.json` before the defaults replace it.
@@ -302,7 +304,8 @@ anything leaving the computer.
 - Provider integrations are read-only, and the application makes no outbound network
   requests of its own.
 
-[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/SteveWang92/QuotaStation/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/SteveWang92/QuotaStation/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/SteveWang92/QuotaStation/compare/v1.4.2...v1.5.0
 [1.4.2]: https://github.com/SteveWang92/QuotaStation/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/SteveWang92/QuotaStation/compare/v1.4.0...v1.4.1
