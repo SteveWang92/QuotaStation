@@ -336,6 +336,9 @@ price list.
 - Updating the reviewed ccusage revision updates the catalog pin. Refresh the snapshot from
   the revision the new `flake.lock` names, keeping the same model-identifier filter, and
   review the upstream changes, licenses, notices, and the minimal vendored source together.
+  When the update changes the cost of the same tokens — a cache-write or long-context rate
+  computed differently — raise `COST_REVISION` in `src-tauri/src/domain.rs` in the same
+  change, which prices every stored row again; `docs/architecture.md` owns that rule.
 - Between releases, **Settings → Application → Update pricing** downloads the latest
   catalog to `%APPDATA%\me.stevewang.quotastation\pricing-catalog.json`; it is used while
   its LiteLLM commit is newer than the embedded one. Deleting the file returns to the

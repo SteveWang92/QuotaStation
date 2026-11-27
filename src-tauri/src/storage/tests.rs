@@ -398,6 +398,63 @@ async fn a_total_stored_without_its_split_is_completed_from_its_day_once_its_log
 }
 
 #[tokio::test]
+async fn a_price_settled_under_an_earlier_cost_calculation_is_priced_again() {
+    let (storage, _database) = open_storage().await;
+    let history = |cost_usd: f64| HistorySnapshot {
+        days: vec![HistoryDay {
+            model_rows: vec![ModelUsageRow {
+                cost_usd,
+                ..day("2026-09-23", "claude-opus-5", 100).model_rows[0].clone()
+            }],
+            ..day("2026-09-23", "claude-opus-5", 100)
+        }],
+        hours: Vec::new(),
+    };
+    storage
+        .save_history(CODEX, &history(2.0), "Australia/Sydney", "2026-09-23T15:00:00Z")
+        .await
+        .expect("save the first parse");
+    storage
+        .save_session_costs(
+            CODEX,
+            &[priced_session("settled", &[("claude-opus-5", 100, 2.0)])],
+            "2026-09-23T15:00:00Z",
+        )
+        .await
+        .expect("store the session");
+    for update in
+        ["UPDATE daily_usage SET cost_revision = ?", "UPDATE session_costs SET cost_revision = ?"]
+    {
+        sqlx::query(update)
+            .bind(crate::domain::COST_REVISION - 1)
+            .execute(&storage.pool)
+            .await
+            .expect("date the rows to the earlier cost calculation");
+    }
+
+    // The parser now costs the same tokens differently.
+    storage
+        .save_history(CODEX, &history(2.5), "Australia/Sydney", "2026-09-24T15:00:00Z")
+        .await
+        .expect("save the parse under the new calculation");
+    storage
+        .save_session_costs(
+            CODEX,
+            &[priced_session("settled", &[("claude-opus-5", 100, 2.5)])],
+            "2026-09-24T15:00:00Z",
+        )
+        .await
+        .expect("store the session under the new calculation");
+
+    let range = storage
+        .load_usage_range(Some(CODEX), None, "2026-09-23", "2026-09-23")
+        .await
+        .expect("read the day back");
+    assert_eq!(range.days[0].api_equivalent_cost_usd, Some(2.5));
+    assert_eq!(stored_session_cost(&storage, "settled").await, 2.5);
+}
+
+#[tokio::test]
 async fn a_row_whose_tokens_grew_is_priced_again() {
     let (storage, _database) = open_storage().await;
     for (tokens, cost) in [(100, 2.0), (150, 2.5)] {

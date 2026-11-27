@@ -92,8 +92,14 @@ hour or session model whose tokens are unchanged keeps the cost it was first pri
 catalog that later reprices a model leaves history alone and one that adds a model fills in
 only the rows that had no price. Each session therefore stores what each of its models cost
 and the tokens that cost was for. A row whose tokens change — a session still running, or a
-day rebuilt by a time-zone change — is priced again in full at the current catalog. A
-session row stored before it recorded its models, while its tokens are unchanged, is priced
+day rebuilt by a time-zone change — is priced again in full at the current catalog.
+
+A price is settled against the catalog, not against the parsers. Every row records the cost
+revision it was priced under, a number raised only when an audited ccusage update changes
+the cost of the same tokens, and a row priced under an earlier one is priced again in full
+at the current catalog. A parser update that leaves costs alone keeps every settled price.
+
+A session row stored before it recorded its models, while its tokens are unchanged, is priced
 in full when some of its models priced now add up to its stored total: those cost what they
 did, and the rest are the ones that catalog could not price. When none do, a model has been
 repriced since and the row keeps its total. Once the session's log is gone, the same test is
@@ -272,7 +278,7 @@ stored or shared therefore answers these before it lands:
   that has to store a local key records the zone it was keyed in, as `aggregation_timezone`
   does for usage, so a zone change can find what it has to rebuild.
 - **What cannot be rebuilt is named.** A row that survives its source log records what produced
-  it — parser revision, pricing catalog, zone — or the fact that it can never be recomputed
+  it — parser revision, cost revision, pricing catalog, zone — or the fact that it can never be recomputed
   is written here, so a later fix knows which rows it cannot reach.
 - **Shared records carry their origin.** Every record a device exports says which device
   produced it. A reader never infers origin from whose file a record arrived in, and a record

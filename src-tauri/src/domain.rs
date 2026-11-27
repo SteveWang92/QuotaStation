@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use crate::providers::ProviderKind;
 
 pub const CCUSAGE_REVISION: &str = "033c1f7631f603fc939fdc85163e8203f0084f83";
+/// How the vendored parsers turn tokens into a cost. Raised when an audited ccusage update
+/// changes the cost of the same tokens; a row priced under a lower one is priced again in
+/// full, and an update that leaves costs alone keeps every settled price.
+pub const COST_REVISION: i64 = 1;
 pub const PRICING_CATALOG_REVISION: &str = env!("QUOTASTATION_PRICING_REVISION");
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

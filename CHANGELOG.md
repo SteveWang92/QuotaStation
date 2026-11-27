@@ -10,6 +10,7 @@ on `main`, with the matching section below as its notes.
 ### Fixed
 
 - Mixed-model sessions stored before 1.4.2 now include the cost of the model left unpriced.
+- Stored costs are recalculated when an update changes how the same tokens are priced.
 
 ## [1.5.1] - 2026-10-20
 

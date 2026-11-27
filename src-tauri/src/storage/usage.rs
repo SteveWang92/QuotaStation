@@ -7,9 +7,9 @@ use anyhow::{Context, Result};
 use sqlx::{AssertSqlSafe, Row};
 
 use crate::domain::{
-    CCUSAGE_REVISION, DailyUsagePoint, DeviceUsage, HistorySnapshot, HourlyUsagePoint,
-    ModelUsageRow, SessionCost, SessionCostSnapshot, SessionModelCost, TokenUsage,
-    UsageHoursSnapshot, UsageRangeSnapshot, UsageWindowSnapshot,
+    CCUSAGE_REVISION, COST_REVISION, DailyUsagePoint, DeviceUsage, HistorySnapshot,
+    HourlyUsagePoint, ModelUsageRow, SessionCost, SessionCostSnapshot, SessionModelCost,
+    TokenUsage, UsageHoursSnapshot, UsageRangeSnapshot, UsageWindowSnapshot,
 };
 use crate::providers::ProviderKind;
 
@@ -20,7 +20,8 @@ use super::{
 
 /// The cost a parsed row is stored at. A price is settled once a row has one: a row whose
 /// tokens are unchanged keeps the cost it was first priced at, whatever the catalog now
-/// says, and only a row that was never priced, or whose tokens changed, takes the new one.
+/// says, and only a row that was never priced, whose tokens changed, or that was priced
+/// under an earlier [`COST_REVISION`] takes the new one; `kept` holds none of those last.
 fn kept_cost(kept: &BTreeMap<String, (u64, f64)>, row: &ModelUsageRow) -> f64 {
     match kept.get(&row.model) {
         Some(&(total, cost)) if total == row.total && cost > 0.0 => cost,
@@ -47,6 +48,7 @@ struct StoredSession {
     /// `None` on a row written before sessions recorded what each of their models cost.
     model_costs: Option<Vec<SessionModelCost>>,
     pricing_catalog_revision: String,
+    cost_revision: i64,
 }
 
 /// Whether some of a session's models, priced now, add up to a total stored without a
@@ -68,7 +70,7 @@ fn priced_by_some_of(total: f64, models: &[SessionModelCost]) -> bool {
 }
 
 /// What a session is stored at, by the rule `kept_cost` applies to a day, applied to each
-/// of its models.
+/// of its models. A row priced under an earlier [`COST_REVISION`] is priced again in full.
 ///
 /// A row that recorded only its total, while the session's tokens are unchanged, is priced
 /// in full when the models it priced still cost the same, which fills in the ones it could
@@ -84,7 +86,9 @@ fn settle_session(
 ) -> (f64, Vec<SessionModelCost>, bool) {
     let mut cost = session.computed_cost_usd;
     let mut models = session.model_costs.clone();
-    let Some(stored) = stored else { return (cost, models, false) };
+    let Some(stored) = stored.filter(|stored| stored.cost_revision >= COST_REVISION) else {
+        return (cost, models, false);
+    };
     let unchanged = stored.total_tokens == session.usage.total;
     let split = stored
         .model_costs
@@ -297,8 +301,9 @@ impl Storage {
     }
 
     /// What this machine's stored rows for one day or hour cost, by model, with the tokens
-    /// each was priced for. Read before the rows are replaced, so a price already settled
-    /// survives the parse that rewrites them.
+    /// each was priced for, leaving out rows priced under an earlier [`COST_REVISION`].
+    /// Read before the rows are replaced, so a price already settled survives the parse that
+    /// rewrites them.
     async fn kept_costs(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         provider_id: i64,
@@ -308,11 +313,14 @@ impl Storage {
     ) -> Result<BTreeMap<String, (u64, f64)>> {
         // Both names come from the literals at the call sites, and every value is bound.
         let rows: Vec<(String, i64, Option<f64>)> = sqlx::query_as(AssertSqlSafe(format!(
-            "SELECT model, total_tokens, estimated_cost_usd FROM {table}              WHERE provider_instance_id = ? AND device = ? AND {key_column} = ?"
+            "SELECT model, total_tokens, estimated_cost_usd FROM {table} \
+             WHERE provider_instance_id = ? AND device = ? AND {key_column} = ? \
+             AND cost_revision >= ?"
         )))
         .bind(provider_id)
         .bind(LOCAL_DEVICE)
         .bind(key)
+        .bind(COST_REVISION)
         .fetch_all(&mut **tx)
         .await?;
         Ok(rows
@@ -333,12 +341,13 @@ impl Storage {
         sqlx::query(
             "INSERT INTO daily_usage \
              (provider_instance_id, device, usage_date, model, service_tier, input_tokens, cache_read_tokens, \
-              output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, \
+              cost_revision, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(provider_id).bind(device).bind(date).bind(&row.model).bind(AGGREGATE_SERVICE_TIER).bind(row.input as i64)
         .bind(row.cache_read as i64).bind(row.output as i64).bind(row.reasoning as i64)
-        .bind(row.total as i64).bind(cost_usd).bind(CCUSAGE_REVISION).bind(observed_at)
+        .bind(row.total as i64).bind(cost_usd).bind(CCUSAGE_REVISION).bind(COST_REVISION).bind(observed_at)
         .execute(&mut **tx).await?;
         Ok(())
     }
@@ -353,12 +362,16 @@ impl Storage {
         observed_at: &str,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO hourly_usage              (provider_instance_id, device, hour_start, model, service_tier, input_tokens, cache_read_tokens,               output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO hourly_usage \
+             (provider_instance_id, device, hour_start, model, service_tier, input_tokens, cache_read_tokens, \
+              output_tokens, reasoning_tokens, total_tokens, estimated_cost_usd, parser_revision, \
+              cost_revision, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(provider_id).bind(device).bind(hour_start).bind(&row.model).bind(AGGREGATE_SERVICE_TIER)
         .bind(row.input as i64).bind(row.cache_read as i64).bind(row.output as i64)
         .bind(row.reasoning as i64).bind(row.total as i64).bind(cost_usd)
-        .bind(CCUSAGE_REVISION).bind(observed_at)
+        .bind(CCUSAGE_REVISION).bind(COST_REVISION).bind(observed_at)
         .execute(&mut **tx).await?;
         Ok(())
     }
@@ -375,15 +388,18 @@ impl Storage {
     ) -> Result<()> {
         let provider_id = self.provider_id(provider).await?;
         let mut tx = self.pool.begin().await?;
-        let rows: Vec<(String, i64, f64, Option<String>, String)> = sqlx::query_as(
+        let rows: Vec<(String, i64, f64, Option<String>, String, i64)> = sqlx::query_as(
             "SELECT session_id, total_tokens, computed_cost_usd, model_costs, \
-             pricing_catalog_revision FROM session_costs WHERE provider_instance_id = ?",
+             pricing_catalog_revision, cost_revision FROM session_costs \
+             WHERE provider_instance_id = ?",
         )
         .bind(provider_id)
         .fetch_all(&mut *tx)
         .await?;
         let mut stored = BTreeMap::new();
-        for (session_id, total_tokens, computed_cost_usd, model_costs, revision) in rows {
+        for (session_id, total_tokens, computed_cost_usd, model_costs, revision, cost_revision) in
+            rows
+        {
             let model_costs = model_costs
                 .map(|json| serde_json::from_str(&json))
                 .transpose()
@@ -395,6 +411,7 @@ impl Storage {
                     computed_cost_usd,
                     model_costs,
                     pricing_catalog_revision: revision,
+                    cost_revision,
                 },
             );
         }
@@ -412,8 +429,8 @@ impl Storage {
                   computed_cost_usd, independent, reported_cost_usd, reported_complete, \
                   api_duration_ms, lines_added, lines_removed, input_tokens, cache_read_tokens, \
                   output_tokens, reasoning_tokens, total_tokens, models, model_costs, \
-                  parser_revision, pricing_catalog_revision, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                  parser_revision, pricing_catalog_revision, cost_revision, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(provider_instance_id, session_id) DO UPDATE SET \
                  session_started_at=excluded.session_started_at, \
                  duration_ms=excluded.duration_ms, \
@@ -433,6 +450,7 @@ impl Storage {
                  model_costs=excluded.model_costs, \
                  parser_revision=excluded.parser_revision, \
                  pricing_catalog_revision=excluded.pricing_catalog_revision, \
+                 cost_revision=excluded.cost_revision, \
                  updated_at=excluded.updated_at",
             )
             .bind(provider_id)
@@ -455,6 +473,7 @@ impl Storage {
             .bind(serde_json::to_string(&model_costs)?)
             .bind(CCUSAGE_REVISION)
             .bind(revision)
+            .bind(COST_REVISION)
             .bind(observed_at)
             .execute(&mut *tx)
             .await?;
