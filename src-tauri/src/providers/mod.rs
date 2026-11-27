@@ -246,7 +246,12 @@ fn candidate_line_is_compatible(kind: ProviderKind, line: &[u8]) -> Option<bool>
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
         return Some(false);
     };
-    if !contains_token_usage(&value) {
+    // Codex writes a `token_usage_record` beside each `token_count` event it already writes,
+    // carrying the same usage. The parser reads the event, so the record is not a candidate.
+    if !contains_token_usage(&value)
+        || kind == ProviderKind::Codex
+            && value.get("type").and_then(serde_json::Value::as_str) == Some("token_usage_record")
+    {
         return None;
     }
     Some(match kind {
@@ -400,6 +405,12 @@ mod tests {
         let claude = br#"{"timestamp":"2026-08-15T00:00:00Z","message":{"usage":{"input_tokens":10,"output_tokens":2}}}"#;
         assert_eq!(candidate_line_is_compatible(ProviderKind::Codex, codex), Some(true));
         assert_eq!(candidate_line_is_compatible(ProviderKind::Claude, claude), Some(true));
+    }
+
+    #[test]
+    fn quality_check_ignores_the_codex_usage_record_beside_each_token_count() {
+        let record = br#"{"timestamp":"2026-11-15T00:00:00Z","type":"token_usage_record","payload":{"usage":{"input_tokens":10,"output_tokens":2},"turn_token_usage":{"input_tokens":10,"output_tokens":2}}}"#;
+        assert_eq!(candidate_line_is_compatible(ProviderKind::Codex, record), None);
     }
 
     #[test]

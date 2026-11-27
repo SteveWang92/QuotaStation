@@ -12,6 +12,7 @@ on `main`, with the matching section below as its notes.
 - Mixed-model sessions stored before 1.4.2 now include the cost of the model left unpriced.
 - Stored costs are recalculated when an update changes how the same tokens are priced.
 - History no longer reports an error while an active session keeps writing its log.
+- Codex history updates again with session logs from newer Codex versions.
 
 ## [1.5.1] - 2026-10-20
 
