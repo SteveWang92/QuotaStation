@@ -42,9 +42,9 @@
     "node": "24.18.1"
   },
   "dependencies": {
-    "@tauri-apps/api": "2.12.1",
-    "@tauri-apps/plugin-dialog": "2.8.1",
-    "lucide-react": "1.51.0",
+    "@tauri-apps/api": "2.12.3",
+    "@tauri-apps/plugin-dialog": "2.8.2",
+    "lucide-react": "1.55.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
