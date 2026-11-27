@@ -93,8 +93,13 @@ catalog that later reprices a model leaves history alone and one that adds a mod
 only the rows that had no price. Each session therefore stores what each of its models cost
 and the tokens that cost was for. A row whose tokens change — a session still running, or a
 day rebuilt by a time-zone change — is priced again in full at the current catalog. A
-session row stored before it recorded its models keeps its total while its tokens are
-unchanged, so a model it could not price at the time stays unpriced in it.
+session row stored before it recorded its models, while its tokens are unchanged, is priced
+in full when some of its models priced now add up to its stored total: those cost what they
+did, and the rest are the ones that catalog could not price. When none do, a model has been
+repriced since and the row keeps its total. Once the session's log is gone, the same test is
+made against this machine's day rows: a model whose tokens are the whole of its day row on a
+day the session spans takes that row's settled cost, which gives what its other models cost
+too.
 
 Every session the parsers read is stored on its own as well as in the day it belongs to:
 its cost from the catalog, its tokens, its models, and the span from its first entry to its

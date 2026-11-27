@@ -306,6 +306,97 @@ async fn a_new_catalog_prices_only_what_the_old_one_could_not() {
     assert_eq!(stored_session_cost(&storage, "mixed").await, 3.0);
 }
 
+/// Stores a session as a build that recorded only totals left it, after a later build had
+/// scaled that total across the session's models.
+async fn store_unsplit_session(storage: &Storage, session_id: &str, models: &[(&str, u64, f64)]) {
+    storage
+        .save_session_costs(CODEX, &[priced_session(session_id, models)], "2026-09-23T15:00:00Z")
+        .await
+        .expect("store the session");
+    sqlx::query("UPDATE session_costs SET pricing_catalog_revision = ? WHERE session_id = ?")
+        .bind("ba917681461b1ad04d30f91da26e75b3521996f3")
+        .bind(session_id)
+        .execute(&storage.pool)
+        .await
+        .expect("date the session to the catalog that stored totals only");
+}
+
+#[tokio::test]
+async fn a_total_stored_without_its_split_takes_the_price_of_the_model_it_missed() {
+    let (storage, _database) = open_storage().await;
+    // The old catalog priced Opus 5 alone; its total was later scaled across both models.
+    store_unsplit_session(
+        &storage,
+        "mixed",
+        &[("claude-opus-5", 100, 1.875), ("claude-opus-5-5", 50, 0.125)],
+    )
+    .await;
+    let unchanged = [("claude-opus-5", 100, 2.0), ("claude-opus-5-5", 50, 1.0)];
+    for refresh in ["2026-09-24T15:00:00Z", "2026-09-25T15:00:00Z"] {
+        storage
+            .save_session_costs(CODEX, &[priced_session("mixed", &unchanged)], refresh)
+            .await
+            .expect("store the session under the current catalog");
+        assert_eq!(stored_session_cost(&storage, "mixed").await, 3.0);
+    }
+
+    // A total no subset of today's prices reaches was repriced since, and is kept.
+    store_unsplit_session(&storage, "repriced", &[("claude-opus-5", 100, 2.0)]).await;
+    storage
+        .save_session_costs(
+            CODEX,
+            &[priced_session("repriced", &[("claude-opus-5", 100, 1.5)])],
+            "2026-09-24T15:00:00Z",
+        )
+        .await
+        .expect("store the session under the current catalog");
+    assert_eq!(stored_session_cost(&storage, "repriced").await, 2.0);
+}
+
+#[tokio::test]
+async fn a_total_stored_without_its_split_is_completed_from_its_day_once_its_log_is_gone() {
+    let (storage, _database) = open_storage().await;
+    // Priced now, Opus 5 costs 2.0 and Opus 5.5 1.0; the old catalog priced Opus 5 alone,
+    // and its total of 2.0 was later scaled across both.
+    store_unsplit_session(
+        &storage,
+        "deleted",
+        &[("claude-opus-5", 100, 2.0 * 2.0 / 3.0), ("claude-opus-5-5", 50, 2.0 / 3.0)],
+    )
+    .await;
+    let started = "2026-09-23T05:00:00Z".parse::<jiff::Timestamp>().expect("an instant");
+    let date = crate::clock::day_key(started.as_second()).expect("the session's day");
+    // The session was the only use of Opus 5.5 that day; Opus 5 ran in others too.
+    let history = HistorySnapshot {
+        days: vec![HistoryDay {
+            model_rows: vec![
+                ModelUsageRow {
+                    cost_usd: 5.0,
+                    ..day(&date, "claude-opus-5", 250).model_rows[0].clone()
+                },
+                ModelUsageRow {
+                    cost_usd: 1.0,
+                    ..day(&date, "claude-opus-5-5", 50).model_rows[0].clone()
+                },
+            ],
+            ..day(&date, "claude-opus-5", 300)
+        }],
+        hours: Vec::new(),
+    };
+    storage
+        .save_history(CODEX, &history, "Australia/Sydney", "2026-09-24T15:00:00Z")
+        .await
+        .expect("save the day");
+
+    for refresh in ["2026-11-24T15:00:00Z", "2026-11-25T15:00:00Z"] {
+        storage
+            .save_session_costs(CODEX, &[], refresh)
+            .await
+            .expect("store a parse that no longer names the session");
+        assert!((stored_session_cost(&storage, "deleted").await - 3.0).abs() < 1e-9);
+    }
+}
+
 #[tokio::test]
 async fn a_row_whose_tokens_grew_is_priced_again() {
     let (storage, _database) = open_storage().await;

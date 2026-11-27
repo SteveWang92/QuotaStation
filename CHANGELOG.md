@@ -7,6 +7,10 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Mixed-model sessions stored before 1.4.2 now include the cost of the model left unpriced.
+
 ## [1.5.1] - 2026-10-20
 
 ### Fixed

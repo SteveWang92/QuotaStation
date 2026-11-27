@@ -28,6 +28,18 @@ fn kept_cost(kept: &BTreeMap<String, (u64, f64)>, row: &ModelUsageRow) -> f64 {
     }
 }
 
+/// The only catalog that priced sessions while they stored a total without what each of
+/// their models cost. A row still stamped with it holds no real per-model split: any split
+/// it carries was its total scaled across its models.
+const UNSPLIT_CATALOG_REVISION: &str = "ba917681461b1ad04d30f91da26e75b3521996f3";
+
+/// How far apart two costs of the same tokens may sit and still be the same price: wider
+/// than rounding and summation order, far narrower than any repricing.
+const SAME_PRICE_USD: f64 = 1e-6;
+
+/// The most models a stored total is matched against; every subset of them is tried.
+const MAX_MATCHED_MODELS: usize = 16;
+
 /// The part of a stored session the next parse needs in order to keep its settled prices.
 struct StoredSession {
     total_tokens: u64,
@@ -37,9 +49,31 @@ struct StoredSession {
     pricing_catalog_revision: String,
 }
 
+/// Whether some of a session's models, priced now, add up to a total stored without a
+/// split. They then cost the same as when that total was priced, and the models left out
+/// were the ones that catalog could not price.
+fn priced_by_some_of(total: f64, models: &[SessionModelCost]) -> bool {
+    if models.len() > MAX_MATCHED_MODELS {
+        return false;
+    }
+    (1_u32..1 << models.len()).any(|subset| {
+        let sum: f64 = models
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| subset & (1 << index) != 0)
+            .map(|(_, model)| model.cost_usd)
+            .sum();
+        (sum - total).abs() <= SAME_PRICE_USD
+    })
+}
+
 /// What a session is stored at, by the rule `kept_cost` applies to a day, applied to each
-/// of its models. A row that recorded only its total keeps that total whole while the
-/// session's tokens are unchanged, its models' shares scaled to match.
+/// of its models.
+///
+/// A row that recorded only its total, while the session's tokens are unchanged, is priced
+/// in full when the models it priced still cost the same, which fills in the ones it could
+/// not price. Otherwise a model has been repriced since, the split cannot be recovered, and
+/// the total is kept whole with its models' shares scaled to match.
 ///
 /// The flag says the stored total was kept whole, which is when it keeps the revision of
 /// the catalog that priced it too. That total is returned as stored rather than summed
@@ -52,7 +86,11 @@ fn settle_session(
     let mut models = session.model_costs.clone();
     let Some(stored) = stored else { return (cost, models, false) };
     let unchanged = stored.total_tokens == session.usage.total;
-    match &stored.model_costs {
+    let split = stored
+        .model_costs
+        .as_ref()
+        .filter(|_| stored.pricing_catalog_revision != UNSPLIT_CATALOG_REVISION);
+    match split {
         Some(stored_models) => {
             let mut every_model_settled = true;
             for model in &mut models {
@@ -71,7 +109,10 @@ fn settle_session(
                 return (stored.computed_cost_usd, models, true);
             }
         }
-        None if unchanged && stored.computed_cost_usd > 0.0 => {
+        None if unchanged
+            && stored.computed_cost_usd > 0.0
+            && !priced_by_some_of(stored.computed_cost_usd, &models) =>
+        {
             if cost > 0.0 {
                 let scale = stored.computed_cost_usd / cost;
                 for model in &mut models {
@@ -418,7 +459,96 @@ impl Storage {
             .execute(&mut *tx)
             .await?;
         }
+        Self::price_unsplit_sessions_from_days(&mut tx, provider_id, sessions, observed_at).await?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Fills in, from this machine's day rows, the model a session stored without its split
+    /// could not price, when the session's log is gone and no parse can price it again.
+    ///
+    /// Such a row's split is its total scaled across what its models cost when it was
+    /// converted, so the split gives those costs up to one factor. A model whose tokens are
+    /// the whole of its day row on a day the session spans has that row's settled cost as
+    /// its own, which fixes the factor. When some of the recovered costs add up to the
+    /// stored total, the rest are what the old catalog missed, and the session is stored at
+    /// all of them. A row already repaired recovers the same costs and is left as it is.
+    async fn price_unsplit_sessions_from_days(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        provider_id: i64,
+        parsed: &[SessionCost],
+        observed_at: &str,
+    ) -> Result<()> {
+        let rows: Vec<(String, String, i64, f64, String)> = sqlx::query_as(
+            "SELECT session_id, session_started_at, duration_ms, computed_cost_usd, model_costs \
+             FROM session_costs WHERE provider_instance_id = ? AND pricing_catalog_revision = ? \
+             AND model_costs IS NOT NULL",
+        )
+        .bind(provider_id)
+        .bind(UNSPLIT_CATALOG_REVISION)
+        .fetch_all(&mut **tx)
+        .await?;
+        for (session_id, started_at, duration_ms, total, model_costs) in rows {
+            if parsed.iter().any(|session| session.session_id == session_id) {
+                continue;
+            }
+            let split: Vec<SessionModelCost> = serde_json::from_str(&model_costs)
+                .context("a stored session's model costs could not be read")?;
+            // A single model's total either priced it or is zero; neither misses anything.
+            if split.len() < 2 || total <= 0.0 {
+                continue;
+            }
+            let started = jiff::Timestamp::from_str(&started_at)?.as_second();
+            let (Some(first_day), Some(last_day)) = (
+                crate::clock::day_key(started),
+                crate::clock::day_key(started + duration_ms.max(0) / 1_000),
+            ) else {
+                continue;
+            };
+            for model in &split {
+                let day_cost: Option<f64> = sqlx::query_scalar(
+                    "SELECT estimated_cost_usd FROM daily_usage WHERE provider_instance_id = ? \
+                     AND device = ? AND model = ? AND total_tokens = ? \
+                     AND usage_date BETWEEN ? AND ?",
+                )
+                .bind(provider_id)
+                .bind(LOCAL_DEVICE)
+                .bind(&model.model)
+                .bind(model.tokens as i64)
+                .bind(&first_day)
+                .bind(&last_day)
+                .fetch_optional(&mut **tx)
+                .await?
+                .flatten();
+                let Some(day_cost) = day_cost.filter(|cost| *cost > 0.0 && model.cost_usd > 0.0)
+                else {
+                    continue;
+                };
+                let factor = model.cost_usd / day_cost;
+                let recovered: Vec<SessionModelCost> = split
+                    .iter()
+                    .map(|each| SessionModelCost {
+                        cost_usd: each.cost_usd / factor,
+                        ..each.clone()
+                    })
+                    .collect();
+                let full: f64 = recovered.iter().map(|each| each.cost_usd).sum();
+                if priced_by_some_of(total, &recovered) && (full - total).abs() > SAME_PRICE_USD {
+                    sqlx::query(
+                        "UPDATE session_costs SET computed_cost_usd = ?, model_costs = ?, \
+                         updated_at = ? WHERE provider_instance_id = ? AND session_id = ?",
+                    )
+                    .bind(full)
+                    .bind(serde_json::to_string(&recovered)?)
+                    .bind(observed_at)
+                    .bind(provider_id)
+                    .bind(&session_id)
+                    .execute(&mut **tx)
+                    .await?;
+                }
+                break;
+            }
+        }
         Ok(())
     }
 
