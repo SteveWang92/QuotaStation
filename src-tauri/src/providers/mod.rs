@@ -166,8 +166,8 @@ pub async fn read_history(
     let quality = inspect_history_quality(kind, recent_quality_files(&before))?;
     let after = usage_file_state(kind)?;
     anyhow::ensure!(
-        before == after,
-        "Provider session files changed during parsing; retrying after they settle"
+        only_appended(&before, &after),
+        "Provider session files were rewritten during parsing; retrying after they settle"
     );
     ensure_history_quality(quality)?;
     anyhow::ensure!(
@@ -328,6 +328,19 @@ struct FileState {
     modified: Option<SystemTime>,
 }
 
+/// Whether the session files changed during a parse only by growing or by new ones
+/// appearing. The clients append to their logs, so every record such a parse read is still
+/// there and the next parse reads the rest. A file that shrank, went away, or changed at the
+/// same length may have handed the parse records that no longer exist.
+fn only_appended(
+    before: &BTreeMap<PathBuf, FileState>,
+    after: &BTreeMap<PathBuf, FileState>,
+) -> bool {
+    before
+        .iter()
+        .all(|(path, was)| after.get(path).is_some_and(|now| now == was || now.len > was.len))
+}
+
 fn usage_file_state(kind: ProviderKind) -> Result<BTreeMap<PathBuf, FileState>> {
     let mut state = BTreeMap::new();
     for path in usage_files(kind)? {
@@ -427,6 +440,29 @@ mod tests {
         .expect_err("one quarter failed candidates must reject the refresh");
         assert!(error.to_string().contains("scanned_files=2"));
         assert!(error.to_string().contains("failed=4"));
+    }
+
+    #[test]
+    fn a_parse_stands_when_its_files_were_only_appended_to() {
+        let file = |len, seconds| FileState {
+            len,
+            modified: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
+        };
+        let state = |files: &[(&str, FileState)]| {
+            files.iter().map(|(name, state)| (PathBuf::from(name), *state)).collect()
+        };
+        let before = state(&[("a.jsonl", file(10, 1)), ("b.jsonl", file(20, 1))]);
+
+        let appended =
+            state(&[("a.jsonl", file(15, 2)), ("b.jsonl", file(20, 1)), ("new.jsonl", file(5, 2))]);
+        assert!(only_appended(&before, &appended));
+
+        let shrunk = state(&[("a.jsonl", file(5, 2)), ("b.jsonl", file(20, 1))]);
+        let removed = state(&[("a.jsonl", file(10, 1))]);
+        let rewritten = state(&[("a.jsonl", file(10, 2)), ("b.jsonl", file(20, 1))]);
+        for changed in [shrunk, removed, rewritten] {
+            assert!(!only_appended(&before, &changed));
+        }
     }
 
     #[test]

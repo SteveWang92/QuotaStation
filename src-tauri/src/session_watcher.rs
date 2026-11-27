@@ -149,31 +149,33 @@ async fn run_event_loop(
                 // provider that took part is reparsed once when it ends.
                 let mut pending = BTreeSet::from([provider]);
                 mark_event(&state).await;
-                let mut deadline = Instant::now() + Duration::from_secs(2);
-                loop {
-                    tokio::select! {
-                        _ = tokio::time::sleep_until(deadline) => break,
-                        next = receiver.recv() => match next {
-                            Some(WatcherMessage::HistoryChanged(provider)) => {
-                                pending.insert(provider);
-                                mark_event(&state).await;
-                                deadline = Instant::now() + Duration::from_secs(2);
+                while !pending.is_empty() {
+                    let mut deadline = Instant::now() + Duration::from_secs(2);
+                    loop {
+                        tokio::select! {
+                            _ = tokio::time::sleep_until(deadline) => break,
+                            next = receiver.recv() => match next {
+                                Some(WatcherMessage::HistoryChanged(provider)) => {
+                                    pending.insert(provider);
+                                    mark_event(&state).await;
+                                    deadline = Instant::now() + Duration::from_secs(2);
+                                }
+                                Some(WatcherMessage::Failed) => mark_failed(&state).await,
+                                Some(WatcherMessage::LocationsChanged(count)) => mark_locations(&state, count).await,
+                                None => return,
                             }
-                            Some(WatcherMessage::Failed) => mark_failed(&state).await,
-                            Some(WatcherMessage::LocationsChanged(count)) => mark_locations(&state, count).await,
-                            None => return,
                         }
                     }
-                }
-                while let Some(provider) = pending.pop_first() {
-                    crate::log::write(format!(
-                        "{} session files changed; reparsing",
-                        provider.key()
-                    ));
-                    refresh::refresh_changed_provider(&app, &state, provider).await;
-                    // Parsing can take long enough for more writes to arrive. Fold those
-                    // events into this batch instead of making every queued event open a
-                    // fresh two-second debounce window.
+                    while let Some(provider) = pending.pop_first() {
+                        crate::log::write(format!(
+                            "{} session files changed; reparsing",
+                            provider.key()
+                        ));
+                        refresh::refresh_changed_provider(&app, &state, provider).await;
+                    }
+                    // Writes that arrived while parsing open one more settling period rather
+                    // than a parse straight away, so a client writing steadily is parsed
+                    // once every two quiet seconds instead of back to back.
                     while let Ok(message) = receiver.try_recv() {
                         match message {
                             WatcherMessage::HistoryChanged(provider) => {

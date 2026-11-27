@@ -305,8 +305,10 @@ comes from. When running the application locally:
   ten minutes for Claude Code, and immediately whenever Claude Code's session logs change.
 - History refreshes at startup and on manual refresh. A recursive watcher waits two seconds
   after `.jsonl` changes settle, and a full scan every fifteen minutes recovers missed Windows
-  file notifications. The interface updates after the complete refresh rather than showing
-  partially updated totals.
+  file notifications. Changes that arrive during a parse wait for another two quiet seconds.
+  A parse during which the logs only grew is kept, because the next one reads the rest; one
+  during which a log shrank, disappeared or was rewritten is discarded and retried. The
+  interface updates after the complete refresh rather than showing partially updated totals.
 - The Claude Code status-line bridge is installed from the settings page, which registers
   `quotastation.exe --claude-statusline` as that command. Readings then arrive from terminal
   sessions only; the settings card says so when every running session is desktop-hosted.
